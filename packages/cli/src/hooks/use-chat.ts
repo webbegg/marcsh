@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
-import type { ModeType } from "@marcsh/shared";
+import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import {
   applySdkMessage,

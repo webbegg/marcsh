@@ -1,10 +1,9 @@
 import type { DialogContextValue } from "../../providers/dialog";
-import type { ToastContextValue } from "../../providers/toast";
-import type { ModeType, SupportedChatModelId } from "@marcsh/shared";
+import type { ModeType } from "../../lib/modes";
+import type { SupportedChatModelId } from "../../lib/models";
 
 export type CommandContext = {
   exit: () => void;
-  toast: ToastContextValue;
   dialog: DialogContextValue;
   navigate: (path: string) => void;
   mode: ModeType;

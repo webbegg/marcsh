@@ -1,4 +1,4 @@
-import { Mode, type ModeType } from "@marcsh/shared";
+import { Mode, type ModeType } from "../../lib/modes";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
 

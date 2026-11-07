@@ -2,7 +2,7 @@ import prettyMs from "pretty-ms";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
 import type { MessagePart } from "../../lib/chat-types";
-import { Mode, type ModeType } from "@marcsh/shared";
+import { Mode, type ModeType } from "../../lib/modes";
 import { TextAttributes } from "@opentui/core";
 
 type ToolPart = Extract<MessagePart, { type: "tool" }>;

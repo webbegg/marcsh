@@ -1,5 +1,5 @@
 import "opentui-spinner/react";
-import { Mode, type ModeType } from "@marcsh/shared";
+import { Mode, type ModeType } from "../lib/modes";
 import { useTheme } from "../providers/theme";
 
 type Props = {

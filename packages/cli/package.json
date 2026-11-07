@@ -11,7 +11,6 @@
     "build": "bun build src/index.tsx --outdir dist --target bun"
   },
   "devDependencies": {
-    "@marcsh/server": "workspace:*",
     "@types/bun": "latest",
     "@types/react": "^19.2.14"
   },
@@ -19,15 +18,10 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@ai-sdk/react": "^3.0.186",
     "@anthropic-ai/claude-agent-sdk": "0.3.319",
-    "@marcsh/shared": "workspace:*",
     "@opentui/core": "^0.1.97",
     "@opentui/react": "^0.1.97",
-    "ai": "^6.0.184",
     "date-fns": "^4.1.0",
-    "hono": "^4.12.12",
-    "open": "^11.0.0",
     "opentui-spinner": "^0.0.6",
     "pretty-ms": "^9.3.0",
     "react": "^19.2.4",

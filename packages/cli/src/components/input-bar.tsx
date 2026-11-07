@@ -14,12 +14,11 @@ import { StatusBar } from "./status-bar";
 import { CommandMenu } from "./command-menu";
 import type { Command } from "./command-menu/types";
 import { useCommandMenu } from "./command-menu/use-command-menu";
-import { useToast } from "../providers/toast";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
-import { Mode } from "@marcsh/shared";
+import { Mode } from "../lib/modes";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const CURRENT_DIRECTORY = process.cwd();
@@ -278,7 +277,6 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
 
   const renderer = useRenderer();
   const navigate = useNavigate();
-  const toast = useToast();
   const dialog = useDialog();
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
@@ -393,7 +391,6 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
     if (command.action) {
       command.action({
         exit: () => renderer.destroy(),
-        toast,
         dialog,
         navigate,
         mode,
@@ -403,7 +400,7 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, toast, dialog, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {

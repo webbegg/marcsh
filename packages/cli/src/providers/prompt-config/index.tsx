@@ -1,11 +1,7 @@
 import { createContext, useContext, useState, useCallback } from "react";
 import type { ReactNode } from "react";
-import { 
-  DEFAULT_CHAT_MODEL_ID, 
-  Mode,
-  type ModeType,
-  type SupportedChatModelId,
-} from "@marcsh/shared";
+import { Mode, type ModeType } from "../../lib/modes";
+import { DEFAULT_CHAT_MODEL_ID, type SupportedChatModelId } from "../../lib/models";
 
 type PromptConfigContextValue = {
   mode: ModeType;

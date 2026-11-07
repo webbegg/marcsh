@@ -1,4 +1,4 @@
-import type { ModeType } from "@marcsh/shared";
+import type { ModeType } from "./modes";
 
 export type ToolState = "running" | "done" | "error";
 

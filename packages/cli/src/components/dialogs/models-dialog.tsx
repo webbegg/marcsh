@@ -1,8 +1,7 @@
 import { useCallback } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
-import { Mode } from "@marcsh/database/enums";
-import type { SupportedChatModelId } from "@marcsh/shared";
+import type { SupportedChatModelId } from "../../lib/models";
 
 type ModelsDialogContentProps = {
   models: SupportedChatModelId[];

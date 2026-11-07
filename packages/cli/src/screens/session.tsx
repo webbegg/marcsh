@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard } from "@opentui/react";
-import { type ModeType } from "@marcsh/shared";
+import { type ModeType } from "../lib/modes";
 import { SessionShell } from "../components/session-shell";
 import { 
   UserMessage, 

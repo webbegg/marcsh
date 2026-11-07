@@ -1,5 +1,5 @@
 import type { PermissionMode, PermissionResult, PermissionUpdate, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { Mode, type ModeType } from "@marcsh/shared";
+import { Mode, type ModeType } from "./modes";
 import type { ChatMessage, MessagePart } from "./chat-types";
 
 export type PermissionDecision = "allow" | "always" | "deny";
