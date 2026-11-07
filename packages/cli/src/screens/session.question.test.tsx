@@ -44,6 +44,10 @@ let calls: { prompt: string; options: any }[] = [];
 let results: any[] = [];
 let askInput: Record<string, unknown> = { questions: [COLOR] };
 let releaseAsk: () => void = () => {};
+// When set, the fake asks without awaiting, then ends the stream on endTurn(), leaving the question pending at turn end.
+let leaveAskPending = false;
+let pendingAsk: Promise<any> | null = null;
+let endTurn: () => void = () => {};
 
 // Fake query(): init → one AskUserQuestion tool call that asks once released → result.
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
@@ -58,6 +62,11 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       // An interrupt before the prompt ends the turn (the real SDK stops the stream).
       await Promise.race([gate, new Promise<void>((resolve) => ask.signal.addEventListener("abort", () => resolve(), { once: true }))]);
       if (ask.signal.aborted) return;
+      if (leaveAskPending) {
+        pendingAsk = options.canUseTool("AskUserQuestion", askInput, { signal: ask.signal, toolUseID: "t1", requestId: "r1" });
+        await new Promise<void>((resolve) => (endTurn = resolve));
+        return;
+      }
       const result = await options.canUseTool("AskUserQuestion", askInput, {
         signal: ask.signal, toolUseID: "t1", requestId: "r1",
       });
@@ -117,6 +126,7 @@ const showPrompt = async () => {
 async function openSession(input: Record<string, unknown>) {
   calls = [];
   results = [];
+  pendingAsk = null;
   askInput = input;
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd" });
   const router = createMemoryRouter(
@@ -129,11 +139,54 @@ async function openSession(input: Record<string, unknown>) {
 }
 
 afterEach(async () => {
+  leaveAskPending = false;
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
 });
 
 describe("session questions (S9)", () => {
+  // S10d: a question still pending when the turn ends is declined once, then the prompt goes away.
+  const settledOnce = async () => {
+    let settled = 0;
+    // Bounded wait, so a promise that never settles fails the test instead of hanging the suite.
+    const outcome = await Promise.race([
+      pendingAsk!.then((result) => (settled++, result)),
+      new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 500)),
+    ]);
+    await settle(50);
+    return { outcome, settled };
+  };
+
+  test("a question still pending when the turn ends is declined once and the prompt disappears", async () => {
+    leaveAskPending = true;
+    await openSession({ questions: [COLOR] });
+    await showPrompt();
+    expect(collapse(screen!.captureCharFrame())).toContain("Question 1/1");
+    await act(async () => endTurn());
+    expect(await settledOnce()).toEqual({ outcome: { behavior: "deny", message: "The user declined to answer." }, settled: 1 });
+    expect(collapse(screen!.captureCharFrame())).not.toContain(COLOR.question);
+  });
+
+  test("a turn that ends while the Other field is open declines once, and the next turn's Esc still interrupts", async () => {
+    leaveAskPending = true;
+    await openSession({ questions: [COLOR] });
+    await showPrompt();
+    await press("o");
+    await type("Tea");
+    await act(async () => endTurn());
+    expect(await settledOnce()).toEqual({ outcome: { behavior: "deny", message: "The user declined to answer." }, settled: 1 });
+    expect(await frameContaining("Ask anything")).not.toContain("Esc goes back to the options");
+
+    leaveAskPending = false;
+    await type("again");
+    await press("RETURN");
+    expect(calls[1]?.prompt).toBe("again");
+    await showPrompt();
+    await press("ESCAPE");
+    await settle(50);
+    expect(results).toEqual([{ behavior: "deny", message: "The user declined to answer." }]);
+  });
+
   test("a single-select pick answers with the label, keyed by the question text", async () => {
     await openSession({ questions: [COLOR] });
     await showPrompt();
