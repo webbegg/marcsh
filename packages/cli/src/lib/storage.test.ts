@@ -73,7 +73,7 @@ describe("storage", () => {
     expect(list[0]).not.toHaveProperty("messages");
   });
 
-  test("makes the database file owner-only and forces an existing parent dir to 0700", () => {
+  test("makes the database file owner-only but leaves the parent of a custom path alone", () => {
     const dir = mkdtempSync(join(tmpdir(), "marcsh-perm-"));
     chmodSync(dir, 0o755);
     const path = join(dir, "marcsh.db");
@@ -82,7 +82,7 @@ describe("storage", () => {
       openStorage(path).createSession({ title: "Private", cwd: "/work" });
 
       expect(statSync(path).mode & 0o777).toBe(0o600);
-      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(dir).mode & 0o777).toBe(0o755);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

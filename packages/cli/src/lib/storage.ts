@@ -34,8 +34,10 @@ type SessionRow = {
   updated_at: number;
 };
 
+const marcshDir = () => join(homedir(), ".marcsh");
+
 export function defaultDbPath() {
-  return process.env.MARCSH_DB_PATH || join(homedir(), ".marcsh", "marcsh.db");
+  return process.env.MARCSH_DB_PATH || join(marcshDir(), "marcsh.db");
 }
 
 export function openStorage(path = defaultDbPath()): Storage {
@@ -44,8 +46,9 @@ export function openStorage(path = defaultDbPath()): Storage {
   if (isFile) {
     // Owner-only permissions (rwx------) so other users on the machine can't read sessions
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    // mkdir leaves an existing directory (e.g. created 0755 by the theme provider) untouched
-    chmodSync(dirname(path), 0o700);
+    // mkdir leaves an existing ~/.marcsh (e.g. created 0755 by the theme provider) untouched.
+    // Only our own directory is tightened; the parent of a custom MARCSH_DB_PATH is the user's.
+    if (dirname(path) === marcshDir()) chmodSync(dirname(path), 0o700);
   }
 
   const db = new Database(path, { create: true, strict: true });
