@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ChatMessage } from "./chat-types";
@@ -35,16 +35,22 @@ type SessionRow = {
 };
 
 export function defaultDbPath() {
-  return process.env.MARCSH_DB_PATH ?? join(homedir(), ".marcsh", "marcsh.db");
+  return process.env.MARCSH_DB_PATH || join(homedir(), ".marcsh", "marcsh.db");
 }
 
 export function openStorage(path = defaultDbPath()): Storage {
-  if (path !== ":memory:") {
+  const isFile = path !== ":memory:";
+
+  if (isFile) {
     // Owner-only permissions (rwx------) so other users on the machine can't read sessions
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // mkdir leaves an existing directory (e.g. created 0755 by the theme provider) untouched
+    chmodSync(dirname(path), 0o700);
   }
 
   const db = new Database(path, { create: true, strict: true });
+  // Before enabling WAL, so the -wal and -shm files inherit the owner-only mode
+  if (isFile) chmodSync(path, 0o600);
   db.run("PRAGMA journal_mode = WAL");
   db.run(`
     CREATE TABLE IF NOT EXISTS sessions (

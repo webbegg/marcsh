@@ -4,6 +4,7 @@ import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import {
   applySdkMessage,
+  finishReply,
   resultError,
   toPermissionMode,
   toPermissionResult,
@@ -135,8 +136,14 @@ export function useChat(session: StoredSession) {
         queryRef.current = null;
         abortControllerRef.current = null;
         setPermissionQueue([]);
+        applyToReply(finishReply);
         updateStatus("ready");
-        getStorage().saveMessages(session.id, messagesRef.current, claudeSessionIdRef.current ?? undefined);
+
+        try {
+          getStorage().saveMessages(session.id, messagesRef.current, claudeSessionIdRef.current ?? undefined);
+        } catch (err) {
+          setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     },
     [session.id, session.cwd, updateMessages, updateStatus],

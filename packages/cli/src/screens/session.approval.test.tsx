@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act } from "react";
 
 process.env.MARCSH_DB_PATH = ":memory:";
@@ -22,7 +25,9 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     const messages = (async function* () {
       yield { type: "system", subtype: "init", session_id: "claude-1", model: options.model };
       yield { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: askInput }] } };
-      await gate;
+      // An interrupt before the prompt ends the turn (the real SDK stops the stream).
+      await Promise.race([gate, new Promise<void>((resolve) => ask.signal.addEventListener("abort", () => resolve(), { once: true }))]);
+      if (ask.signal.aborted) return;
       const result = await options.canUseTool("Bash", askInput, {
         signal: ask.signal, suggestions: ALWAYS_RULE, toolUseID: "t1", requestId: "r1", ...askExtra,
       });
@@ -88,9 +93,91 @@ async function openSession(
   return session;
 }
 
+// Opens a session with no initial prompt, so the input bar is idle and enabled.
+async function openIdle(cwd: string) {
+  const session = getStorage().createSession({ title: "idle", cwd });
+  const router = createMemoryRouter(
+    [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
+    { initialEntries: [`/sessions/${session.id}`] },
+  );
+  screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
+  await settle();
+  return session;
+}
+
+const spies: { mockRestore(): void }[] = [];
+const scratchDirs: string[] = [];
+
 afterEach(async () => {
+  for (const spy of spies.splice(0)) spy.mockRestore();
+  for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
+});
+
+describe("session hardening (S8)", () => {
+  test("a storage error while loading the session shows a toast and goes home", async () => {
+    spies.push(
+      spyOn(getStorage(), "getSession").mockImplementation(() => {
+        throw new Error("database is locked");
+      }),
+    );
+    await openSession();
+    await settle(50);
+    const frame = collapse(screen!.captureCharFrame());
+    expect(frame).toContain("Could not load session: database is locked");
+    expect(calls).toEqual([]);
+    expect((screen!.renderer as any).isDestroyed).toBe(false);
+  });
+
+  test("a storage error while listing sessions shows a toast and closes the dialog", async () => {
+    await openIdle("/tmp/marcsh-cwd");
+    spies.push(
+      spyOn(getStorage(), "listSessions").mockImplementation(() => {
+        throw new Error("database is locked");
+      }),
+    );
+    await type("/sessions");
+    await press("RETURN");
+    await settle(50);
+    const frame = collapse(screen!.captureCharFrame());
+    expect(frame).toContain("Could not load sessions: database is locked");
+    expect(frame).not.toContain("Search sessions");
+    expect((screen!.renderer as any).isDestroyed).toBe(false);
+  });
+
+  test("a storage error while saving the turn becomes a chat error", async () => {
+    spies.push(
+      spyOn(getStorage(), "saveMessages").mockImplementation(() => {
+        throw new Error("disk full");
+      }),
+    );
+    await openSession();
+    await showPrompt();
+    await press("y");
+    await settle(50);
+    expect(collapse(screen!.captureCharFrame())).toContain("Could not save session: disk full");
+    expect((screen!.renderer as any).isDestroyed).toBe(false);
+  });
+
+  test("Esc during a running tool saves that tool as an Interrupted error", async () => {
+    const session = await openSession();
+    await press("ESCAPE");
+    await settle(50);
+    const saved = getStorage().getSession(session.id)!;
+    const tool = saved.messages.at(-1)!.parts.find((p) => p.type === "tool");
+    expect(tool).toMatchObject({ toolCallId: "t1", state: "error", errorText: "Interrupted" });
+  });
+
+  test("@ mentions look up files in the session's working directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "marcsh-cwd-"));
+    scratchDirs.push(dir);
+    writeFileSync(join(dir, "only-in-session-cwd.txt"), "x");
+    await openIdle(dir);
+    await type("@only-in");
+    await settle(80);
+    expect(screen!.captureCharFrame()).toContain("only-in-session-cwd.txt");
+  });
 });
 
 describe("session approvals (S7)", () => {

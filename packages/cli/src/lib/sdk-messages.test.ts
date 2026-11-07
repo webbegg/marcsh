@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   applySdkMessage,
+  finishReply,
   resultError,
   toPermissionMode,
   toPermissionResult,
@@ -92,6 +93,33 @@ describe("applySdkMessage", () => {
     const reply = emptyReply();
 
     expect(applySdkMessage(reply, sdk({ type: "system", subtype: "init", session_id: "s1" }))).toBe(reply);
+  });
+});
+
+describe("finishReply", () => {
+  const tool = (toolCallId: string, state: "running" | "done" | "error") =>
+    ({ type: "tool", toolCallId, toolName: "Bash", input: {}, state }) as const;
+
+  test("marks tools still running as interrupted errors", () => {
+    const reply: ChatMessage = {
+      ...emptyReply(),
+      parts: [{ type: "text", text: "hi" }, tool("t1", "running"), tool("t2", "done")],
+    };
+
+    const finished = finishReply(reply);
+
+    expect(finished.parts).toEqual([
+      { type: "text", text: "hi" },
+      { ...tool("t1", "error"), errorText: "Interrupted" },
+      tool("t2", "done"),
+    ]);
+  });
+
+  test("returns the same reply when no tool is running", () => {
+    const reply: ChatMessage = { ...emptyReply(), parts: [tool("t1", "done"), tool("t2", "error")] };
+
+    expect(finishReply(reply)).toBe(reply);
+    expect(finishReply(emptyReply())).toEqual(emptyReply());
   });
 });
 

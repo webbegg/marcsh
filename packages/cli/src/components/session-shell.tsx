@@ -10,6 +10,8 @@ type Props = {
   inputDisabled?: boolean;
   loading?: boolean;
   interruptible?: boolean;
+  /** Directory that `@` mentions resolve against; defaults to the process's. */
+  cwd?: string;
 };
 
 export function SessionShell({
@@ -18,6 +20,7 @@ export function SessionShell({
   inputDisabled = false,
   loading = false,
   interruptible = false,
+  cwd,
 }: Props) {
   const { mode } = usePromptConfig();
 
@@ -35,7 +38,7 @@ export function SessionShell({
         <box>{children}</box>
       </scrollbox>
       <box flexShrink={0}>
-        <InputBar onSubmit={onSubmit} disabled={inputDisabled} />
+        <InputBar onSubmit={onSubmit} disabled={inputDisabled} cwd={cwd} />
       </box>
       <box
         flexShrink={0}

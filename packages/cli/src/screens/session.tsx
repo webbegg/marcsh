@@ -92,6 +92,7 @@ function SessionChat({
 
   return (
     <SessionShell
+      cwd={session.cwd}
       onSubmit={(text) => submit({ userText: text, mode, model })}
       inputDisabled={busy}
       loading={busy}
@@ -117,14 +118,23 @@ export function Session() {
     return parsed.success ? parsed.data.initialPrompt : undefined;
   }, [location.state]);
 
-  const session = useMemo(() => (id ? getStorage().getSession(id) : null), [id]);
+  const { session, loadError } = useMemo(() => {
+    try {
+      return { session: id ? getStorage().getSession(id) : null, loadError: null };
+    } catch (err) {
+      return { session: null, loadError: err instanceof Error ? err.message : String(err) };
+    }
+  }, [id]);
 
   useEffect(() => {
     if (session) return;
 
-    toast.show({ variant: "error", message: "Failed to load session" });
+    toast.show({
+      variant: "error",
+      message: loadError ? `Could not load session: ${loadError}` : "Failed to load session",
+    });
     navigate("/", { replace: true });
-  }, [session, toast, navigate]);
+  }, [session, loadError, toast, navigate]);
 
   if (!session) {
     return <SessionShell onSubmit={() => {}} inputDisabled loading />;

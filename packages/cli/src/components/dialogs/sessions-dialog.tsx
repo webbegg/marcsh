@@ -1,15 +1,30 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { TextAttributes } from "@opentui/core";
 import { format } from "date-fns";
 import { useNavigate } from "react-router";
 import { useDialog } from "../../providers/dialog";
+import { useToast } from "../../providers/toast";
 import { getStorage, type SessionSummary } from "../../lib/storage";
 import { DialogSearchList } from "../dialog-search-list";
 
 export const SessionsDialogContent = () => {
-  const sessions = useMemo(() => getStorage().listSessions(), []);
+  const { sessions, loadError } = useMemo(() => {
+    try {
+      return { sessions: getStorage().listSessions(), loadError: null };
+    } catch (err) {
+      return { sessions: [], loadError: err instanceof Error ? err.message : String(err) };
+    }
+  }, []);
   const { close } = useDialog();
   const navigate = useNavigate();
+  const toast = useToast();
+
+  useEffect(() => {
+    if (!loadError) return;
+
+    toast.show({ variant: "error", message: `Could not load sessions: ${loadError}` });
+    close();
+  }, [loadError, toast, close]);
 
   const handleSelect = useCallback(
     (session: SessionSummary) => {
@@ -18,6 +33,8 @@ export const SessionsDialogContent = () => {
     },
     [close, navigate],
   );
+
+  if (loadError) return null;
 
   return (
     <DialogSearchList

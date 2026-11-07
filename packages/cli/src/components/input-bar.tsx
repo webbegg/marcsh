@@ -21,7 +21,6 @@ import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 
 const MAX_VISIBLE_MENTIONS = 8;
-const CURRENT_DIRECTORY = process.cwd();
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
 const MENTION_QUERY_CHARACTER = /[A-Za-z0-9._/-]/;
 const RECURSIVE_MENTION_IGNORED_DIRECTORIES = new Set(["node_modules"]);
@@ -37,8 +36,8 @@ type MentionCandidate = {
   kind: "file" | "directory";
 };
 
-function isWithinCurrentDirectory(targetPath: string) {
-  const relativePath = relative(CURRENT_DIRECTORY, targetPath);
+function isWithinDirectory(directory: string, targetPath: string) {
+  const relativePath = relative(directory, targetPath);
   return relativePath === "" 
     || (!relativePath.startsWith("..") 
     && !isAbsolute(relativePath));
@@ -90,7 +89,7 @@ function findActiveMention(text: string, cursorOffset: number): MentionMatch | n
   };
 }
 
-async function getMentionCandidates(query: string): Promise<MentionCandidate[]> {
+async function getMentionCandidates(query: string, cwd: string): Promise<MentionCandidate[]> {
   const normalizedQuery = query.startsWith("./") ? query.slice(2) : query;
   if (normalizedQuery.startsWith("/")) {
     return [];
@@ -113,8 +112,8 @@ async function getMentionCandidates(query: string): Promise<MentionCandidate[]> 
       ? normalizedQuery
       : normalizedQuery.slice(lastSlashIndex + 1);
 
-  const absoluteDirectory = resolve(CURRENT_DIRECTORY, directoryPart || ".");
-  if (!isWithinCurrentDirectory(absoluteDirectory)) {
+  const absoluteDirectory = resolve(cwd, directoryPart || ".");
+  if (!isWithinDirectory(cwd, absoluteDirectory)) {
     return [];
   }
 
@@ -189,7 +188,7 @@ async function getMentionCandidates(query: string): Promise<MentionCandidate[]> 
       }
     };
 
-    await visit(CURRENT_DIRECTORY, "");
+    await visit(cwd, "");
     return fallbackMatches.sort((left, right) => left.path.localeCompare(right.path));
   } catch {
     return [];
@@ -259,6 +258,8 @@ function FileMentionMenu({
 type Props = {
   onSubmit: (text: string) => void;
   disabled?: boolean;
+  /** Directory that `@` mentions resolve against. */
+  cwd?: string;
 };
 
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
@@ -268,7 +269,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false }: Props) {
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Props) {
   const { mode, toggleMode, setMode, setModel } = usePromptConfig();
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -427,7 +428,7 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
 
     let ignore = false;
     const loadCandidates = async () => {
-      const nextCandidates = await getMentionCandidates(activeMention.query);
+      const nextCandidates = await getMentionCandidates(activeMention.query, cwd);
       if (ignore) return;
 
       setMentionCandidates(nextCandidates);
@@ -444,7 +445,7 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
     return () => {
       ignore = true;
     };
-  }, [activeMention]);
+  }, [activeMention, cwd]);
 
   // Wire up textarea submit handler once so it always reads the latest state.
   useEffect(() => {

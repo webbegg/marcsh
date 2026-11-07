@@ -83,6 +83,16 @@ export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMe
   }
 }
 
+/** Ends a turn: tools still running will never get a result, so they are saved as interrupted errors. */
+export function finishReply(reply: ChatMessage): ChatMessage {
+  if (!reply.parts.some((p) => p.type === "tool" && p.state === "running")) return reply;
+
+  const parts = reply.parts.map((p): MessagePart =>
+    p.type === "tool" && p.state === "running" ? { ...p, state: "error", errorText: "Interrupted" } : p,
+  );
+  return { ...reply, parts };
+}
+
 /** The user-facing error for a failed turn, or null when the turn succeeded. */
 export function resultError(message: SDKMessage): string | null {
   if (message.type !== "result") return null;

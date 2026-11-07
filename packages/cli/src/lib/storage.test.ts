@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { rmSync } from "node:fs";
-import { openStorage } from "./storage";
+import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaultDbPath, openStorage } from "./storage";
 import type { ChatMessage } from "./chat-types";
 
 const userMessage: ChatMessage = {
@@ -69,6 +71,33 @@ describe("storage", () => {
 
     expect(list.map((s) => s.id)).toEqual([older.id, newer.id]);
     expect(list[0]).not.toHaveProperty("messages");
+  });
+
+  test("makes the database file owner-only and forces an existing parent dir to 0700", () => {
+    const dir = mkdtempSync(join(tmpdir(), "marcsh-perm-"));
+    chmodSync(dir, 0o755);
+    const path = join(dir, "marcsh.db");
+
+    try {
+      openStorage(path).createSession({ title: "Private", cwd: "/work" });
+
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to the default path when MARCSH_DB_PATH is empty", () => {
+    const previous = process.env.MARCSH_DB_PATH;
+    process.env.MARCSH_DB_PATH = "";
+
+    try {
+      expect(defaultDbPath()).toBe(join(homedir(), ".marcsh", "marcsh.db"));
+    } finally {
+      if (previous === undefined) delete process.env.MARCSH_DB_PATH;
+      else process.env.MARCSH_DB_PATH = previous;
+    }
   });
 
   test("keeps data across reopening the same file", () => {
