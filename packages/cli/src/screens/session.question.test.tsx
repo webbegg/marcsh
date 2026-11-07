@@ -98,6 +98,16 @@ const type = async (text: string) => {
 };
 // Joins word-wrapped lines (and the prompt's left border) back into one string.
 const collapse = (frame: string) => frame.replace(/[│\s]+/g, " ");
+// A state change can land a render frame after settle(); wait for the expected text instead of racing it.
+const frameContaining = async (text: string, timeoutMs = 1000) => {
+  const start = Date.now();
+  let frame = collapse(screen!.captureCharFrame());
+  while (!frame.includes(text) && Date.now() - start < timeoutMs) {
+    await settle(10);
+    frame = collapse(screen!.captureCharFrame());
+  }
+  return frame;
+};
 const showPrompt = async () => {
   await act(async () => releaseAsk());
   lastActivityAt = Date.now();
@@ -200,8 +210,8 @@ describe("session questions (S9)", () => {
     expect(results).toEqual([]);
     await type("Tea");
     await press("ESCAPE");
+    const frame = await frameContaining("1 Red");
     expect(results).toEqual([]);
-    const frame = collapse(screen!.captureCharFrame());
     expect(frame).toContain(COLOR.question);
     expect(frame).toContain("1 Red");
     await press("1");
