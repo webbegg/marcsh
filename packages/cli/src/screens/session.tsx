@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard } from "@opentui/react";
@@ -10,6 +10,7 @@ import {
   ErrorMessage
 } from "../components/messages";
 import { PermissionPrompt } from "../components/permission-prompt";
+import { QuestionPrompt } from "../components/question-prompt";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
 import { usePromptConfig } from "../providers/prompt-config";
@@ -61,8 +62,12 @@ function SessionChat({
 }) {
   const { mode, model } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
-  const { messages, status, submit, abort, interrupt, error, permissionRequest } = useChat(session);
+  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session);
   const hasSubmittedInitialPromptRef = useRef(false);
+  const textEntryRef = useRef(false);
+  const setTextEntry = useCallback((active: boolean) => {
+    textEntryRef.current = active;
+  }, []);
   const busy = status === "submitted" || status === "streaming";
 
   // Stop the pending reply when the user leaves this session.
@@ -74,7 +79,8 @@ function SessionChat({
 
   // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
-    if (key.name === "escape" && isTopLayer("base") && busy) {
+    // Esc inside a question's free-text field only closes the field.
+    if (key.name === "escape" && isTopLayer("base") && busy && !textEntryRef.current) {
       key.preventDefault();
       interrupt();
     }
@@ -101,7 +107,10 @@ function SessionChat({
       {messages.map((msg) => (
         <ChatMessage key={msg.id} msg={msg} />
       ))}
-      {permissionRequest && <PermissionPrompt request={permissionRequest} />}
+      {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
+      {pendingRequest?.kind === "question" && (
+        <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
+      )}
       {error && <ErrorMessage message={error} />}
     </SessionShell>
   );

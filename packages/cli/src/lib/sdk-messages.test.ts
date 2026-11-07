@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   applySdkMessage,
+  buildAnswer,
   finishReply,
+  parseAskUserQuestion,
   resultError,
+  toAnswersResult,
+  toDeclinedResult,
   toPermissionMode,
   toPermissionResult,
 } from "./sdk-messages";
@@ -182,5 +186,72 @@ describe("toPermissionResult", () => {
       behavior: "deny",
       message: "The user denied this tool call.",
     });
+  });
+});
+
+const colorQuestion = {
+  question: "Which colors?",
+  header: "Colors",
+  options: [
+    { label: "Red", description: "Warm" },
+    { label: "Green", description: "Natural" },
+    { label: "Blue", description: "Cool" },
+  ],
+  multiSelect: true,
+};
+
+describe("parseAskUserQuestion", () => {
+  test("accepts 1-4 questions with 2+ options each", () => {
+    const input = { questions: [colorQuestion] };
+    expect(parseAskUserQuestion(input)).toEqual(input);
+    expect(parseAskUserQuestion({ questions: [colorQuestion, colorQuestion, colorQuestion, colorQuestion].map((q, i) => ({ ...q, question: `Q${i}` })) })).not.toBeNull();
+  });
+
+  test("ignores extra fields instead of rejecting the input", () => {
+    const parsed = parseAskUserQuestion({ questions: [{ ...colorQuestion, options: colorQuestion.options.map((o) => ({ ...o, preview: "p" })) }], metadata: { source: "x" } });
+    expect(parsed?.questions).toHaveLength(1);
+  });
+
+  test.each([
+    ["no questions", { questions: [] }],
+    ["five questions", { questions: Array.from({ length: 5 }, (_, i) => ({ ...colorQuestion, question: `Q${i}` })) }],
+    ["questions missing", {}],
+    ["questions not an array", { questions: "nope" }],
+    ["one option", { questions: [{ ...colorQuestion, options: [colorQuestion.options[0]] }] }],
+    ["option without description", { questions: [{ ...colorQuestion, options: [{ label: "A" }, { label: "B" }] }] }],
+    ["missing header", { questions: [{ ...colorQuestion, header: undefined }] }],
+    ["multiSelect not a boolean", { questions: [{ ...colorQuestion, multiSelect: "yes" }] }],
+    ["duplicate question text", { questions: [colorQuestion, colorQuestion] }],
+  ])("rejects %s", (_name, input) => {
+    expect(parseAskUserQuestion(input as Record<string, unknown>)).toBeNull();
+  });
+});
+
+describe("buildAnswer", () => {
+  test("single-select answers with the chosen label", () => {
+    expect(buildAnswer({ ...colorQuestion, multiSelect: false }, { picked: [1] })).toBe("Green");
+  });
+
+  test("multi-select joins the chosen labels with \", \" in option order", () => {
+    expect(buildAnswer(colorQuestion, { picked: [2, 0] })).toBe("Red, Blue");
+  });
+
+  test("Other text is the answer, and follows the chosen labels in multi-select", () => {
+    expect(buildAnswer({ ...colorQuestion, multiSelect: false }, { picked: [], other: "Teal" })).toBe("Teal");
+    expect(buildAnswer(colorQuestion, { picked: [1], other: "Teal" })).toBe("Green, Teal");
+  });
+});
+
+describe("toAnswersResult and toDeclinedResult", () => {
+  test("allows with the original input plus the answers keyed by question text", () => {
+    const input = { questions: [colorQuestion] };
+    expect(toAnswersResult(input, { "Which colors?": "Red" })).toEqual({
+      behavior: "allow",
+      updatedInput: { questions: [colorQuestion], answers: { "Which colors?": "Red" } },
+    });
+  });
+
+  test("declines with a message for Claude", () => {
+    expect(toDeclinedResult()).toEqual({ behavior: "deny", message: "The user declined to answer." });
   });
 });

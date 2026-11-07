@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { EmptyBorder } from "./border";
+import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
 import type { PermissionRequest } from "../hooks/use-chat";
@@ -9,8 +10,6 @@ import type { PermissionRequest } from "../hooks/use-chat";
 const PRIMARY_INPUT_KEYS = ["command", "file_path", "path", "url", "pattern"];
 const MAX_DETAIL_LINES = 12;
 const DETAIL_LINE_WIDTH = 100;
-// Approval keys count only once the keyboard has been quiet this long, so text still being typed can't answer the prompt.
-const QUIET_MS = 300;
 
 type Props = {
   request: PermissionRequest;
@@ -42,35 +41,16 @@ export function PermissionPrompt({ request }: Props) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const [armedRequest, setArmedRequest] = useState<PermissionRequest | null>(null);
-  const [quietRequest, setQuietRequest] = useState<PermissionRequest | null>(null);
-  const quietTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const quietRef = useRef(false);
+  const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
 
   const confirmFirst = request.defaultToNo === true;
   const offerAlways = !confirmFirst && !request.suppressAlwaysAllowRule;
   const armed = armedRequest === request;
-  const quiet = quietRequest === request;
   const { primary, detail, omitted } = describeInput(request.input);
-
-  const restartQuiet = useCallback(() => {
-    clearTimeout(quietTimer.current);
-    quietRef.current = false;
-    setQuietRequest(null);
-    quietTimer.current = setTimeout(() => {
-      quietRef.current = true;
-      setQuietRequest(request);
-    }, QUIET_MS);
-  }, [request]);
-
-  // The wait starts when the prompt is shown (and again for each new request); unmount clears it.
-  useEffect(() => {
-    restartQuiet();
-    return () => clearTimeout(quietTimer.current);
-  }, [restartQuiet]);
 
   useKeyboard((key) => {
     // Any key before the keyboard is quiet (approval keys included) is ignored and restarts the wait.
-    if (!quietRef.current || !isTopLayer("base") || key.ctrl || key.meta || key.option || key.super || key.hyper) {
+    if (!isQuiet() || !isTopLayer("base") || key.ctrl || key.meta || key.option || key.super || key.hyper) {
       setArmedRequest(null);
       restartQuiet();
       return;

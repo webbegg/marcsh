@@ -1,13 +1,17 @@
 import { useCallback, useRef, useState } from "react";
-import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type PermissionResult, type Query } from "@anthropic-ai/claude-agent-sdk";
 import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import {
   applySdkMessage,
   finishReply,
+  parseAskUserQuestion,
   resultError,
+  toAnswersResult,
+  toDeclinedResult,
   toPermissionMode,
   toPermissionResult,
+  type AskQuestion,
   type PermissionDecision,
 } from "../lib/sdk-messages";
 import { getStorage, type StoredSession } from "../lib/storage";
@@ -15,6 +19,7 @@ import { getStorage, type StoredSession } from "../lib/storage";
 export type ChatStatus = "ready" | "submitted" | "streaming";
 
 export type PermissionRequest = {
+  kind: "permission";
   toolName: string;
   input: Record<string, unknown>;
   title?: string;
@@ -27,13 +32,23 @@ export type PermissionRequest = {
   respond: (decision: PermissionDecision) => void;
 };
 
+/** Claude's `AskUserQuestion`: `respond` takes the answers keyed by question text, or null to decline. */
+export type QuestionRequest = {
+  kind: "question";
+  id: string;
+  questions: AskQuestion[];
+  respond: (answers: Record<string, string> | null) => void;
+};
+
+export type PendingRequest = PermissionRequest | QuestionRequest;
+
 export type SubmitParams = { userText: string; mode: ModeType; model: string };
 
 export function useChat(session: StoredSession) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
-  const [permissionQueue, setPermissionQueue] = useState<PermissionRequest[]>([]);
+  const [permissionQueue, setPermissionQueue] = useState<PendingRequest[]>([]);
 
   const messagesRef = useRef(messages);
   const statusRef = useRef<ChatStatus>("ready");
@@ -75,7 +90,34 @@ export function useChat(session: StoredSession) {
 
       const canUseTool: CanUseTool = (toolName, input, options) =>
         new Promise((resolve) => {
+          // One queue for approvals and questions; each request resolves its promise once and an abort denies it.
+          const enqueue = (request: PendingRequest, deny: () => void) => {
+            options.signal.addEventListener("abort", deny, { once: true });
+            setPermissionQueue((queue) => [...queue, request]);
+          };
+          const dequeue = (request: PendingRequest, onAbort: () => void, result: PermissionResult) => {
+            options.signal.removeEventListener("abort", onAbort);
+            setPermissionQueue((queue) => queue.filter((r) => r !== request));
+            resolve(result);
+          };
+
+          const asked = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
+          if (asked) {
+            const question: QuestionRequest = {
+              kind: "question",
+              id: crypto.randomUUID(),
+              questions: asked.questions,
+              respond(answers) {
+                dequeue(question, onAbort, answers ? toAnswersResult(input, answers) : toDeclinedResult());
+              },
+            };
+            const onAbort = () => question.respond(null);
+            enqueue(question, onAbort);
+            return;
+          }
+
           const request: PermissionRequest = {
+            kind: "permission",
             toolName,
             input,
             title: options.title,
@@ -85,9 +127,9 @@ export function useChat(session: StoredSession) {
             defaultToNo: options.defaultToNo,
             suppressAlwaysAllowRule: options.suppressAlwaysAllowRule,
             respond(decision) {
-              options.signal.removeEventListener("abort", onAbort);
-              setPermissionQueue((queue) => queue.filter((r) => r !== request));
-              resolve(
+              dequeue(
+                request,
+                onAbort,
                 toPermissionResult(decision, input, options.suggestions, {
                   suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || options.defaultToNo,
                 }),
@@ -95,9 +137,7 @@ export function useChat(session: StoredSession) {
             },
           };
           const onAbort = () => request.respond("deny");
-
-          options.signal.addEventListener("abort", onAbort, { once: true });
-          setPermissionQueue((queue) => [...queue, request]);
+          enqueue(request, onAbort);
         });
 
       try {
@@ -165,6 +205,6 @@ export function useChat(session: StoredSession) {
     submit,
     interrupt,
     abort,
-    permissionRequest: permissionQueue[0] ?? null,
+    pendingRequest: permissionQueue[0] ?? null,
   };
 }
