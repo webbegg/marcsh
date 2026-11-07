@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { EmptyBorder } from "./border";
@@ -9,6 +9,8 @@ import type { PermissionRequest } from "../hooks/use-chat";
 const PRIMARY_INPUT_KEYS = ["command", "file_path", "path", "url", "pattern"];
 const MAX_DETAIL_LINES = 12;
 const DETAIL_LINE_WIDTH = 100;
+// Approval keys count only once the keyboard has been quiet this long, so text still being typed can't answer the prompt.
+const QUIET_MS = 300;
 
 type Props = {
   request: PermissionRequest;
@@ -40,15 +42,39 @@ export function PermissionPrompt({ request }: Props) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const [armedRequest, setArmedRequest] = useState<PermissionRequest | null>(null);
+  const [quietRequest, setQuietRequest] = useState<PermissionRequest | null>(null);
+  const quietTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const quietRef = useRef(false);
 
   const confirmFirst = request.defaultToNo === true;
   const offerAlways = !confirmFirst && !request.suppressAlwaysAllowRule;
   const armed = armedRequest === request;
+  const quiet = quietRequest === request;
   const { primary, detail, omitted } = describeInput(request.input);
 
+  const restartQuiet = useCallback(() => {
+    clearTimeout(quietTimer.current);
+    quietRef.current = false;
+    setQuietRequest(null);
+    quietTimer.current = setTimeout(() => {
+      quietRef.current = true;
+      setQuietRequest(request);
+    }, QUIET_MS);
+  }, [request]);
+
+  // The wait starts when the prompt is shown (and again for each new request); unmount clears it.
+  useEffect(() => {
+    restartQuiet();
+    return () => clearTimeout(quietTimer.current);
+  }, [restartQuiet]);
+
   useKeyboard((key) => {
-    if (!isTopLayer("base")) return;
-    if (key.ctrl || key.meta || key.option || key.super || key.hyper) return;
+    // Any key before the keyboard is quiet (approval keys included) is ignored and restarts the wait.
+    if (!quietRef.current || !isTopLayer("base") || key.ctrl || key.meta || key.option || key.super || key.hyper) {
+      setArmedRequest(null);
+      restartQuiet();
+      return;
+    }
 
     if (key.name === "n") {
       key.preventDefault();
@@ -65,6 +91,7 @@ export function PermissionPrompt({ request }: Props) {
       request.respond("allow");
     } else {
       setArmedRequest(null);
+      restartQuiet();
     }
   });
 
@@ -95,7 +122,9 @@ export function PermissionPrompt({ request }: Props) {
         </box>
       ) : null}
       <box flexDirection="row" gap={2}>
-        {confirmFirst ? (
+        {!quiet ? (
+          <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
+        ) : confirmFirst ? (
           <>
             <text>y</text>
             <text attributes={TextAttributes.DIM}>{armed ? "press Enter to confirm" : "allow once (then Enter)"}</text>
@@ -106,14 +135,18 @@ export function PermissionPrompt({ request }: Props) {
             <text attributes={TextAttributes.DIM}>allow once</text>
           </>
         )}
-        {offerAlways ? (
+        {quiet && offerAlways ? (
           <>
             <text>a</text>
             <text attributes={TextAttributes.DIM}>always allow</text>
           </>
         ) : null}
-        <text>n</text>
-        <text attributes={TextAttributes.DIM}>deny</text>
+        {quiet ? (
+          <>
+            <text>n</text>
+            <text attributes={TextAttributes.DIM}>deny</text>
+          </>
+        ) : null}
       </box>
     </box>
   );
