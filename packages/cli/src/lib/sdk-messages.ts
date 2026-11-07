@@ -102,12 +102,13 @@ export function toPermissionResult(
   decision: PermissionDecision,
   input: Record<string, unknown>,
   suggestions?: PermissionUpdate[],
+  { suppressAlwaysAllowRule = false }: { suppressAlwaysAllowRule?: boolean } = {},
 ): PermissionResult {
   if (decision === "deny") {
     return { behavior: "deny", message: "The user denied this tool call." };
   }
 
-  if (decision === "always" && suggestions?.length) {
+  if (decision === "always" && !suppressAlwaysAllowRule && suggestions?.length) {
     return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions };
   }
 

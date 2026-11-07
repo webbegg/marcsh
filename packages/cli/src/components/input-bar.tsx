@@ -342,6 +342,14 @@ export function InputBar({ onSubmit, disabled = false }: Props) {
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu]);
 
+  // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
+  useEffect(() => {
+    if (!disabled) return;
+
+    if (activeMentionRef.current) closeMentionMenu();
+    if (showCommandMenu) textareaRef.current?.setText("");
+  }, [disabled, showCommandMenu, closeMentionMenu]);
+
   const handleSubmit = useCallback(() => {
     if (disabled) return;
 

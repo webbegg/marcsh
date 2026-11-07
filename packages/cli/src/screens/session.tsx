@@ -93,7 +93,7 @@ function SessionChat({
   return (
     <SessionShell
       onSubmit={(text) => submit({ userText: text, mode, model })}
-      inputDisabled={permissionRequest != null}
+      inputDisabled={busy}
       loading={busy}
       interruptible={busy}
     >

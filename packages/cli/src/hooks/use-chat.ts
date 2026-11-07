@@ -16,6 +16,13 @@ export type ChatStatus = "ready" | "submitted" | "streaming";
 export type PermissionRequest = {
   toolName: string;
   input: Record<string, unknown>;
+  title?: string;
+  description?: string;
+  decisionReason?: string;
+  blockedPath?: string;
+  /** The ask must not be approvable by one keystroke: no one-key approve, no always-allow. */
+  defaultToNo?: boolean;
+  suppressAlwaysAllowRule?: boolean;
   respond: (decision: PermissionDecision) => void;
 };
 
@@ -70,10 +77,20 @@ export function useChat(session: StoredSession) {
           const request: PermissionRequest = {
             toolName,
             input,
+            title: options.title,
+            description: options.description,
+            decisionReason: options.decisionReason,
+            blockedPath: options.blockedPath,
+            defaultToNo: options.defaultToNo,
+            suppressAlwaysAllowRule: options.suppressAlwaysAllowRule,
             respond(decision) {
               options.signal.removeEventListener("abort", onAbort);
               setPermissionQueue((queue) => queue.filter((r) => r !== request));
-              resolve(toPermissionResult(decision, input, options.suggestions));
+              resolve(
+                toPermissionResult(decision, input, options.suggestions, {
+                  suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || options.defaultToNo,
+                }),
+              );
             },
           };
           const onAbort = () => request.respond("deny");

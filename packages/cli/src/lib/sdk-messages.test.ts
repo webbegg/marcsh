@@ -142,6 +142,13 @@ describe("toPermissionResult", () => {
     });
   });
 
+  test("never applies suggested rules when always-allow is suppressed", () => {
+    expect(toPermissionResult("always", input, suggestions, { suppressAlwaysAllowRule: true })).toEqual({
+      behavior: "allow",
+      updatedInput: input,
+    });
+  });
+
   test("denies with a message for Claude", () => {
     expect(toPermissionResult("deny", input, suggestions)).toEqual({
       behavior: "deny",
