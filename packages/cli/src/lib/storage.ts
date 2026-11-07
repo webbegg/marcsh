@@ -119,3 +119,10 @@ export function openStorage(path = defaultDbPath()): Storage {
     },
   };
 }
+
+let defaultStorage: Storage | undefined;
+
+export function getStorage(): Storage {
+  defaultStorage ??= openStorage();
+  return defaultStorage;
+}

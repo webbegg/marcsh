@@ -1,72 +1,23 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { TextAttributes } from "@opentui/core";
 import { format } from "date-fns";
 import { useNavigate } from "react-router";
 import { useDialog } from "../../providers/dialog";
-import { useToast } from "../../providers/toast";
-import { apiClient } from "../../lib/api-client";
-import { getErrorMessage } from "../../lib/http-errors";
+import { getStorage, type SessionSummary } from "../../lib/storage";
 import { DialogSearchList } from "../dialog-search-list";
-import type { InferResponseType } from "hono/client";
-
-type Session = InferResponseType<(typeof apiClient.sessions)["$get"], 200>[number];
 
 export const SessionsDialogContent = () => {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [loading, setLoading] = useState(true);
+  const sessions = useMemo(() => getStorage().listSessions(), []);
   const { close } = useDialog();
   const navigate = useNavigate();
-  const { show } = useToast();
-
-  useEffect(() => {
-    let ignore = false;
-
-    const fetchSessions = async () => {
-      try {
-        const res = await apiClient.sessions.$get();
-        if (!res.ok) {
-          throw new Error(await getErrorMessage(res));
-        }
-
-        const data = await res.json();
-
-        if (!ignore) {
-          setSessions(data);
-          setLoading(false);
-        }
-      } catch (error) {
-        if (!ignore) {
-          show({
-            variant: "error",
-            message: error instanceof Error ? error.message : "Failed to fetch sessions",
-          });
-          close();
-        }
-      }
-    };
-
-    fetchSessions();
-
-    return () => {
-      ignore = true;
-    };
-  }, [close, show]);
 
   const handleSelect = useCallback(
-    (session: Session) => {
+    (session: SessionSummary) => {
       close();
       navigate(`/sessions/${session.id}`);
     },
     [close, navigate],
   );
-
-  if (loading) {
-    return (
-      <box flexDirection="column">
-        <text attributes={TextAttributes.DIM}>Loading sessions...</text>
-      </box>
-    );
-  }
 
   return (
     <DialogSearchList
@@ -84,7 +35,7 @@ export const SessionsDialogContent = () => {
             fg={isSelected ? "black" : undefined}
             attributes={TextAttributes.DIM}
           >
-            {format(new Date(session.createdAt), "hh:mm a")}
+            {format(session.updatedAt, "hh:mm a")}
           </text>
         </>
       )}

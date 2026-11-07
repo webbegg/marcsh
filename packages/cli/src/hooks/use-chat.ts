@@ -1,107 +1,146 @@
-import { useMemo } from "react";
-import { useChat as useAiChat } from "@ai-sdk/react";
+import { useCallback, useRef, useState } from "react";
+import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
+import type { ModeType } from "@marcsh/shared";
+import type { ChatMessage } from "../lib/chat-types";
 import {
-  DefaultChatTransport,
-  type InferUITools,
-  lastAssistantMessageIsCompleteWithToolCalls,
-  type LanguageModelUsage,
-  type UIMessage,
-} from "ai";
-import { type ModeType, type SupportedChatModelId, type ToolContracts } from "@marcsh/shared";
-import { apiClient } from "../lib/api-client";
-import { getAuth } from "../lib/auth";
-import { executeLocalTool } from "../lib/local-tools";
+  applySdkMessage,
+  resultError,
+  toPermissionMode,
+  toPermissionResult,
+  type PermissionDecision,
+} from "../lib/sdk-messages";
+import { getStorage, type StoredSession } from "../lib/storage";
 
-export type ChatMessageMetadata = {
-  mode?: ModeType;
-  model?: SupportedChatModelId | string;
-  durationMs?: number;
-  usage?: LanguageModelUsage;
+export type ChatStatus = "ready" | "submitted" | "streaming";
+
+export type PermissionRequest = {
+  toolName: string;
+  input: Record<string, unknown>;
+  respond: (decision: PermissionDecision) => void;
 };
 
-type ChatTools = {
-  [Name in keyof InferUITools<ToolContracts>]: {
-    input: InferUITools<ToolContracts>[Name]["input"];
-    output: unknown;
-  };
-};
+export type SubmitParams = { userText: string; mode: ModeType; model: string };
 
-export type Message = UIMessage<ChatMessageMetadata, never, ChatTools>;
+export function useChat(session: StoredSession) {
+  const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
+  const [status, setStatus] = useState<ChatStatus>("ready");
+  const [error, setError] = useState<string | null>(null);
+  const [permissionQueue, setPermissionQueue] = useState<PermissionRequest[]>([]);
 
-export function useChat(sessionId: string, initialMessages: Message[]) {
-  const transport = useMemo(() => {
-    return new DefaultChatTransport<Message>({
-      api: apiClient.chat.$url().toString(),
-      headers() {
-        const auth = getAuth();
-        return auth ? { Authorization: `Bearer ${auth.token}` } : new Headers();
-      },
-      prepareSendMessagesRequest({ messages }) {
-        const message = messages[messages.length - 1];
-        if (!message) throw new Error("No message to send");
+  const messagesRef = useRef(messages);
+  const statusRef = useRef<ChatStatus>("ready");
+  const claudeSessionIdRef = useRef(session.claudeSessionId);
+  const queryRef = useRef<Query | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const interruptedRef = useRef(false);
 
-        const metadata = messages.findLast(
-          (m) => m.metadata?.mode && m.metadata?.model,
-        )?.metadata;
-        const previousMessage = messages[messages.length - 2];
-        const requestMessages =
-          message.role === "assistant" && previousMessage?.role === "user"
-            ? [previousMessage, message]
-            : [message];
+  const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
+    messagesRef.current = update(messagesRef.current);
+    setMessages(messagesRef.current);
+  }, []);
 
-        return {
-          body: {
-            id: sessionId,
-            messages: requestMessages,
-            mode: message.metadata?.mode ?? metadata?.mode,
-            model: message.metadata?.model ?? metadata?.model,
+  const updateStatus = useCallback((next: ChatStatus) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
+
+  const submit = useCallback(
+    async ({ userText, mode, model }: SubmitParams) => {
+      if (statusRef.current !== "ready") return;
+      updateStatus("submitted");
+      setError(null);
+      interruptedRef.current = false;
+
+      const replyId = crypto.randomUUID();
+      const metadata = { mode, model };
+      updateMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
+        { id: replyId, role: "assistant", parts: [], metadata },
+      ]);
+
+      const applyToReply = (update: (reply: ChatMessage) => ChatMessage) =>
+        updateMessages((prev) => prev.map((m) => (m.id === replyId ? update(m) : m)));
+
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      const canUseTool: CanUseTool = (toolName, input, options) =>
+        new Promise((resolve) => {
+          const request: PermissionRequest = {
+            toolName,
+            input,
+            respond(decision) {
+              options.signal.removeEventListener("abort", onAbort);
+              setPermissionQueue((queue) => queue.filter((r) => r !== request));
+              resolve(toPermissionResult(decision, input, options.suggestions));
+            },
+          };
+          const onAbort = () => request.respond("deny");
+
+          options.signal.addEventListener("abort", onAbort, { once: true });
+          setPermissionQueue((queue) => [...queue, request]);
+        });
+
+      try {
+        const chat = query({
+          prompt: userText,
+          options: {
+            cwd: session.cwd,
+            model,
+            permissionMode: toPermissionMode(mode),
+            resume: claudeSessionIdRef.current ?? undefined,
+            abortController,
+            systemPrompt: { type: "preset", preset: "claude_code" },
+            settingSources: ["user", "project", "local"],
+            canUseTool,
           },
+        });
+        queryRef.current = chat;
+
+        for await (const message of chat) {
+          updateStatus("streaming");
+
+          if (message.type === "system" && message.subtype === "init") {
+            claudeSessionIdRef.current = message.session_id;
+          }
+
+          applyToReply((reply) => applySdkMessage(reply, message));
+
+          const failure = resultError(message);
+          if (failure && !interruptedRef.current) setError(failure);
         }
+      } catch (err) {
+        if (!abortController.signal.aborted && !interruptedRef.current) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        queryRef.current = null;
+        abortControllerRef.current = null;
+        setPermissionQueue([]);
+        updateStatus("ready");
+        getStorage().saveMessages(session.id, messagesRef.current, claudeSessionIdRef.current ?? undefined);
       }
-    });
-  }, [sessionId]);
-
-  const chat = useAiChat<Message>({
-    id: sessionId,
-    messages: initialMessages,
-    transport,
-    onToolCall({ toolCall }) {
-      const mode = chat.messages.at(-1)?.metadata?.mode ?? "BUILD";
-
-      void executeLocalTool(toolCall.toolName, toolCall.input, mode)
-        .then((output) =>
-          chat.addToolOutput({
-            tool: toolCall.toolName as keyof ChatTools,
-            toolCallId: toolCall.toolCallId,
-            output,
-          }),
-        )
-        .catch((error) =>
-          chat.addToolOutput({
-            tool: toolCall.toolName as keyof ChatTools,
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText: error instanceof Error ? error.message : String(error),
-          }),
-        );
     },
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-  });
+    [session.id, session.cwd, updateMessages, updateStatus],
+  );
+
+  const interrupt = useCallback(() => {
+    interruptedRef.current = true;
+    void queryRef.current?.interrupt();
+  }, []);
+
+  const abort = useCallback(() => {
+    abortControllerRef.current?.abort();
+  }, []);
 
   return {
-    messages: chat.messages,
-    status: chat.status,
-    error: chat.error,
-    submit: (params: { userText: string; mode: ModeType; model: SupportedChatModelId }) => {
-      return chat.sendMessage({
-        text: params.userText,
-        metadata: {
-          mode: params.mode,
-          model: params.model,
-        },
-      })
-    },
-    abort: chat.stop,
-    interrupt: chat.stop,
+    messages,
+    status,
+    error,
+    submit,
+    interrupt,
+    abort,
+    permissionRequest: permissionQueue[0] ?? null,
   };
-};
+}

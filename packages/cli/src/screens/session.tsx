@@ -1,39 +1,35 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard } from "@opentui/react";
-import { type ModeType, type SupportedChatModelId } from "@marcsh/shared";
-import type { InferResponseType } from "hono/client";
+import { type ModeType } from "@marcsh/shared";
 import { SessionShell } from "../components/session-shell";
 import { 
   UserMessage, 
   BotMessage, 
   ErrorMessage
 } from "../components/messages";
+import { PermissionPrompt } from "../components/permission-prompt";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
 import { usePromptConfig } from "../providers/prompt-config";
-import type { Message } from "../hooks/use-chat";
-import { apiClient } from "../lib/api-client";
-import { getErrorMessage } from "../lib/http-errors";
+import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
+import { getStorage, type StoredSession } from "../lib/storage";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 
-type SessionData = InferResponseType<(typeof apiClient.sessions)[":id"]["$get"], 200>;
-
 const sessionLocationSchema = z.object({
-  session: z.custom<SessionData>((val) => val != null && typeof val === "object" && "id" in val),
   initialPrompt: z
     .object({
       message: z.string(),
       mode: z.custom<ModeType>(),
-      model: z.custom<SupportedChatModelId>(),
+      model: z.string(),
     })
     .optional(),
 });
 
 function ChatMessage(
   { msg }: {
-    msg: Message
+    msg: ChatMessageData
   }
 ) {
   if (msg.role === "user") {
@@ -60,28 +56,25 @@ function SessionChat({
   session,
   initialPrompt,
 }: { 
-  session: SessionData,
-  initialPrompt?: { message: string; mode: ModeType; model: SupportedChatModelId };
+  session: StoredSession,
+  initialPrompt?: { message: string; mode: ModeType; model: string };
 }) {
-  const [initialMessages] = useState(() => session.messages as unknown as Message[]);
   const { mode, model } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
-  const { messages, status, submit, abort, interrupt, error } = useChat(
-    session.id,
-    initialMessages
-  );
+  const { messages, status, submit, abort, interrupt, error, permissionRequest } = useChat(session);
   const hasSubmittedInitialPromptRef = useRef(false);
+  const busy = status === "submitted" || status === "streaming";
 
   // Stop the pending reply when the user leaves this session.
   useEffect(() => {
     return () => {
-      void abort();
+      abort();
     };
   }, [abort]);
 
-  // Let the user cancel a reply even before the first streamed chunk arrives.
+  // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
-    if (key.name === "escape" && isTopLayer("base") && status === "streaming") {
+    if (key.name === "escape" && isTopLayer("base") && busy) {
       key.preventDefault();
       interrupt();
     }
@@ -100,13 +93,15 @@ function SessionChat({
   return (
     <SessionShell
       onSubmit={(text) => submit({ userText: text, mode, model })}
-      loading={status === "submitted" || status === "streaming"}
-      interruptible={status === "submitted" || status === "streaming"}
+      inputDisabled={permissionRequest != null}
+      loading={busy}
+      interruptible={busy}
     >
       {messages.map((msg) => (
         <ChatMessage key={msg.id} msg={msg} />
       ))}
-      {error && <ErrorMessage message={error.message} />}
+      {permissionRequest && <PermissionPrompt request={permissionRequest} />}
+      {error && <ErrorMessage message={error} />}
     </SessionShell>
   );
 }
@@ -117,46 +112,19 @@ export function Session() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const prefetched = useMemo(() => {
+  const initialPrompt = useMemo(() => {
     const parsed = sessionLocationSchema.safeParse(location.state);
-    return parsed.success ? parsed.data : null;
+    return parsed.success ? parsed.data.initialPrompt : undefined;
   }, [location.state]);
 
-  const [session, setSession] = useState<SessionData | null>(prefetched?.session ?? null);
+  const session = useMemo(() => (id ? getStorage().getSession(id) : null), [id]);
 
   useEffect(() => {
-    // Skip fetch if session was passed via location state
-    if (prefetched?.session) return;
+    if (session) return;
 
-    setSession(null);
-
-    if (!id) return;
-
-    let ignore = false;
-    const fetchSession = async () => {
-      try {
-        const res = await apiClient.sessions[":id"].$get({ 
-          param: { id },
-        });
-        if (ignore) return;
-        if (!res.ok) throw new Error(await getErrorMessage(res));
-        const resolved = await res.json();
-        setSession(resolved);
-      } catch (err) {
-        if (ignore) return;
-        toast.show({
-          variant: "error",
-          message: err instanceof Error ? err.message : "Failed to load session",
-        });
-        navigate("/", { replace: true });
-      }
-    };
-
-    fetchSession();
-    return () => {
-      ignore = true;
-    };
-  }, [id, prefetched, toast, navigate]);
+    toast.show({ variant: "error", message: "Failed to load session" });
+    navigate("/", { replace: true });
+  }, [session, toast, navigate]);
 
   if (!session) {
     return <SessionShell onSubmit={() => {}} inputDisabled loading />;
@@ -166,7 +134,7 @@ export function Session() {
     <SessionChat 
       key={session.id} 
       session={session} 
-      initialPrompt={prefetched?.initialPrompt}
+      initialPrompt={initialPrompt}
     />
   );
 };

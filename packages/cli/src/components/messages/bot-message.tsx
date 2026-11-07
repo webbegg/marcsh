@@ -1,15 +1,17 @@
 import prettyMs from "pretty-ms";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
-import type { Message } from "../../hooks/use-chat";
+import type { MessagePart } from "../../lib/chat-types";
 import { Mode, type ModeType } from "@marcsh/shared";
 import { TextAttributes } from "@opentui/core";
 
-type ClientMessagePart = Message["parts"][number];
-type ToolPart = Extract<ClientMessagePart, { type: `tool-${string}` | "dynamic-tool" }>;
+type ToolPart = Extract<MessagePart, { type: "tool" }>;
+
+const MAX_SUMMARY_LENGTH = 80;
+const PREFERRED_INPUT_KEYS = ["command", "file_path", "path", "pattern", "url", "description"];
 
 type Props = {
-  parts: ClientMessagePart[];
+  parts: MessagePart[];
   model: string;
   mode: ModeType;
   durationMs?: number;
@@ -22,23 +24,27 @@ function formatToolName(name: string): string {
     .replace(/^./, (c) => c.toUpperCase());
 };
 
-function isToolPart(part: ClientMessagePart): part is ToolPart {
-  return part.type === "dynamic-tool" || part.type.startsWith("tool-");
+function isToolPart(part: MessagePart): part is ToolPart {
+  return part.type === "tool";
 };
 
-function formatToolArgs(tc: ToolPart): string {
-  if (!("input" in tc) || tc.input == null) return "";
-  if (typeof tc.input !== "object") return String(tc.input);
-  return Object.values(tc.input).map(String).join(" ");
+export function summarizeToolInput(input: Record<string, unknown>): string {
+  const values = Object.values(input);
+  const preferred = PREFERRED_INPUT_KEYS.map((key) => input[key]).find((v) => typeof v === "string");
+  const summary = preferred ?? values.find((v) => typeof v === "string") ?? "";
+
+  return typeof summary === "string" && summary.length > MAX_SUMMARY_LENGTH
+    ? `${summary.slice(0, MAX_SUMMARY_LENGTH - 1)}…`
+    : String(summary);
 }
 
 type PartGroup = {
-  type: ClientMessagePart["type"];
-  parts: ClientMessagePart[];
+  type: MessagePart["type"];
+  parts: MessagePart[];
   key: string;
 };
 
-function groupConsecutiveParts(parts: ClientMessagePart[]): PartGroup[] {
+function groupConsecutiveParts(parts: MessagePart[]): PartGroup[] {
   const groups: PartGroup[] = [];
 
   for (let i = 0; i < parts.length; i++) {
@@ -91,9 +97,6 @@ export function BotMessage({
             }
 
             if (isToolPart(part)) {
-              const toolName =
-                part.type === "dynamic-tool" ? part.toolName : part.type.slice("tool-".length);
-
               return (
                 <box
                   key={part.toolCallId}
@@ -107,12 +110,9 @@ export function BotMessage({
                   paddingX={2}
                 >
                   <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.info}>{formatToolName(toolName)}:</em> {formatToolArgs(part)}
-                    {part.state !== "output-available" && part.state !== "output-error" 
-                      ? " …" 
-                      : ""
-                    }
-                    {part.state === "output-error" ? ` ${part.errorText}` : ""}
+                    <em fg={colors.info}>{formatToolName(part.toolName)}:</em> {summarizeToolInput(part.input)}
+                    {part.state === "running" ? " …" : ""}
+                    {part.state === "error" ? ` ${part.errorText}` : ""}
                   </text>
                 </box>
               );
