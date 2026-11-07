@@ -56,6 +56,7 @@ export function useChat(session: StoredSession) {
   const queryRef = useRef<Query | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
+  const pendingRequestsRef = useRef(new Set<PendingRequest>());
 
   const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
     messagesRef.current = update(messagesRef.current);
@@ -93,9 +94,12 @@ export function useChat(session: StoredSession) {
           // One queue for approvals and questions; each request resolves its promise once and an abort denies it.
           const enqueue = (request: PendingRequest, deny: () => void) => {
             options.signal.addEventListener("abort", deny, { once: true });
+            pendingRequestsRef.current.add(request);
             setPermissionQueue((queue) => [...queue, request]);
           };
           const dequeue = (request: PendingRequest, onAbort: () => void, result: PermissionResult) => {
+            // Already answered, denied by abort, or denied at turn end: never resolve twice.
+            if (!pendingRequestsRef.current.delete(request)) return;
             options.signal.removeEventListener("abort", onAbort);
             setPermissionQueue((queue) => queue.filter((r) => r !== request));
             resolve(result);
@@ -175,6 +179,11 @@ export function useChat(session: StoredSession) {
       } finally {
         queryRef.current = null;
         abortControllerRef.current = null;
+        // Requests the SDK is still waiting on (it can end the stream without aborting) are denied, not just dropped.
+        for (const request of [...pendingRequestsRef.current]) {
+          if (request.kind === "question") request.respond(null);
+          else request.respond("deny");
+        }
         setPermissionQueue([]);
         applyToReply(finishReply);
         updateStatus("ready");

@@ -100,6 +100,21 @@ describe("storage", () => {
     }
   });
 
+  test("falls back to the default path when MARCSH_DB_PATH is only whitespace, and trims a real path", () => {
+    const previous = process.env.MARCSH_DB_PATH;
+
+    try {
+      process.env.MARCSH_DB_PATH = "  ";
+      expect(defaultDbPath()).toBe(join(homedir(), ".marcsh", "marcsh.db"));
+
+      process.env.MARCSH_DB_PATH = "  /data/my notes/x.db ";
+      expect(defaultDbPath()).toBe("/data/my notes/x.db");
+    } finally {
+      if (previous === undefined) delete process.env.MARCSH_DB_PATH;
+      else process.env.MARCSH_DB_PATH = previous;
+    }
+  });
+
   test("keeps data across reopening the same file", () => {
     const path = `${process.env.TMPDIR ?? "/tmp"}/marcsh-storage-${crypto.randomUUID()}.db`;
     const session = openStorage(path).createSession({ title: "Persisted", cwd: "/work" });

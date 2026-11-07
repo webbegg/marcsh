@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ChatMessage } from "./chat-types";
 
 export type SessionSummary = {
@@ -37,7 +37,7 @@ type SessionRow = {
 const marcshDir = () => join(homedir(), ".marcsh");
 
 export function defaultDbPath() {
-  return process.env.MARCSH_DB_PATH || join(marcshDir(), "marcsh.db");
+  return process.env.MARCSH_DB_PATH?.trim() || join(marcshDir(), "marcsh.db");
 }
 
 export function openStorage(path = defaultDbPath()): Storage {
@@ -48,7 +48,7 @@ export function openStorage(path = defaultDbPath()): Storage {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     // mkdir leaves an existing ~/.marcsh (e.g. created 0755 by the theme provider) untouched.
     // Only our own directory is tightened; the parent of a custom MARCSH_DB_PATH is the user's.
-    if (dirname(path) === marcshDir()) chmodSync(dirname(path), 0o700);
+    if (resolve(dirname(path)) === resolve(marcshDir())) chmodSync(dirname(path), 0o700);
   }
 
   const db = new Database(path, { create: true, strict: true });

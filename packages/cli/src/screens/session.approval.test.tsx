@@ -14,6 +14,9 @@ let results: any[] = [];
 let askExtra: Record<string, unknown> = {};
 let askInput: Record<string, unknown> = BASH_INPUT;
 let releaseAsk: () => void = () => {};
+// When set, the fake asks without awaiting and ends the stream, leaving the request pending at turn end.
+let leaveAskPending = false;
+let pendingAsk: Promise<any> | null = null;
 
 // Fake query(): init → one Bash tool call that asks for approval once released → result.
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
@@ -28,6 +31,10 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       // An interrupt before the prompt ends the turn (the real SDK stops the stream).
       await Promise.race([gate, new Promise<void>((resolve) => ask.signal.addEventListener("abort", () => resolve(), { once: true }))]);
       if (ask.signal.aborted) return;
+      if (leaveAskPending) {
+        pendingAsk = options.canUseTool("Bash", askInput, { signal: ask.signal, suggestions: ALWAYS_RULE, toolUseID: "t1", requestId: "r1" });
+        return;
+      }
       const result = await options.canUseTool("Bash", askInput, {
         signal: ask.signal, suggestions: ALWAYS_RULE, toolUseID: "t1", requestId: "r1", ...askExtra,
       });
@@ -81,6 +88,7 @@ async function openSession(
 ) {
   calls = [];
   results = [];
+  pendingAsk = null;
   askExtra = extra;
   askInput = input;
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd" });
@@ -109,6 +117,7 @@ const spies: { mockRestore(): void }[] = [];
 const scratchDirs: string[] = [];
 
 afterEach(async () => {
+  leaveAskPending = false;
   for (const spy of spies.splice(0)) spy.mockRestore();
   for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
@@ -181,6 +190,26 @@ describe("session hardening (S8)", () => {
 });
 
 describe("session approvals (S7)", () => {
+  // S10d: a request still pending when the turn ends is denied, then the prompt goes away.
+  test("an approval still pending when the turn ends is denied once and the prompt disappears", async () => {
+    leaveAskPending = true;
+    await openSession();
+    await showPrompt();
+    expect(pendingAsk).not.toBeNull();
+
+    // Bounded wait, so a promise that never settles fails this test instead of hanging the suite.
+    let settled = 0;
+    const outcome = await Promise.race([
+      pendingAsk!.then((result) => (settled++, result)),
+      new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 500)),
+    ]);
+    expect(outcome).toEqual(expect.objectContaining({ behavior: "deny" }));
+
+    await settle(50);
+    expect(settled).toBe(1);
+    expect(screen!.captureCharFrame()).not.toContain("Allow Bash?");
+  });
+
   test("Build runs query() with default approvals and the L16 options", async () => {
     await openSession("BUILD");
     const { options } = calls[0]!;

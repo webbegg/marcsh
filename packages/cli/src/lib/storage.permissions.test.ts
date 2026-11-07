@@ -27,6 +27,24 @@ describe("storage permissions (S8a)", () => {
     expect(mode(join(home, ".marcsh", "marcsh.db"))).toBe(0o600);
   });
 
+  test("a non-normalized path into ~/.marcsh (/./ and //) still forces it to 0700 (S10b)", () => {
+    const home = mkdtempSync(join(tmpdir(), "marcsh-home-"));
+    dirs.push(home);
+    mkdirSync(join(home, ".marcsh"), { mode: 0o755 });
+    chmodSync(join(home, ".marcsh"), 0o755);
+
+    const script = `const { openStorage } = await import(${JSON.stringify(join(import.meta.dir, "storage.ts"))}); openStorage().createSession({ title: "Private", cwd: "/work" });`;
+    const { MARCSH_DB_PATH: _ignored, ...rest } = process.env;
+    for (const dbPath of [`${home}/.marcsh/./marcsh.db`, `${home}//.marcsh//marcsh.db`]) {
+      chmodSync(join(home, ".marcsh"), 0o755);
+      const child = Bun.spawnSync([process.execPath, "-e", script], { env: { ...rest, HOME: home, MARCSH_DB_PATH: dbPath } });
+
+      expect(child.exitCode).toBe(0);
+      expect(mode(join(home, ".marcsh"))).toBe(0o700);
+      expect(mode(join(home, ".marcsh", "marcsh.db"))).toBe(0o600);
+    }
+  });
+
   test("a db path directly in the home dir leaves the home dir's mode alone", () => {
     const home = mkdtempSync(join(tmpdir(), "marcsh-home-"));
     dirs.push(home);
