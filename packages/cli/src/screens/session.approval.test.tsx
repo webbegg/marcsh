@@ -177,6 +177,18 @@ describe("session approvals (S7)", () => {
     expect(results[0]?.behavior).not.toBe("allow");
   });
 
+  // S7 B2(c): per-key typing slower than a burst but faster than the quiet window.
+  test("typing at 200 ms per key after the prompt appears answers nothing", async () => {
+    await openSession();
+    await type("now ");
+    await showPrompt();
+    for (const ch of "always run it") { await pressNow(ch); await settle(200); }
+    expect(results).toEqual([]);
+    await press("n");
+    expect(results).toEqual([expect.objectContaining({ behavior: "deny" })]);
+    expect(results.some((r) => r.updatedPermissions)).toBe(false);
+  });
+
   // S7 B2(c): typing that is already under way when the prompt appears must not answer it.
   test("typing that continues after the prompt appears approves nothing and saves no rule", async () => {
     await openSession();
