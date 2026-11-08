@@ -38,6 +38,54 @@ export type PiEngineOptions = {
   permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
 };
 
+const BUILTIN_PREFIX = "builtin:";
+
+/**
+ * A resumed session whose active tools hold none of pi's own write or run tools (bash, edit, write): pi
+ * restored the read-only loadout that a plan turn recorded in the session file. A build turn needs the
+ * tools a new session offers instead.
+ */
+function restoredPlanTools(session: AgentSession): boolean {
+  const active = new Set(session.getActiveToolNames());
+  return !session.getAllTools().some((tool) => active.has(tool.name) && tool.sourceInfo.path.startsWith(BUILTIN_PREFIX) && !isReadOnlyBuiltin(tool));
+}
+
+/**
+ * The tools a new session offers in this agent dir and project, by pi's own rules: the built-in ones come
+ * from a throwaway in-memory session (it applies the `defaultTools` setting and pi's default list), the
+ * extension and custom ones are the registered tools that pi activates on registration.
+ */
+async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, models, model }: { cwd: string; agentDir: string; models: ModelRuntime; model: NonNullable<ReturnType<ModelRuntime["getModel"]>> }): Promise<string[]> {
+  const resourceLoader = new pi.DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager: pi.SettingsManager.create(cwd, agentDir),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const { session: fresh } = await pi.createAgentSession({
+    cwd,
+    agentDir,
+    modelRuntime: models,
+    model,
+    sessionManager: pi.SessionManager.inMemory(cwd),
+    settingsManager: pi.SettingsManager.create(cwd, agentDir),
+    resourceLoader,
+  });
+  const builtin = fresh.getActiveToolNames();
+  fresh.dispose();
+  const registered = session
+    .getAllTools()
+    .filter((tool) => !tool.sourceInfo.path.startsWith(BUILTIN_PREFIX))
+    .filter((tool) => (tool.exposure === "direct" || tool.exposure === "model-only") && session.getToolDefinition(tool.name)?.defaultActive !== false)
+    .map((tool) => tool.name);
+  return [...new Set([...builtin, ...registered])];
+}
+
 function parseModel(ref: string): { provider: string; id: string } | null {
   const slash = ref.indexOf("/");
   if (slash <= 0 || slash === ref.length - 1) return null;
@@ -115,6 +163,7 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
             host,
             rules: options.permissionRules ?? getStorage(),
             signal: turnEnded.signal,
+            planMode: mode === Mode.PLAN,
           }),
         ],
       });
@@ -134,6 +183,10 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own.
       if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(isReadOnlyBuiltin).map((tool) => tool.name));
+      // pi gives a resumed session the tools of its last turn: after a plan turn, a build turn sets them again.
+      else if (resumeRef && restoredPlanTools(session)) {
+        session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved }));
+      }
       if (aborted) return;
 
       const errors = createErrorTracker();

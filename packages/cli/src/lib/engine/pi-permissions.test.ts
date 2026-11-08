@@ -4,6 +4,7 @@ import {
   createApprovalHandler,
   DENIED_REASON,
   needsApproval,
+  PLAN_MODE_REASON,
   READ_ONLY_TOOLS,
   ruleFor,
   type ToolSource,
@@ -184,5 +185,52 @@ describe("createApprovalHandler", () => {
     const result = await handler({ toolName: "bash", input: { command: "ls" } });
 
     expect(result?.block).toBe(true);
+  });
+});
+
+describe("createApprovalHandler in plan mode", () => {
+  function setupPlan(tools: ToolSource[]) {
+    const rules = openStorage(":memory:");
+    const asks: PermissionAsk[] = [];
+    const handler = createApprovalHandler({
+      cwd: "/work",
+      rules,
+      planMode: true,
+      signal: new AbortController().signal,
+      tools: () => tools,
+      host: {
+        askPermission: async (ask) => {
+          asks.push(ask);
+          return "allow";
+        },
+      },
+    });
+    return { rules, asks, handler };
+  }
+
+  test("pi's read-only built-ins still run without asking", async () => {
+    const { asks, handler } = setupPlan(piTools);
+
+    for (const tool of READ_ONLY_TOOLS) expect(await handler({ toolName: tool, input: {} })).toBeUndefined();
+    expect(asks).toEqual([]);
+  });
+
+  test("every other call is blocked without asking, even with an \"always\" rule", async () => {
+    const { rules, asks, handler } = setupPlan([...piTools, fromExtension("late_tool")]);
+    rules.addPermissionRule({ cwd: "/work", toolName: "late_tool" });
+    rules.addPermissionRule({ cwd: "/work", toolName: "bash", command: "ls" });
+
+    for (const [toolName, input] of [["bash", { command: "ls" }], ["edit", {}], ["late_tool", {}], ["unknown", {}]] as const) {
+      expect(await handler({ toolName, input })).toEqual({ block: true, reason: PLAN_MODE_REASON });
+    }
+    expect(PLAN_MODE_REASON).toBe("Plan mode only allows reading tools.");
+    expect(asks).toEqual([]);
+  });
+
+  test("an extension tool named read is blocked", async () => {
+    const { asks, handler } = setupPlan([fromExtension("read")]);
+
+    expect(await handler({ toolName: "read", input: { path: "a" } })).toEqual({ block: true, reason: PLAN_MODE_REASON });
+    expect(asks).toEqual([]);
   });
 });

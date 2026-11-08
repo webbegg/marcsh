@@ -9,6 +9,7 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentTools,
   InMemoryCredentialStore,
   type FauxResponseStep,
   type Message,
@@ -433,5 +434,90 @@ describe("pi engine permissions (S8)", () => {
     });
 
     expect(seen?.aborted).toBe(true);
+  });
+
+  test("plan mode blocks a call to any tool that is not a built-in read-only one, without asking", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "ext-tool.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "ext_tool", label: "ext", description: "ext", parameters: Type.Object({}),
+    async execute() { require("node:fs").writeFileSync(${JSON.stringify(made())}, "ran"); return { content: [{ type: "text", text: "ran" }] }; } });
+}
+`,
+    );
+    const { engine, model, permissionRules } = await setup([
+      fauxAssistantMessage([fauxToolCall("ext_tool", {}, { id: "e1" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxText("ok")]),
+    ]);
+    permissionRules.addPermissionRule({ cwd, toolName: "ext_tool" });
+    const { asks, host } = answering("allow");
+
+    const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+    expect(asks).toEqual([]);
+    expect(existsSync(made())).toBe(false);
+    expect(toolParts(reply)[0]?.state).toBe("error");
+  });
+});
+
+describe("pi engine plan and build turns on one session (S8)", () => {
+  // The tools a turn's model request carries, one entry per turn in the order they ran.
+  function recording(turns: number) {
+    const offered: string[][] = [];
+    const steps: FauxResponseStep[] = Array.from({ length: turns }, () => (context) => {
+      offered.push(getCurrentTools(context.messages).map((tool) => tool.name).sort());
+      return fauxAssistantMessage([fauxText("ok")]);
+    });
+    return { offered, steps };
+  }
+
+  // Runs the modes in order on one session, resuming each turn from the previous one's file.
+  async function alternate(modes: TurnRequest["mode"][], steps: FauxResponseStep[]) {
+    const { engine, model } = await setup(steps);
+    let resumeRef: string | undefined;
+    for (const mode of modes) {
+      const { refs } = await runTurn(engine, model, { mode, resumeRef });
+      resumeRef = refs.at(-1) ?? resumeRef;
+    }
+  }
+
+  const PLAN = ["find", "grep", "ls", "read"];
+  const BUILD = ["bash", "edit", "read", "write"];
+
+  test("plan, build, plan, build: each turn offers its mode's tools", async () => {
+    const { offered, steps } = recording(5);
+
+    await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
+
+    expect(offered).toEqual([BUILD, PLAN, BUILD, PLAN, BUILD]);
+  });
+
+  test("a build session that never planned keeps the tools it had", async () => {
+    const { offered, steps } = recording(3);
+
+    await alternate([Mode.BUILD, Mode.BUILD, Mode.BUILD], steps);
+
+    expect(offered).toEqual([BUILD, BUILD, BUILD]);
+  });
+
+  test("after a plan turn, build offers the user's defaultTools and the extension tools, like a new session", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+    writeFileSync(
+      join(agentDir, "extensions", "ext-tool.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "ext_tool", label: "ext", description: "ext", parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "ran" }] }; } });
+}
+`,
+    );
+    const { offered, steps } = recording(3);
+
+    await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
+
+    expect(offered).toEqual([["bash", "ext_tool", "read"], PLAN, ["bash", "ext_tool", "read"]]);
   });
 });

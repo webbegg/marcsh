@@ -4,6 +4,7 @@ import type { TurnHost } from "./types";
 
 export const DENIED_REASON = "The user denied this tool call.";
 const INTERRUPTED_REASON = "The turn ended before this tool call was approved.";
+export const PLAN_MODE_REASON = "Plan mode only allows reading tools.";
 
 /** pi's read-only tools. Like Claude's default mode, they run without asking; everything else asks. */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
@@ -47,14 +48,17 @@ export type ApprovalOptions = {
   host: Pick<TurnHost, "askPermission">;
   /** Aborts when the turn ends; a pending ask is then declined and its call never runs. */
   signal: AbortSignal;
+  /** Plan mode: every call except pi's read-only built-ins is blocked without asking, whatever the rules say. */
+  planMode?: boolean;
   /** The session's tools with their sources (`pi.getAllTools()`), read when a call arrives. */
   tools: () => readonly ToolSource[];
 };
 
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, tools }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
     if (!needsApproval(call.toolName, tools())) return undefined;
+    if (planMode) return { block: true, reason: PLAN_MODE_REASON };
     const rule = ruleFor(cwd, call.toolName, call.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
@@ -72,10 +76,33 @@ export function createApprovalHandler({ cwd, rules, host, signal, tools }: Appro
   };
 }
 
-/** The pi extension that routes every tool call through marcsh's approval prompt. */
+/**
+ * The pi extension that routes every tool call through marcsh's approval prompt. In plan mode it also keeps
+ * the session's active tools to pi's read-only built-ins: an extension that registers a tool later (in
+ * `before_agent_start` or `turn_start`) has it activated by pi, and these handlers run after it. The
+ * `tool_call` block is the backstop if a tool is offered anyway.
+ */
 export function createApprovalExtension(options: Omit<ApprovalOptions, "tools">): ExtensionFactory {
   return (pi) => {
     const decide = createApprovalHandler({ ...options, tools: () => pi.getAllTools() });
     pi.on("tool_call", (event) => decide({ toolName: event.toolName, input: event.input }));
+    if (!options.planMode) return;
+    const keepReadOnly = () => {
+      pi.setActiveTools(pi.getAllTools().filter(isReadOnlyBuiltin).map((tool) => tool.name));
+    };
+    pi.on("before_agent_start", keepReadOnly);
+    pi.on("turn_start", keepReadOnly);
+    // The first turn declares its tools before `turn_start` runs, so a tool replaced there would still be
+    // declared by name: the model is shown only the tools that are active when the request goes out.
+    pi.on("context_with_system", (event) => {
+      const active = new Set(pi.getActiveTools());
+      return {
+        messages: event.messages.map((message) =>
+          message.role === "system" && message.toolsAdded
+            ? { ...message, toolsAdded: message.toolsAdded.filter((tool) => active.has(tool.name)) }
+            : message,
+        ),
+      };
+    });
   };
 }
