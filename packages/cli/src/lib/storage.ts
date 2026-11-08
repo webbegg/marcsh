@@ -14,15 +14,18 @@ export type SessionSummary = {
 };
 
 export type StoredSession = SessionSummary & {
-  claudeSessionId: string | null;
+  /** The engine that runs this session's turns (`claude` for sessions created before engines existed). */
+  engine: string;
+  /** The engine's reference for resuming the session, once its first turn has started. */
+  engineSessionRef: string | null;
   messages: ChatMessage[];
 };
 
 export type Storage = {
   listSessions(): SessionSummary[];
   getSession(id: string): StoredSession | null;
-  createSession(input: { title: string; cwd: string }): StoredSession;
-  saveMessages(id: string, messages: ChatMessage[], claudeSessionId?: string): void;
+  createSession(input: { title: string; cwd: string; engine?: string }): StoredSession;
+  saveMessages(id: string, messages: ChatMessage[], engineSessionRef?: string): void;
   /** Last known Claude Code commands and skills, kept so the `/` menu has them after a restart. */
   getClaudeCommands(): ClaudeCommand[];
   saveClaudeCommands(commands: ClaudeCommand[]): void;
@@ -32,6 +35,8 @@ type SessionRow = {
   id: string;
   title: string;
   cwd: string;
+  engine: string;
+  engine_session_ref: string | null;
   claude_session_id: string | null;
   messages: string;
   created_at: number;
@@ -61,6 +66,7 @@ export function openStorage(path = defaultDbPath()): Storage {
   // Before enabling WAL, so the -wal and -shm files inherit the owner-only mode
   if (isFile) chmodSync(path, 0o600);
   db.run("PRAGMA journal_mode = WAL");
+  // `claude_session_id` stays next to `engine_session_ref`: marcsh versions before engines resume Claude sessions from it.
   db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -69,9 +75,18 @@ export function openStorage(path = defaultDbPath()): Storage {
       claude_session_id TEXT,
       messages TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      engine TEXT NOT NULL DEFAULT 'claude',
+      engine_session_ref TEXT
     )
   `);
+  // Databases created before engines only gain columns; their rows become Claude sessions.
+  // Immediate, so two marcsh processes opening the same old file don't both add a column.
+  db.transaction(() => {
+    const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(sessions)").all().map((c) => c.name));
+    if (!columns.has("engine")) db.run("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'");
+    if (!columns.has("engine_session_ref")) db.run("ALTER TABLE sessions ADD COLUMN engine_session_ref TEXT");
+  }).immediate();
 
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
@@ -82,7 +97,8 @@ export function openStorage(path = defaultDbPath()): Storage {
       id: row.id,
       title: row.title,
       cwd: row.cwd,
-      claudeSessionId: row.claude_session_id,
+      engine: row.engine,
+      engineSessionRef: row.engine_session_ref ?? (row.engine === "claude" ? row.claude_session_id : null),
       messages: JSON.parse(row.messages) as ChatMessage[],
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
@@ -92,7 +108,7 @@ export function openStorage(path = defaultDbPath()): Storage {
   return {
     listSessions() {
       return db
-        .query<Omit<SessionRow, "messages" | "claude_session_id">, []>(
+        .query<Pick<SessionRow, "id" | "title" | "cwd" | "created_at" | "updated_at">, []>(
           "SELECT id, title, cwd, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
         )
         .all()
@@ -110,27 +126,28 @@ export function openStorage(path = defaultDbPath()): Storage {
       return row ? toSession(row) : null;
     },
 
-    createSession({ title, cwd }) {
+    createSession({ title, cwd, engine = "claude" }) {
       const now = Date.now();
       const id = crypto.randomUUID();
       db.query(
-        `INSERT INTO sessions (id, title, cwd, created_at, updated_at)
-         VALUES ($id, $title, $cwd, $now, $now)`,
-      ).run({ id, title, cwd, now });
+        `INSERT INTO sessions (id, title, cwd, engine, created_at, updated_at)
+         VALUES ($id, $title, $cwd, $engine, $now, $now)`,
+      ).run({ id, title, cwd, engine, now });
       return toSession(selectSession.get({ id })!);
     },
 
-    saveMessages(id, messages, claudeSessionId) {
+    saveMessages(id, messages, engineSessionRef) {
       db.query(
         `UPDATE sessions
          SET messages = $messages,
-             claude_session_id = COALESCE($claudeSessionId, claude_session_id),
+             engine_session_ref = COALESCE($ref, engine_session_ref),
+             claude_session_id = CASE WHEN engine = 'claude' THEN COALESCE($ref, claude_session_id) ELSE claude_session_id END,
              updated_at = $now
          WHERE id = $id`,
       ).run({
         id,
         messages: JSON.stringify(messages),
-        claudeSessionId: claudeSessionId ?? null,
+        ref: engineSessionRef ?? null,
         now: Date.now(),
       });
     },

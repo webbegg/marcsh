@@ -34,7 +34,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
 
   const messagesRef = useRef(messages);
   const statusRef = useRef<ChatStatus>("ready");
-  const resumeRefRef = useRef(session.claudeSessionId);
+  const resumeRefRef = useRef(session.engineSessionRef);
   const turnRef = useRef<EngineTurn | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);

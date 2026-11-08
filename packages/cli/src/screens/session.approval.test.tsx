@@ -269,7 +269,7 @@ describe("session approvals (S7)", () => {
     await showPrompt();
     await press("y");
     await settle(50);
-    expect(getStorage().getSession(session.id)!.claudeSessionId).toBe("claude-1");
+    expect(getStorage().getSession(session.id)!.engineSessionRef).toBe("claude-1");
     await type("again");
     await press("RETURN");
     expect(calls[1]?.options.resume).toBe("claude-1");
