@@ -3,10 +3,15 @@ import { join } from "node:path";
 import {
   type AgentSession,
   createAgentSession,
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { Mode } from "../modes";
+import { getStorage, type Storage } from "../storage";
 import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
+import { createApprovalExtension, READ_ONLY_TOOLS } from "./pi-permissions";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
 /** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
@@ -21,6 +26,8 @@ export type PiEngineOptions = {
   sessionDir?: string;
   /** Model and auth runtime. Default: one reading `auth.json` and `models.json` from `agentDir`. */
   modelRuntime?: ModelRuntime;
+  /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
+  permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
 };
 
 function parseModel(ref: string): { provider: string; id: string } | null {
@@ -33,8 +40,8 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * The pi engine. Each turn opens its own pi session (new, or the file named by `resumeRef`), prompts it
  * once, and disposes it when pi has settled.
  *
- * Tools run without approval until the permission bridge (T6) is wired in, so this engine must not be
- * selectable before then.
+ * Every tool except pi's read-only ones asks through the host before it runs (see `pi-permissions.ts`).
+ * In plan mode the session only has the read-only tools.
  */
 export function createPiEngine(options: PiEngineOptions = {}): Engine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
@@ -55,13 +62,16 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, model, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, cwd, mode, model, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     let session: AgentSession | undefined;
     let aborted = signal.aborted;
+    // Aborts when the turn is interrupted or over: pending approvals are then declined.
+    const turnEnded = new AbortController();
 
     const interrupt = () => {
       aborted = true;
+      turnEnded.abort();
       void session?.abort();
     };
     signal.addEventListener("abort", interrupt, { once: true });
@@ -82,7 +92,34 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
         : options.sessionDir
           ? SessionManager.create(cwd, options.sessionDir)
           : undefined;
-      ({ session } = await createAgentSession({ cwd, agentDir, modelRuntime: models, model: resolved, sessionManager }));
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          createApprovalExtension({
+            cwd,
+            host,
+            rules: options.permissionRules ?? getStorage(),
+            signal: turnEnded.signal,
+          }),
+        ],
+      });
+      await resourceLoader.reload();
+      if (aborted) return;
+
+      ({ session } = await createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime: models,
+        model: resolved,
+        sessionManager,
+        settingsManager,
+        resourceLoader,
+        // Plan mode: only the read-only tools exist, so nothing that writes or runs can be called.
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : {}),
+      }));
       if (aborted) return;
 
       const errors = createErrorTracker();
@@ -110,6 +147,7 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
       .catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         signal.removeEventListener("abort", interrupt);
+        turnEnded.abort();
         session?.dispose();
       });
 

@@ -11,11 +11,13 @@ import {
   fauxToolCall,
   InMemoryCredentialStore,
   type FauxResponseStep,
+  type Message,
 } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
+import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir } from "./pi";
-import type { Engine, EngineEvent, TurnHost, TurnRequest } from "./types";
+import type { Engine, EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string;
 let agentDir: string;
@@ -32,7 +34,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(responses: FauxResponseStep[]) {
+async function setup(responses: FauxResponseStep[], permissionRules: Storage = openStorage(":memory:")) {
   const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -42,8 +44,8 @@ async function setup(responses: FauxResponseStep[]) {
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
 
-  const engine = createPiEngine({ agentDir, modelRuntime });
-  return { engine, faux, model: "faux/faux-1" };
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules });
+  return { engine, faux, model: "faux/faux-1", permissionRules };
 }
 
 type Outcome = {
@@ -66,12 +68,13 @@ function summarize(events: EngineEvent[]): Outcome {
   };
 }
 
-function start(engine: Engine, model: string, overrides: Partial<TurnRequest> = {}) {
+function start(engine: Engine, model: string, overrides: Partial<TurnRequest> = {}, hostOverrides: Partial<TurnHost> = {}) {
   const events: EngineEvent[] = [];
   const host: TurnHost = {
     emit: (event) => events.push(event),
     askPermission: async () => "deny",
     askQuestions: async () => null,
+    ...hostOverrides,
   };
   const controller = new AbortController();
   const turn = engine.startTurn(
@@ -81,8 +84,8 @@ function start(engine: Engine, model: string, overrides: Partial<TurnRequest> = 
   return { turn, events, controller };
 }
 
-async function runTurn(engine: Engine, model: string, overrides: Partial<TurnRequest> = {}) {
-  const running = start(engine, model, overrides);
+async function runTurn(engine: Engine, model: string, overrides: Partial<TurnRequest> = {}, hostOverrides: Partial<TurnHost> = {}) {
+  const running = start(engine, model, overrides, hostOverrides);
   await running.turn.done;
   return summarize(running.events);
 }
@@ -99,6 +102,23 @@ function hangingResponse() {
       });
     });
   return { step, started };
+}
+
+const toolParts = (reply: ChatMessage) => reply.parts.flatMap((p) => (p.type === "tool" ? [p] : []));
+
+const bashCall = (command: string, id = "call-1") =>
+  fauxAssistantMessage([fauxToolCall("bash", { command }, { id })], { stopReason: "toolUse" });
+
+// A host that answers every approval with `decision` and records what it was asked.
+function answering(decision: PermissionDecision) {
+  const asks: PermissionAsk[] = [];
+  const host: Partial<TurnHost> = {
+    askPermission: async (ask) => {
+      asks.push(ask);
+      return decision;
+    },
+  };
+  return { asks, host };
 }
 
 describe("createPiEngine", () => {
@@ -242,5 +262,176 @@ describe("createPiEngine", () => {
     expect(malformed.errors).toEqual(['Unknown pi model "sonnet". Use provider/model-id.']);
     expect(faux.state.callCount).toBe(0);
     expect(missing.refs).toEqual([]);
+  });
+});
+
+// Tool declarations travel in the transcript's system messages.
+const offeredTools = (messages: Message[]) =>
+  messages.flatMap((m) => (m.role === "system" ? (m.toolsAdded ?? []).map((tool) => tool.name) : []));
+
+describe("pi engine permissions (S8)", () => {
+  const made = () => join(cwd, "made.txt");
+
+  test("a bash call asks with the tool name and input, and a denial stops it from running", async () => {
+    const { engine, model } = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+
+    const { reply, errors } = await runTurn(engine, model, {}, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([{ toolName: "bash", input: { command: `echo hi > ${made()}` } }]);
+    expect(existsSync(made())).toBe(false);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain("The user denied this tool call.");
+  });
+
+  test("allow runs the call", async () => {
+    const { engine, model } = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("allow");
+
+    const { reply } = await runTurn(engine, model, {}, host);
+
+    expect(asks).toHaveLength(1);
+    expect(existsSync(made())).toBe(true);
+    expect(toolParts(reply)[0]?.state).toBe("done");
+  });
+
+  test("always runs the call, stores a rule, and the same command in the next turn does not ask", async () => {
+    const command = `echo hi >> ${made()}`;
+    const { engine, model, permissionRules } = await setup([
+      bashCall(command),
+      fauxAssistantMessage([fauxText("one")]),
+      bashCall(command),
+      fauxAssistantMessage([fauxText("two")]),
+    ]);
+    const { asks, host } = answering("always");
+
+    await runTurn(engine, model, {}, host);
+    expect(permissionRules.hasPermissionRule({ cwd, toolName: "bash", command })).toBe(true);
+    const second = await runTurn(engine, model, {}, host);
+
+    expect(asks).toHaveLength(1);
+    expect(toolParts(second.reply)[0]?.state).toBe("done");
+  });
+
+  test("a different command still asks even after an always", async () => {
+    const { engine, model } = await setup([
+      bashCall(`echo a >> ${made()}`),
+      fauxAssistantMessage([fauxText("one")]),
+      bashCall(`echo b >> ${made()}`),
+      fauxAssistantMessage([fauxText("two")]),
+    ]);
+    const first = answering("always");
+    await runTurn(engine, model, {}, first.host);
+    const second = answering("deny");
+
+    await runTurn(engine, model, {}, second.host);
+
+    expect(second.asks.map((a) => a.input)).toEqual([{ command: `echo b >> ${made()}` }]);
+  });
+
+  test("a rule stored for another project does not apply here", async () => {
+    const command = `echo hi >> ${made()}`;
+    const rules = openStorage(":memory:");
+    rules.addPermissionRule({ cwd: join(dir, "elsewhere"), toolName: "bash", command });
+    const { engine, model } = await setup([bashCall(command), fauxAssistantMessage([fauxText("ok")])], rules);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toHaveLength(1);
+  });
+
+  test("a stored rule from the rules store lets the call run without asking", async () => {
+    const command = `echo hi >> ${made()}`;
+    const rules = openStorage(":memory:");
+    rules.addPermissionRule({ cwd, toolName: "bash", command });
+    const { engine, model } = await setup([bashCall(command), fauxAssistantMessage([fauxText("ok")])], rules);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([]);
+    expect(existsSync(made())).toBe(true);
+  });
+
+  test("the read tool never asks", async () => {
+    writeFileSync(join(cwd, "notes.txt"), "contents");
+    const { engine, model } = await setup([
+      fauxAssistantMessage([fauxToolCall("read", { path: join(cwd, "notes.txt") }, { id: "r" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxText("done")]),
+    ]);
+    const { asks, host } = answering("deny");
+
+    const { reply } = await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([]);
+    expect(toolParts(reply)[0]?.state).toBe("done");
+  });
+
+  test("plan mode offers only the read-only tools, so bash cannot run or ask", async () => {
+    let offered: string[] | undefined;
+    const planned: FauxResponseStep = (context) => {
+      offered = offeredTools(context.messages);
+      return bashCall(`echo hi > ${made()}`);
+    };
+    const { engine, model } = await setup([planned, fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("allow");
+
+    const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+    expect(offered?.sort()).toEqual(["find", "grep", "ls", "read"]);
+    expect(asks).toEqual([]);
+    expect(existsSync(made())).toBe(false);
+    expect(toolParts(reply)[0]?.state).toBe("error");
+  });
+
+  test("build mode keeps pi's default tools", async () => {
+    let offered: string[] | undefined;
+    const building: FauxResponseStep = (context) => {
+      offered = offeredTools(context.messages);
+      return fauxAssistantMessage([fauxText("ok")]);
+    };
+    const { engine, model } = await setup([building]);
+
+    await runTurn(engine, model, { mode: Mode.BUILD });
+
+    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
+  });
+
+  test("aborting the turn while an approval is pending leaves the call unexecuted", async () => {
+    let asked: () => void = () => {};
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    const { engine, model } = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const running = start(engine, model, {}, {
+      askPermission: (_ask, signal) =>
+        new Promise<PermissionDecision>((resolve) => {
+          asked();
+          signal.addEventListener("abort", () => resolve("deny"), { once: true });
+        }),
+    });
+
+    await pending;
+    running.controller.abort();
+    await running.turn.done;
+
+    expect(existsSync(made())).toBe(false);
+    expect(summarize(running.events).errors).toEqual([]);
+  });
+
+  test("the signal given to an approval aborts when the turn ends", async () => {
+    let seen: AbortSignal | undefined;
+    const { engine, model } = await setup([bashCall("true"), fauxAssistantMessage([fauxText("ok")])]);
+
+    await runTurn(engine, model, {}, {
+      askPermission: async (_ask, signal) => {
+        seen = signal;
+        expect(signal.aborted).toBe(false);
+        return "allow";
+      },
+    });
+
+    expect(seen?.aborted).toBe(true);
   });
 });
