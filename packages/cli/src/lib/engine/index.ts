@@ -1,4 +1,6 @@
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { claudeEngine } from "./claude";
+import type { PiEngine } from "./pi";
 import type { Engine } from "./types";
 
 export const ENGINE_IDS = ["claude", "pi"] as const;
@@ -42,6 +44,25 @@ export const engines = createEngineRegistry(
 );
 
 export const getEngine = (id: string) => engines.get(id);
+
+/**
+ * The pi engine's model runtime and device id, for the login and model dialogs: they use the runtime the pi
+ * turns use, so a login is seen by the next turn. Creating the runtime loads pi (lazily, after the engine has
+ * pointed pi at marcsh's agent dir). A pi engine without them (a test double) rejects.
+ */
+export function piHandle(registry: Pick<ReturnType<typeof createEngineRegistry>, "get"> = engines) {
+  const pi = () => {
+    const engine = registry.get("pi") as Partial<PiEngine> | undefined;
+    if (!engine?.getRuntime || !engine.getDeviceId) throw new Error("The pi engine has no model runtime");
+    return engine as PiEngine;
+  };
+  return {
+    getRuntime: async (): Promise<ModelRuntime> => pi().getRuntime(),
+    getDeviceId: async (): Promise<string> => pi().getDeviceId(),
+  };
+}
+
+export const getPiRuntime = () => piHandle().getRuntime();
 
 /** Stands in for a session whose engine this build does not know: its turns only report that. */
 export function unknownEngine(id: string): Engine {

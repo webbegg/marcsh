@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Mode } from "../modes";
 import { getStorage, type Storage } from "../storage";
+import { friendlyPiError } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
 import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS } from "./pi-permissions";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
@@ -36,6 +37,14 @@ export type PiEngineOptions = {
   modelRuntime?: ModelRuntime;
   /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
   permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+};
+
+/** The pi engine, plus the handles the login and model dialogs share with its turns. */
+export type PiEngine = Engine & {
+  /** The model and auth runtime the turns use, created on first use. A login made through it is seen by the next turn. */
+  getRuntime(): Promise<ModelRuntime>;
+  /** The id pi keeps in its settings for this installation, which some logins send to the provider. */
+  getDeviceId(): Promise<string>;
 };
 
 const BUILTIN_PREFIX = "builtin:";
@@ -105,13 +114,13 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * Every tool except pi's read-only ones asks through the host before it runs (see `pi-permissions.ts`).
  * In plan mode the session only has the read-only tools.
  */
-export function createPiEngine(options: PiEngineOptions = {}): Engine {
+export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
   // An engine given another agent dir (tests) points pi's lazy readers at it; see AGENT_DIR_ENV.
   process.env[AGENT_DIR_ENV] = agentDir;
 
   let runtime: Promise<ModelRuntime> | undefined;
-  const getRuntime = (pi: Pi) => {
+  const runtimeFor = (pi: Pi) => {
     runtime ??= options.modelRuntime
       ? Promise.resolve(options.modelRuntime)
       : pi.ModelRuntime.create({
@@ -141,13 +150,13 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
     signal.addEventListener("abort", interrupt, { once: true });
 
     const fail = (message: string) => {
-      if (!aborted) host.emit({ type: "error", message });
+      if (!aborted) host.emit({ type: "error", message: friendlyPiError(message) });
     };
 
     const run = async () => {
       process.env[AGENT_DIR_ENV] = agentDir;
       const pi = await loadPi();
-      const models = await getRuntime(pi);
+      const models = await runtimeFor(pi);
       const wanted = parseModel(model);
       const resolved = wanted && models.getModel(wanted.provider, wanted.id);
       if (!resolved) return fail(`Unknown pi model "${model}". Use provider/model-id.`);
@@ -231,5 +240,14 @@ export function createPiEngine(options: PiEngineOptions = {}): Engine {
     id: "pi",
     startTurn,
     warmUpCommands: async () => {},
+    getRuntime: async () => {
+      process.env[AGENT_DIR_ENV] = agentDir;
+      return runtimeFor(await loadPi());
+    },
+    getDeviceId: async () => {
+      process.env[AGENT_DIR_ENV] = agentDir;
+      const pi = await loadPi();
+      return pi.SettingsManager.create(process.cwd(), agentDir).getOrCreateDeviceId();
+    },
   };
 }

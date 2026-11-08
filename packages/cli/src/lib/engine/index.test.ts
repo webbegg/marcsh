@@ -7,6 +7,7 @@ import {
   createEngineRegistry,
   getEngine,
   isEngineId,
+  piHandle,
   unknownEngine,
 } from "./index";
 import type { Engine, EngineEvent, TurnHost, TurnRequest } from "./types";
@@ -66,6 +67,24 @@ describe("engine registry", () => {
 
     registry.set("claude", undefined);
     expect(registry.get("claude")).toBe(claudeEngine);
+  });
+});
+
+describe("pi runtime handle", () => {
+  test("getPiRuntime and getPiDeviceId go through the registered pi engine, so the engine and the dialogs share one runtime", async () => {
+    const runtime = { marker: "shared" } as never;
+    const pi = { ...fakeEngine("pi"), getRuntime: async () => runtime, getDeviceId: async () => "device-1" };
+    const registry = createEngineRegistry(() => pi);
+    registry.set("pi", pi);
+
+    expect(await piHandle(registry).getRuntime()).toBe(runtime);
+    expect(await piHandle(registry).getDeviceId()).toBe("device-1");
+  });
+
+  test("an engine without a runtime (a test double) rejects with a clear message", async () => {
+    const registry = createEngineRegistry(() => fakeEngine("pi"));
+
+    await expect(piHandle(registry).getRuntime()).rejects.toThrow("The pi engine has no model runtime");
   });
 });
 

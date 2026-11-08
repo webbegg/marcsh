@@ -3,7 +3,8 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Command } from "./types";
 import { useTheme } from "../../providers/theme";
 
-const MAX_VISIBLE_ITEMS = 8;
+// marcsh's own commands come first; room for all of them and the first Claude commands below.
+const MAX_VISIBLE_ITEMS = 10;
 const MAX_COMMAND_COL_WIDTH = 32;
 const SOURCE_TAG_WIDTH = 8;
 

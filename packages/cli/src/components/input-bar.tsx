@@ -275,7 +275,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
 ];
 
 export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
-  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine } = usePromptConfig();
+  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -399,6 +399,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         engine: engineId,
         defaultEngine,
         setDefaultEngine,
+        piModel,
+        setPiModel,
+        refreshPiModel,
         navigate,
         mode,
         setMode,
@@ -407,7 +410,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, defaultEngine, setDefaultEngine, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
