@@ -2,9 +2,16 @@ import { TextAttributes } from "@opentui/core";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import { modelForEngine } from "../lib/models";
 
-export function StatusBar() {
-  const { mode, model } = usePromptConfig();
+type Props = {
+  /** The engine the prompt runs on; defaults to the one new sessions start on. */
+  engine?: string;
+};
+
+export function StatusBar({ engine }: Props) {
+  const { mode, model, defaultEngine } = usePromptConfig();
+  const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
 
   return (
@@ -17,7 +24,10 @@ export function StatusBar() {
       <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
         ›
       </text>
-      <text>{model}</text>
+      <text>{modelForEngine(engineId, model)}</text>
+      <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
+        · {engineId}
+      </text>
     </box>
   );
 };

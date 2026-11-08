@@ -17,6 +17,7 @@ import { COMMANDS } from "./command-menu/commands";
 import { useCommandMenu } from "./command-menu/use-command-menu";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
+import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
@@ -262,6 +263,8 @@ type Props = {
   disabled?: boolean;
   /** Directory that `@` mentions resolve against. */
   cwd?: string;
+  /** The engine the prompt runs on; defaults to the one new sessions start on. */
+  engine?: string;
 };
 
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
@@ -271,8 +274,9 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Props) {
-  const { mode, toggleMode, setMode, setModel } = usePromptConfig();
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
+  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine } = usePromptConfig();
+  const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
   const activeMentionRef = useRef<MentionMatch | null>(null);
@@ -281,6 +285,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
   const renderer = useRenderer();
   const navigate = useNavigate();
   const dialog = useDialog();
+  const toast = useToast();
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
 
@@ -390,6 +395,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
       command.action({
         exit: () => renderer.destroy(),
         dialog,
+        toast,
+        engine: engineId,
+        defaultEngine,
+        setDefaultEngine,
         navigate,
         mode,
         setMode,
@@ -398,7 +407,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, defaultEngine, setDefaultEngine, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
@@ -619,7 +628,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar />
+          <StatusBar engine={engineId} />
         </box>
       </box>
     </box>
