@@ -152,6 +152,21 @@ describe("storage", () => {
       }
     });
 
+    test("a Claude session continued by the previous marcsh after a rollback resumes from where it left off", () => {
+      const old = oldDatabase();
+      try {
+        openStorage(old.path).saveMessages("old", [userMessage], "claude-branch");
+        // The previous marcsh only knows the old column.
+        const previous = new Database(old.path, { strict: true });
+        previous.run("UPDATE sessions SET claude_session_id = 'claude-previous' WHERE id = 'old'");
+        previous.close();
+
+        expect(openStorage(old.path).getSession("old")?.engineSessionRef).toBe("claude-previous");
+      } finally {
+        old.cleanup();
+      }
+    });
+
     test("other engines never write the Claude session id", () => {
       const old = oldDatabase();
       try {

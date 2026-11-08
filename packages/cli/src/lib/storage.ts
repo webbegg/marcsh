@@ -65,6 +65,8 @@ export function openStorage(path = defaultDbPath()): Storage {
   const db = new Database(path, { create: true, strict: true });
   // Before enabling WAL, so the -wal and -shm files inherit the owner-only mode
   if (isFile) chmodSync(path, 0o600);
+  // Another marcsh process may be saving a turn: wait for its write lock instead of failing.
+  db.run("PRAGMA busy_timeout = 5000");
   db.run("PRAGMA journal_mode = WAL");
   // `claude_session_id` stays next to `engine_session_ref`: marcsh versions before engines resume Claude sessions from it.
   db.run(`
@@ -81,12 +83,19 @@ export function openStorage(path = defaultDbPath()): Storage {
     )
   `);
   // Databases created before engines only gain columns; their rows become Claude sessions.
-  // Immediate, so two marcsh processes opening the same old file don't both add a column.
-  db.transaction(() => {
+  const missingColumns = () => {
     const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(sessions)").all().map((c) => c.name));
-    if (!columns.has("engine")) db.run("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'");
-    if (!columns.has("engine_session_ref")) db.run("ALTER TABLE sessions ADD COLUMN engine_session_ref TEXT");
-  }).immediate();
+    return { engine: !columns.has("engine"), ref: !columns.has("engine_session_ref") };
+  };
+  const missing = missingColumns();
+  // Only an old file takes the write lock; checked again inside, since another marcsh may have just migrated it.
+  if (missing.engine || missing.ref) {
+    db.transaction(() => {
+      const still = missingColumns();
+      if (still.engine) db.run("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude'");
+      if (still.ref) db.run("ALTER TABLE sessions ADD COLUMN engine_session_ref TEXT");
+    }).immediate();
+  }
 
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
@@ -98,7 +107,8 @@ export function openStorage(path = defaultDbPath()): Storage {
       title: row.title,
       cwd: row.cwd,
       engine: row.engine,
-      engineSessionRef: row.engine_session_ref ?? (row.engine === "claude" ? row.claude_session_id : null),
+      // Claude sessions read the old column first: a previous marcsh (after a rollback) only updates that one.
+      engineSessionRef: row.engine === "claude" ? (row.claude_session_id ?? row.engine_session_ref) : row.engine_session_ref,
       messages: JSON.parse(row.messages) as ChatMessage[],
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
