@@ -1,9 +1,7 @@
 import type { PermissionMode, PermissionResult, PermissionUpdate, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
 import { Mode, type ModeType } from "./modes";
 import type { ChatMessage, MessagePart, TaskStatus } from "./chat-types";
-
-export type PermissionDecision = "allow" | "always" | "deny";
+import type { PermissionDecision } from "./engine/types";
 
 type ContentBlock = Record<string, unknown> & { type?: string };
 
@@ -156,19 +154,6 @@ export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMe
   }
 }
 
-/** Ends a turn: tools still running will never get a result, so they are saved as interrupted errors; running tasks as stopped. */
-export function finishReply(reply: ChatMessage): ChatMessage {
-  const unfinished = (p: MessagePart) => (p.type === "tool" && p.state === "running") || (p.type === "task" && p.status === "running");
-  if (!reply.parts.some(unfinished)) return reply;
-
-  const parts = reply.parts.map((p): MessagePart => {
-    if (p.type === "tool" && p.state === "running") return { ...p, state: "error", errorText: "Interrupted" };
-    if (p.type === "task" && p.status === "running") return { ...p, status: "stopped" };
-    return p;
-  });
-  return { ...reply, parts };
-}
-
 /** The user-facing error for a failed turn, or null when the turn succeeded. */
 export function resultError(message: SDKMessage): string | null {
   if (message.type !== "result") return null;
@@ -182,39 +167,6 @@ export function resultError(message: SDKMessage): string | null {
 
 export function toPermissionMode(mode: ModeType): PermissionMode {
   return mode === Mode.PLAN ? "plan" : "default";
-}
-
-const askUserQuestionSchema = z.object({
-  questions: z
-    .array(
-      z.object({
-        question: z.string(),
-        header: z.string(),
-        // Options are picked with the keys 1-9.
-        options: z.array(z.object({ label: z.string(), description: z.string() })).min(2).max(9),
-        multiSelect: z.boolean(),
-      }),
-    )
-    .min(1)
-    .max(4)
-    // Answers are keyed by question text, so two identical questions could not be told apart.
-    .refine((questions) => new Set(questions.map((q) => q.question)).size === questions.length),
-});
-
-export type AskQuestion = z.infer<typeof askUserQuestionSchema>["questions"][number];
-export type AskUserQuestionInput = z.infer<typeof askUserQuestionSchema>;
-
-/** The questions of an `AskUserQuestion` call, or null when the input is not shaped as the SDK documents. */
-export function parseAskUserQuestion(input: Record<string, unknown>): AskUserQuestionInput | null {
-  const parsed = askUserQuestionSchema.safeParse(input);
-  return parsed.success ? parsed.data : null;
-}
-
-/** The answer string for one question: chosen labels in option order, then the typed "Other" text, joined with ", ". */
-export function buildAnswer(question: AskQuestion, { picked, other }: { picked: number[]; other?: string }): string {
-  const labels = question.options.filter((_, index) => picked.includes(index)).map((option) => option.label);
-  const typed = other?.trim();
-  return (typed ? [...labels, typed] : labels).join(", ");
 }
 
 export function toAnswersResult(input: Record<string, unknown>, answers: Record<string, string>): PermissionResult {
