@@ -15,6 +15,7 @@ import {
   type PermissionDecision,
 } from "../lib/sdk-messages";
 import { normalizeClaudeCommands } from "../lib/claude-commands";
+import { marcshPluginPath } from "../lib/plugin";
 import { getStorage, type StoredSession } from "../lib/storage";
 
 export type ChatStatus = "ready" | "submitted" | "streaming";
@@ -158,6 +159,8 @@ export function useChat(session: StoredSession) {
           enqueue(request, onAbort);
         });
 
+      const pluginPath = marcshPluginPath();
+
       try {
         const chat = query({
           prompt: userText,
@@ -170,6 +173,7 @@ export function useChat(session: StoredSession) {
             systemPrompt: { type: "preset", preset: "claude_code" },
             settingSources: ["user", "project", "local"],
             canUseTool,
+            ...(pluginPath ? { plugins: [{ type: "local" as const, path: pluginPath }] } : {}),
           },
         });
         queryRef.current = chat;
