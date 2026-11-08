@@ -78,10 +78,16 @@ async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, m
   });
   const builtin = fresh.getActiveToolNames();
   fresh.dispose();
+  // Opt-in extension tools (`defaultActive: false`) are on when the user's `defaultTools` names them.
+  const namedByUser = new Set(pi.SettingsManager.create(cwd, agentDir).getDefaultTools() ?? []);
   const registered = session
     .getAllTools()
     .filter((tool) => !tool.sourceInfo.path.startsWith(BUILTIN_PREFIX))
-    .filter((tool) => (tool.exposure === "direct" || tool.exposure === "model-only") && session.getToolDefinition(tool.name)?.defaultActive !== false)
+    .filter(
+      (tool) =>
+        (tool.exposure === "direct" || tool.exposure === "model-only") &&
+        (session.getToolDefinition(tool.name)?.defaultActive !== false || namedByUser.has(tool.name)),
+    )
     .map((tool) => tool.name);
   return [...new Set([...builtin, ...registered])];
 }
