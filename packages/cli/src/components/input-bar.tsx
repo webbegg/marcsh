@@ -13,12 +13,14 @@ import { EmptyBorder } from "./border";
 import { StatusBar } from "./status-bar";
 import { CommandMenu } from "./command-menu";
 import type { Command } from "./command-menu/types";
+import { COMMANDS } from "./command-menu/commands";
 import { useCommandMenu } from "./command-menu/use-command-menu";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import { slashInputKind } from "../lib/claude-commands";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -288,7 +290,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
 
   const {
     showCommandMenu,
-    commandQuery,
+    commands,
     selectedIndex,
     scrollRef,
     handleContentChange,
@@ -351,19 +353,6 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
     if (showCommandMenu) textareaRef.current?.setText("");
   }, [disabled, showCommandMenu, closeMentionMenu]);
 
-  const handleSubmit = useCallback(() => {
-    if (disabled) return;
-
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-
-    const text = textarea.plainText.trim();
-    if (text.length === 0) return;
-
-    onSubmit(text);
-    textarea.setText("");
-  }, [disabled, onSubmit])
-
   const handleMentionExecute = useCallback((index: number) => {
     const textarea = textareaRef.current;
     const mention = activeMentionRef.current;
@@ -419,6 +408,26 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
     [resolveCommand, handleCommand],
   );
 
+  const handleSubmit = useCallback(() => {
+    if (disabled) return;
+
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const text = textarea.plainText.trim();
+    if (text.length === 0) return;
+
+    // marcsh's own commands win; any other /name (with or without arguments) goes to Claude Code verbatim
+    const ownNames = COMMANDS.map((command) => command.name);
+    if (slashInputKind(text, ownNames) === "marcsh") {
+      handleCommand(COMMANDS.find((command) => command.value === text.split(/\s/)[0]));
+      return;
+    }
+
+    onSubmit(text);
+    textarea.setText("");
+  }, [disabled, onSubmit, handleCommand])
+
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
     if (!activeMention) {
@@ -462,11 +471,12 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
 
     if (showCommandMenu) {
       const command = resolveCommand(selectedIndex);
-      handleCommand(command);
-      return;
-    }
-
-    if (showMentionMenu) {
+      if (command) {
+        handleCommand(command);
+        return;
+      }
+      // No command matches (e.g. `/probe:hello` not in the list): submit the text as typed
+    } else if (showMentionMenu) {
       const candidate = mentionCandidates[mentionSelectedIndex];
       if (candidate) {
         handleMentionExecute(mentionSelectedIndex);
@@ -573,7 +583,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
               zIndex={10}
             >
               <CommandMenu
-                query={commandQuery}
+                commands={commands}
                 selectedIndex={selectedIndex}
                 scrollRef={scrollRef}
                 onSelect={setSelectedIndex}

@@ -1,13 +1,25 @@
 import { useRef, useState, useMemo, type RefObject } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { getFilteredCommands } from "./filter-commands";
+import { getFilteredCommands, getMenuCommands } from "./filter-commands";
 import type { Command } from "./types";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
+import { getStorage } from "../../lib/storage";
+
+// Read when the menu opens, so a list cached by a turn that just ended shows up.
+function loadMenuCommands(): Command[] {
+  try {
+    return getMenuCommands(getStorage().getClaudeCommands());
+  } catch {
+    return getMenuCommands([]);
+  }
+}
 
 type UseCommandMenuReturn = {
   showCommandMenu: boolean;
   commandQuery: string;
+  /** The commands matching the query, marcsh's own first. */
+  commands: Command[];
   selectedIndex: number;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   handleContentChange: (text: string) => void;
@@ -24,7 +36,11 @@ export function useCommandMenu(): UseCommandMenuReturn {
 
   const commandQuery = showCommandMenu && textValue.startsWith("/") ? textValue.slice(1) : "";
 
-  const filteredCommands = useMemo(() => getFilteredCommands(commandQuery), [commandQuery]);
+  const menuCommands = useMemo(() => (showCommandMenu ? loadMenuCommands() : []), [showCommandMenu]);
+  const filteredCommands = useMemo(
+    () => getFilteredCommands(commandQuery, menuCommands),
+    [commandQuery, menuCommands],
+  );
 
   const close = () => {
     setShowCommandMenu(false);
@@ -104,6 +120,7 @@ export function useCommandMenu(): UseCommandMenuReturn {
   return {
     showCommandMenu,
     commandQuery,
+    commands: filteredCommands,
     selectedIndex,
     scrollRef,
     handleContentChange,

@@ -14,6 +14,7 @@ import {
   type AskQuestion,
   type PermissionDecision,
 } from "../lib/sdk-messages";
+import { normalizeClaudeCommands } from "../lib/claude-commands";
 import { getStorage, type StoredSession } from "../lib/storage";
 
 export type ChatStatus = "ready" | "submitted" | "streaming";
@@ -43,6 +44,19 @@ export type QuestionRequest = {
 export type PendingRequest = PermissionRequest | QuestionRequest;
 
 export type SubmitParams = { userText: string; mode: ModeType; model: string };
+
+// The command list only feeds the `/` menu: failing to fetch or save it never affects the turn.
+function cacheClaudeCommands(commands: unknown) {
+  try {
+    getStorage().saveClaudeCommands(normalizeClaudeCommands(commands));
+  } catch {}
+}
+
+async function refreshClaudeCommands(chat: Query) {
+  try {
+    cacheClaudeCommands(await chat.supportedCommands());
+  } catch {}
+}
 
 export function useChat(session: StoredSession) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
@@ -165,6 +179,12 @@ export function useChat(session: StoredSession) {
 
           if (message.type === "system" && message.subtype === "init") {
             claudeSessionIdRef.current = message.session_id;
+            void refreshClaudeCommands(chat);
+          }
+
+          // "Clients should REPLACE their cached command list"
+          if (message.type === "system" && message.subtype === "commands_changed") {
+            cacheClaudeCommands(message.commands);
           }
 
           applyToReply((reply) => applySdkMessage(reply, message));

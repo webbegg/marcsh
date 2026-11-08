@@ -115,6 +115,39 @@ describe("storage", () => {
     }
   });
 
+  test("has no Claude commands until some are saved", () => {
+    expect(openStorage(":memory:").getClaudeCommands()).toEqual([]);
+  });
+
+  test("saves and loads the Claude command list, replacing the previous one", () => {
+    const storage = openStorage(":memory:");
+    storage.saveClaudeCommands([
+      { name: "probe:hello", description: "Say hello", argumentHint: "<who>" },
+      { name: "old", description: "", argumentHint: "" },
+    ]);
+
+    storage.saveClaudeCommands([{ name: "review", description: "Review code", argumentHint: "" }]);
+
+    expect(storage.getClaudeCommands()).toEqual([{ name: "review", description: "Review code", argumentHint: "" }]);
+  });
+
+  test("keeps the Claude command list across reopening the same file, next to the sessions", () => {
+    const path = `${process.env.TMPDIR ?? "/tmp"}/marcsh-commands-${crypto.randomUUID()}.db`;
+    const first = openStorage(path);
+    const session = first.createSession({ title: "Kept", cwd: "/work" });
+    first.saveClaudeCommands([{ name: "probe:hello", description: "Say hello", argumentHint: "<who>" }]);
+
+    try {
+      const reopened = openStorage(path);
+      expect(reopened.getClaudeCommands()).toEqual([
+        { name: "probe:hello", description: "Say hello", argumentHint: "<who>" },
+      ]);
+      expect(reopened.getSession(session.id)?.title).toBe("Kept");
+    } finally {
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
   test("keeps data across reopening the same file", () => {
     const path = `${process.env.TMPDIR ?? "/tmp"}/marcsh-storage-${crypto.randomUUID()}.db`;
     const session = openStorage(path).createSession({ title: "Persisted", cwd: "/work" });

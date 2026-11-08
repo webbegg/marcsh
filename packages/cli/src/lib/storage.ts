@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ChatMessage } from "./chat-types";
+import { normalizeClaudeCommands, type ClaudeCommand } from "./claude-commands";
 
 export type SessionSummary = {
   id: string;
@@ -22,6 +23,9 @@ export type Storage = {
   getSession(id: string): StoredSession | null;
   createSession(input: { title: string; cwd: string }): StoredSession;
   saveMessages(id: string, messages: ChatMessage[], claudeSessionId?: string): void;
+  /** Last known Claude Code commands and skills, kept so the `/` menu has them after a restart. */
+  getClaudeCommands(): ClaudeCommand[];
+  saveClaudeCommands(commands: ClaudeCommand[]): void;
 };
 
 type SessionRow = {
@@ -33,6 +37,8 @@ type SessionRow = {
   created_at: number;
   updated_at: number;
 };
+
+const CLAUDE_COMMANDS_KEY = "claude_commands";
 
 const marcshDir = () => join(homedir(), ".marcsh");
 
@@ -66,6 +72,8 @@ export function openStorage(path = defaultDbPath()): Storage {
       updated_at INTEGER NOT NULL
     )
   `);
+
+  db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
   const selectSession = db.query<SessionRow, { id: string }>("SELECT * FROM sessions WHERE id = $id");
 
@@ -125,6 +133,25 @@ export function openStorage(path = defaultDbPath()): Storage {
         claudeSessionId: claudeSessionId ?? null,
         now: Date.now(),
       });
+    },
+
+    getClaudeCommands() {
+      const row = db
+        .query<{ value: string }, { key: string }>("SELECT value FROM meta WHERE key = $key")
+        .get({ key: CLAUDE_COMMANDS_KEY });
+      if (!row) return [];
+      try {
+        return normalizeClaudeCommands(JSON.parse(row.value));
+      } catch {
+        return [];
+      }
+    },
+
+    saveClaudeCommands(commands) {
+      db.query(
+        `INSERT INTO meta (key, value) VALUES ($key, $value)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ).run({ key: CLAUDE_COMMANDS_KEY, value: JSON.stringify(normalizeClaudeCommands(commands)) });
     },
   };
 }

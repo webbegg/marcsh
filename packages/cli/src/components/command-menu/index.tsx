@@ -1,18 +1,14 @@
 import type { RefObject } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import { getFilteredCommands } from "./filter-commands";
-import { COMMANDS } from "./commands";
+import type { Command } from "./types";
 import { useTheme } from "../../providers/theme";
 
 const MAX_VISIBLE_ITEMS = 8;
-
-// Align all command names in a fixed-width column so their descriptions
-// start at the same horizontal position for a clean tabular look.
-// The width adjusts to accommodate the longest command name.
-const COMMAND_COL_WIDTH = Math.max(...COMMANDS.map((cmd) => cmd.name.length)) + 4;
+const MAX_COMMAND_COL_WIDTH = 32;
+const SOURCE_TAG_WIDTH = 8;
 
 type CommandMenuProps = {
-  query: string;
+  commands: Command[];
   selectedIndex: number;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   onSelect: (index: number) => void;
@@ -20,14 +16,20 @@ type CommandMenuProps = {
 };
 
 export function CommandMenu({
-  query,
+  commands: filtered,
   selectedIndex,
   scrollRef,
   onSelect,
   onExecute,
 }: CommandMenuProps) {
   const { colors } = useTheme();
-  const filtered = getFilteredCommands(query);
+  // Align all command names in a fixed-width column so their descriptions
+  // start at the same horizontal position for a clean tabular look.
+  // The width adjusts to accommodate the longest command name (capped for long plugin names).
+  const commandColWidth = Math.min(
+    MAX_COMMAND_COL_WIDTH,
+    Math.max(...filtered.map((cmd) => cmd.name.length), 0) + 4,
+  );
   const visibleHeight = Math.min(filtered.length, MAX_VISIBLE_ITEMS);
 
   if (filtered.length === 0) {
@@ -56,14 +58,19 @@ export function CommandMenu({
             onMouseMove={() => onSelect(i)}
             onMouseDown={() => onExecute(i)}
           >
-            <box width={COMMAND_COL_WIDTH} flexShrink={0}>
+            <box width={commandColWidth} flexShrink={0}>
               <text selectable={false} fg={isSelected ? "black" : "white"}>
                 /{cmd.name}
               </text>
             </box>
             <box flexGrow={1} flexShrink={1} overflow="hidden">
               <text selectable={false} fg={isSelected ? "black" : "gray"}>
-                {cmd.description}
+                {cmd.argumentHint ? `${cmd.argumentHint} ${cmd.description}` : cmd.description}
+              </text>
+            </box>
+            <box width={SOURCE_TAG_WIDTH} alignItems="flex-end" flexShrink={0}>
+              <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
+                {cmd.source ?? ""}
               </text>
             </box>
           </box>
