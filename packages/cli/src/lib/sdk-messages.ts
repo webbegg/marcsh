@@ -1,7 +1,7 @@
 import type { PermissionMode, PermissionResult, PermissionUpdate, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { Mode, type ModeType } from "./modes";
-import type { ChatMessage, MessagePart } from "./chat-types";
+import type { ChatMessage, MessagePart, TaskStatus } from "./chat-types";
 
 export type PermissionDecision = "allow" | "always" | "deny";
 
@@ -61,6 +61,73 @@ function applyToolResults(reply: ChatMessage, blocks: ContentBlock[]): ChatMessa
   return parts === reply.parts ? reply : { ...reply, parts };
 }
 
+type TaskPart = Extract<MessagePart, { type: "task" }>;
+
+/** Merges changes into the task's part, creating it when unknown; returns the same reply when nothing changes. */
+function upsertTask(reply: ChatMessage, taskId: string, changes: Partial<Omit<TaskPart, "type" | "taskId">>): ChatMessage {
+  const defined = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
+  const index = reply.parts.findIndex((p) => p.type === "task" && p.taskId === taskId);
+  const existing = reply.parts[index];
+
+  if (!existing || existing.type !== "task") {
+    const created: TaskPart = { type: "task", taskId, description: "", status: "running", ...defined };
+    return { ...reply, parts: [...reply.parts, created] };
+  }
+
+  if (Object.entries(defined).every(([key, value]) => existing[key as keyof TaskPart] === value)) return reply;
+
+  const parts = reply.parts.map((p, i): MessagePart => (i === index ? { ...existing, ...defined } : p));
+  return { ...reply, parts };
+}
+
+/** The status a task patch shows, or undefined for states the line does not distinguish (paused). */
+function patchStatus(status: string | undefined): TaskStatus | undefined {
+  switch (status) {
+    case "pending":
+    case "running":
+      return "running";
+    case "completed":
+    case "failed":
+      return status;
+    case "killed":
+      return "stopped";
+    default:
+      return undefined;
+  }
+}
+
+function applyTaskMessage(reply: ChatMessage, message: SDKMessage): ChatMessage | null {
+  if (message.type !== "system") return null;
+
+  switch (message.subtype) {
+    case "task_started":
+      return upsertTask(reply, message.task_id, { description: message.description });
+    case "task_progress":
+      return upsertTask(reply, message.task_id, {
+        description: message.description,
+        lastToolName: message.last_tool_name,
+        toolUses: message.usage.tool_uses,
+        totalTokens: message.usage.total_tokens,
+        summary: message.summary,
+      });
+    case "task_updated":
+      return upsertTask(reply, message.task_id, {
+        status: patchStatus(message.patch.status),
+        description: message.patch.description,
+        error: message.patch.error,
+      });
+    case "task_notification":
+      return upsertTask(reply, message.task_id, {
+        status: message.status,
+        summary: message.summary,
+        toolUses: message.usage?.tool_uses,
+        totalTokens: message.usage?.total_tokens,
+      });
+    default:
+      return null;
+  }
+}
+
 /** Folds one SDK message into the assistant reply, returning the same object when nothing changes. */
 export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMessage {
   if ("parent_tool_use_id" in message && message.parent_tool_use_id != null) return reply;
@@ -79,18 +146,26 @@ export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMe
           costUsd: message.total_cost_usd,
         },
       };
+    case "system":
+      if (message.subtype === "local_command_output") {
+        return { ...reply, parts: [...reply.parts, { type: "text", text: message.content }] };
+      }
+      return applyTaskMessage(reply, message) ?? reply;
     default:
       return reply;
   }
 }
 
-/** Ends a turn: tools still running will never get a result, so they are saved as interrupted errors. */
+/** Ends a turn: tools still running will never get a result, so they are saved as interrupted errors; running tasks as stopped. */
 export function finishReply(reply: ChatMessage): ChatMessage {
-  if (!reply.parts.some((p) => p.type === "tool" && p.state === "running")) return reply;
+  const unfinished = (p: MessagePart) => (p.type === "tool" && p.state === "running") || (p.type === "task" && p.status === "running");
+  if (!reply.parts.some(unfinished)) return reply;
 
-  const parts = reply.parts.map((p): MessagePart =>
-    p.type === "tool" && p.state === "running" ? { ...p, state: "error", errorText: "Interrupted" } : p,
-  );
+  const parts = reply.parts.map((p): MessagePart => {
+    if (p.type === "tool" && p.state === "running") return { ...p, state: "error", errorText: "Interrupted" };
+    if (p.type === "task" && p.status === "running") return { ...p, status: "stopped" };
+    return p;
+  });
   return { ...reply, parts };
 }
 

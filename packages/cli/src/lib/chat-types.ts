@@ -2,6 +2,8 @@ import type { ModeType } from "./modes";
 
 export type ToolState = "running" | "done" | "error";
 
+export type TaskStatus = "running" | "completed" | "failed" | "stopped";
+
 export type MessagePart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
@@ -12,6 +14,17 @@ export type MessagePart =
       input: Record<string, unknown>;
       state: ToolState;
       errorText?: string;
+    }
+  | {
+      type: "task";
+      taskId: string;
+      description: string;
+      status: TaskStatus;
+      lastToolName?: string;
+      toolUses?: number;
+      totalTokens?: number;
+      summary?: string;
+      error?: string;
     };
 
 export type ChatMessageMetadata = {

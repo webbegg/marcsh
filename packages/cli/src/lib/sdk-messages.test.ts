@@ -100,6 +100,184 @@ describe("applySdkMessage", () => {
   });
 });
 
+describe("task and local command messages (S11)", () => {
+  const system = (subtype: string, fields: Record<string, unknown>) =>
+    sdk({ type: "system", subtype, session_id: "s1", uuid: "u1", ...fields });
+
+  const started = (fields: Record<string, unknown> = {}) =>
+    system("task_started", { task_id: "k1", tool_use_id: "t1", description: "Explore the repo", ...fields });
+
+  const withTask = (task: Record<string, unknown> = {}): ChatMessage => ({
+    ...emptyReply(),
+    parts: [{ type: "task", taskId: "k1", description: "Explore the repo", status: "running", ...task } as never],
+  });
+
+  test("task_started creates a running task part", () => {
+    const reply = applySdkMessage(emptyReply(), started());
+
+    expect(reply.parts).toEqual([
+      { type: "task", taskId: "k1", description: "Explore the repo", status: "running" },
+    ]);
+  });
+
+  test("task_started for a known task updates it instead of adding another", () => {
+    const reply = applySdkMessage(withTask({ lastToolName: "Read" }), started({ description: "Explore more" }));
+
+    expect(reply.parts).toEqual([
+      { type: "task", taskId: "k1", description: "Explore more", status: "running", lastToolName: "Read" },
+    ]);
+  });
+
+  test("task_progress updates description, last tool, usage and summary", () => {
+    const progress = system("task_progress", {
+      task_id: "k1",
+      description: "Reading files",
+      last_tool_name: "Grep",
+      summary: "Looking at the parser",
+      usage: { total_tokens: 1200, tool_uses: 3, duration_ms: 5000 },
+    });
+
+    expect(applySdkMessage(withTask(), progress).parts).toEqual([
+      {
+        type: "task",
+        taskId: "k1",
+        description: "Reading files",
+        status: "running",
+        lastToolName: "Grep",
+        toolUses: 3,
+        totalTokens: 1200,
+        summary: "Looking at the parser",
+      },
+    ]);
+  });
+
+  test("task_progress keeps the earlier last tool and summary when it carries none", () => {
+    const progress = system("task_progress", {
+      task_id: "k1",
+      description: "Explore the repo",
+      usage: { total_tokens: 10, tool_uses: 1, duration_ms: 1 },
+    });
+
+    const part = applySdkMessage(withTask({ lastToolName: "Read", summary: "Earlier" }), progress).parts[0];
+
+    expect(part).toMatchObject({ lastToolName: "Read", summary: "Earlier", toolUses: 1, totalTokens: 10 });
+  });
+
+  test("task_updated applies status, description and error from the patch", () => {
+    const update = (patch: Record<string, unknown>) =>
+      applySdkMessage(withTask(), system("task_updated", { task_id: "k1", patch })).parts[0];
+
+    expect(update({ status: "failed", description: "Renamed", error: "boom" })).toMatchObject({
+      status: "failed",
+      description: "Renamed",
+      error: "boom",
+    });
+    expect(update({ status: "killed" })).toMatchObject({ status: "stopped" });
+    expect(update({ status: "completed" })).toMatchObject({ status: "completed" });
+    expect(update({ status: "pending" })).toMatchObject({ status: "running" });
+  });
+
+  test("task_updated without a change the line can show keeps the same reply", () => {
+    const before = withTask();
+    const update = system("task_updated", { task_id: "k1", patch: { status: "paused", is_backgrounded: true } });
+
+    expect(applySdkMessage(before, update)).toBe(before);
+  });
+
+  test("task_notification sets the final status, summary and usage", () => {
+    const reply = applySdkMessage(
+      withTask({ lastToolName: "Read" }),
+      system("task_notification", {
+        task_id: "k1",
+        status: "completed",
+        summary: "Found 3 modules",
+        output_file: "/tmp/out",
+        usage: { total_tokens: 4000, tool_uses: 7, duration_ms: 9000 },
+      }),
+    );
+
+    expect(reply.parts).toEqual([
+      {
+        type: "task",
+        taskId: "k1",
+        description: "Explore the repo",
+        status: "completed",
+        lastToolName: "Read",
+        toolUses: 7,
+        totalTokens: 4000,
+        summary: "Found 3 modules",
+      },
+    ]);
+  });
+
+  test("progress, update and notification for an unknown task create the part", () => {
+    const progress = applySdkMessage(
+      emptyReply(),
+      system("task_progress", { task_id: "k2", description: "Working", usage: { total_tokens: 5, tool_uses: 1, duration_ms: 1 } }),
+    );
+    expect(progress.parts).toEqual([
+      { type: "task", taskId: "k2", description: "Working", status: "running", toolUses: 1, totalTokens: 5 },
+    ]);
+
+    const updated = applySdkMessage(
+      emptyReply(),
+      system("task_updated", { task_id: "k3", patch: { status: "completed", description: "Done thing" } }),
+    );
+    expect(updated.parts).toEqual([{ type: "task", taskId: "k3", description: "Done thing", status: "completed" }]);
+
+    const notified = applySdkMessage(
+      emptyReply(),
+      system("task_notification", { task_id: "k4", status: "failed", summary: "Crashed", output_file: "" }),
+    );
+    expect(notified.parts).toEqual([
+      { type: "task", taskId: "k4", description: "", status: "failed", summary: "Crashed" },
+    ]);
+  });
+
+  test("keeps one part per task and leaves other parts in place", () => {
+    let reply = applySdkMessage(emptyReply(), assistant([{ type: "text", text: "Delegating" }]));
+    reply = applySdkMessage(reply, started());
+    reply = applySdkMessage(reply, started({ task_id: "k2", description: "Second" }));
+    reply = applySdkMessage(
+      reply,
+      system("task_notification", { task_id: "k1", status: "completed", summary: "ok", output_file: "" }),
+    );
+
+    expect(reply.parts.map((p) => (p.type === "task" ? `${p.taskId}:${p.status}` : p.type))).toEqual([
+      "text",
+      "k1:completed",
+      "k2:running",
+    ]);
+  });
+
+  test("returns the same reply when a task message changes nothing", () => {
+    const before = withTask({ lastToolName: "Read", toolUses: 2, totalTokens: 50 });
+    const progress = system("task_progress", {
+      task_id: "k1",
+      description: "Explore the repo",
+      last_tool_name: "Read",
+      usage: { total_tokens: 50, tool_uses: 2, duration_ms: 1 },
+    });
+    const update = system("task_updated", { task_id: "k1", patch: { description: "Explore the repo" } });
+
+    expect(applySdkMessage(before, progress)).toBe(before);
+    expect(applySdkMessage(before, started())).toBe(before);
+    expect(applySdkMessage(before, update)).toBe(before);
+  });
+
+  test("ignores task messages carrying a parent tool use id", () => {
+    const reply = emptyReply();
+
+    expect(applySdkMessage(reply, started({ parent_tool_use_id: "t1" }))).toBe(reply);
+  });
+
+  test("renders local_command_output as an assistant text part", () => {
+    const reply = applySdkMessage(emptyReply(), system("local_command_output", { content: "Total cost: $0.01" }));
+
+    expect(reply.parts).toEqual([{ type: "text", text: "Total cost: $0.01" }]);
+  });
+});
+
 describe("finishReply", () => {
   const tool = (toolCallId: string, state: "running" | "done" | "error") =>
     ({ type: "tool", toolCallId, toolName: "Bash", input: {}, state }) as const;
@@ -117,6 +295,31 @@ describe("finishReply", () => {
       { ...tool("t1", "error"), errorText: "Interrupted" },
       tool("t2", "done"),
     ]);
+  });
+
+  test("marks tasks still running as stopped and leaves finished ones alone", () => {
+    const task = (taskId: string, status: "running" | "completed" | "failed") =>
+      ({ type: "task", taskId, description: "d", status }) as const;
+    const reply: ChatMessage = {
+      ...emptyReply(),
+      parts: [task("k1", "running"), task("k2", "completed"), task("k3", "failed"), tool("t1", "running")],
+    };
+
+    expect(finishReply(reply).parts).toEqual([
+      { ...task("k1", "running"), status: "stopped" },
+      task("k2", "completed"),
+      task("k3", "failed"),
+      { ...tool("t1", "error"), errorText: "Interrupted" },
+    ]);
+  });
+
+  test("returns the same reply when only finished tasks are present", () => {
+    const reply: ChatMessage = {
+      ...emptyReply(),
+      parts: [{ type: "task", taskId: "k1", description: "d", status: "completed" }],
+    };
+
+    expect(finishReply(reply)).toBe(reply);
   });
 
   test("returns the same reply when no tool is running", () => {

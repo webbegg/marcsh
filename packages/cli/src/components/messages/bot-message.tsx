@@ -6,6 +6,7 @@ import { Mode, type ModeType } from "../../lib/modes";
 import { TextAttributes } from "@opentui/core";
 
 type ToolPart = Extract<MessagePart, { type: "tool" }>;
+type TaskPart = Extract<MessagePart, { type: "task" }>;
 
 const MAX_SUMMARY_LENGTH = 80;
 const PREFERRED_INPUT_KEYS = ["command", "file_path", "path", "pattern", "url", "description"];
@@ -36,6 +37,23 @@ export function summarizeToolInput(input: Record<string, unknown>): string {
   return typeof summary === "string" && summary.length > MAX_SUMMARY_LENGTH
     ? `${summary.slice(0, MAX_SUMMARY_LENGTH - 1)}…`
     : String(summary);
+}
+
+/** The task's one-line status: description, status, last tool and usage when known. */
+export function formatTaskLine(part: TaskPart): string {
+  const fields = [
+    part.description,
+    part.status,
+    part.lastToolName,
+    part.toolUses != null ? `${part.toolUses} ${part.toolUses === 1 ? "tool" : "tools"}` : undefined,
+    part.totalTokens != null ? `${part.totalTokens} tok` : undefined,
+  ];
+  return fields.filter((field) => field).join(" · ");
+}
+
+/** What a finished task reports below its line: the summary, or the error of a task that failed without one. */
+function taskOutcome(part: TaskPart): string | undefined {
+  return part.status === "running" ? undefined : part.summary || part.error;
 }
 
 type PartGroup = {
@@ -114,6 +132,28 @@ export function BotMessage({
                     {part.state === "running" ? " …" : ""}
                     {part.state === "error" ? ` ${part.errorText}` : ""}
                   </text>
+                </box>
+              );
+            }
+
+            if (part.type === "task") {
+              const outcome = taskOutcome(part);
+              return (
+                <box
+                  key={`task-${part.taskId}`}
+                  border={["left"]}
+                  borderColor={colors.thinkingBorder}
+                  customBorderChars={{
+                    ...EmptyBorder,
+                    vertical: "│",
+                  }}
+                  width="100%"
+                  paddingX={2}
+                >
+                  <text attributes={TextAttributes.DIM}>
+                    <em fg={colors.info}>Task:</em> {formatTaskLine(part)}
+                  </text>
+                  {outcome && <text attributes={TextAttributes.DIM}>{outcome}</text>}
                 </box>
               );
             }
