@@ -97,14 +97,16 @@ describe("slash commands from Claude Code (S11a)", () => {
     expect(supportedCommandsCalls).toBe(1);
 
     await type("/");
+    // marcsh commands stay in the menu, listed first
+    expect(frame()).toContain("Start a new conversation");
 
+    // The bundled marcsh: plugin entries push Claude commands below the fold, so filter to reach them.
+    await type("probe");
     const text = frame();
     expect(text).toContain("/probe:hello");
     expect(text).toContain("<who>");
     expect(text).toContain("Say hello to someone");
     expect(text).toContain("claude");
-    // marcsh commands stay in the menu
-    expect(text).toContain("Start a new conversation");
   });
 
   test("a Claude command that shares a name with a marcsh command is not listed twice", async () => {

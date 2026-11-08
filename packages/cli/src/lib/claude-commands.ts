@@ -33,6 +33,12 @@ export function normalizeClaudeCommands(raw: unknown): ClaudeCommand[] {
   return [...byName.values()].map((entry) => entry.command);
 }
 
+/** The cached list plus the bundled plugin's entries it lacks; a cached entry wins on the same name (exact CLI text). */
+export function combineClaudeCommands(cached: ClaudeCommand[], bundled: ClaudeCommand[]): ClaudeCommand[] {
+  const known = new Set(cached.map((command) => command.name));
+  return [...cached, ...bundled.filter((command) => !known.has(command.name))];
+}
+
 /**
  * Marcsh's own commands first, in their order, then Claude's sorted by name.
  * A Claude command whose name matches a marcsh one (any case) is dropped: marcsh wins.

@@ -5,13 +5,18 @@ import { getFilteredCommands, getMenuCommands } from "./filter-commands";
 import type { Command } from "./types";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { getStorage } from "../../lib/storage";
+import { combineClaudeCommands } from "../../lib/claude-commands";
+import { marcshPluginPath, readPluginCommands } from "../../lib/plugin";
 
-// Read when the menu opens, so a list cached by a turn that just ended shows up.
+// Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
+// The plugin's own commands are read from disk, so they are listed even with an empty cache.
 function loadMenuCommands(): Command[] {
+  const pluginPath = marcshPluginPath();
+  const bundled = pluginPath ? readPluginCommands(pluginPath) : [];
   try {
-    return getMenuCommands(getStorage().getClaudeCommands());
+    return getMenuCommands(combineClaudeCommands(getStorage().getClaudeCommands(), bundled));
   } catch {
-    return getMenuCommands([]);
+    return getMenuCommands(bundled);
   }
 }
 

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { marcshPluginPath } from "./plugin";
+import { marcshPluginPath, readPluginCommands } from "./plugin";
 
 const CLI_ROOT = join(import.meta.dir, "..", "..");
 
@@ -30,6 +30,52 @@ describe("marcshPluginPath", () => {
   test("returns null when no candidate has a manifest", () => {
     expect(marcshPluginPath("/nonexistent/marcsh/dir")).toBeNull();
     expect(marcshPluginPath(tmpdir())).toBeNull();
+  });
+});
+
+describe("readPluginCommands", () => {
+  const commands = readPluginCommands(marcshPluginPath()!);
+  const find = (name: string) => commands.find((command) => command.name === name);
+
+  test("lists the feature command as marcsh:feature with its description and argument hint", () => {
+    const feature = find("marcsh:feature");
+    expect(feature).toBeDefined();
+    expect(feature!.argumentHint).toBe("<feature-name>");
+    expect(feature!.description).toBe(frontmatter(join(marcshPluginPath()!, "commands", "feature.md")).description!);
+    expect(feature!.description.length).toBeGreaterThan(0);
+  });
+
+  test("lists the workflow skill as marcsh:workflow with its description", () => {
+    const workflow = find("marcsh:workflow");
+    expect(workflow).toBeDefined();
+    expect(workflow!.argumentHint).toBe("");
+    expect(workflow!.description).toBe(frontmatter(join(marcshPluginPath()!, "skills", "workflow", "SKILL.md")).description!);
+  });
+
+  test("returns [] for a missing or empty directory", () => {
+    expect(readPluginCommands("/nonexistent/marcsh/plugin")).toEqual([]);
+    expect(readPluginCommands(tmpdir())).toEqual([]);
+  });
+
+  test("reads quoted values, falls back to the file or folder name, and skips unreadable entries", () => {
+    const root = mkdtempSync(join(tmpdir(), "marcsh-plugin-"));
+    try {
+      mkdirSync(join(root, "commands"));
+      mkdirSync(join(root, "skills", "plain"), { recursive: true });
+      mkdirSync(join(root, "skills", "empty"), { recursive: true });
+      writeFileSync(join(root, "commands", "quoted.md"), '---\ndescription: "Say \'hi\'"\nargument-hint: \'<who>\'\n---\nbody\n');
+      writeFileSync(join(root, "commands", "bare.md"), "no frontmatter\n");
+      writeFileSync(join(root, "commands", "notes.txt"), "ignored");
+      writeFileSync(join(root, "skills", "plain", "SKILL.md"), "---\nname: renamed\ndescription: A skill\n---\n");
+
+      expect(readPluginCommands(root).sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+        { name: "marcsh:bare", description: "", argumentHint: "" },
+        { name: "marcsh:quoted", description: "Say 'hi'", argumentHint: "<who>" },
+        { name: "marcsh:renamed", description: "A skill", argumentHint: "" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

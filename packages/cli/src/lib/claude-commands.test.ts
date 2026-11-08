@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeCommands, normalizeClaudeCommands, slashInputKind } from "./claude-commands";
+import { combineClaudeCommands, mergeCommands, normalizeClaudeCommands, slashInputKind } from "./claude-commands";
 
 const OWN = ["new", "agents", "models", "sessions", "theme", "exit"];
 
@@ -86,6 +86,52 @@ describe("mergeCommands", () => {
     mergeCommands(own, claude, entry);
 
     expect(claude.map((c) => c.name)).toEqual(["b", "a"]);
+  });
+});
+
+describe("combineClaudeCommands", () => {
+  const cmd = (name: string, description: string) => ({ name, description, argumentHint: "" });
+
+  test("lists the cached commands, then the bundled ones the cache does not have", () => {
+    expect(
+      combineClaudeCommands([cmd("review", "cached")], [cmd("marcsh:feature", "static"), cmd("marcsh:workflow", "static")]),
+    ).toEqual([cmd("review", "cached"), cmd("marcsh:feature", "static"), cmd("marcsh:workflow", "static")]);
+  });
+
+  test("the cached entry wins on the same name (it carries the CLI's exact description)", () => {
+    const combined = combineClaudeCommands(
+      [{ name: "marcsh:feature", description: "from the CLI", argumentHint: "<feature-name>" }],
+      [cmd("marcsh:feature", "from the file")],
+    );
+
+    expect(combined).toEqual([{ name: "marcsh:feature", description: "from the CLI", argumentHint: "<feature-name>" }]);
+  });
+
+  test("with an empty cache the bundled commands are all there is", () => {
+    expect(combineClaudeCommands([], [cmd("marcsh:feature", "static")])).toEqual([cmd("marcsh:feature", "static")]);
+    expect(combineClaudeCommands([], [])).toEqual([]);
+  });
+
+  test("marcsh's own commands still win over both once merged into the menu", () => {
+    const own = OWN.map((name) => ({ name, description: `own ${name}` }));
+    const claude = combineClaudeCommands(
+      [cmd("new", "cached new"), cmd("zeta", "cached")],
+      [cmd("theme", "static theme"), cmd("marcsh:feature", "static")],
+    );
+
+    const merged = mergeCommands(own, claude, (c) => ({ name: c.name, description: c.description }));
+
+    expect(merged.map((c) => c.name)).toEqual([...OWN, "marcsh:feature", "zeta"]);
+    expect(merged.find((c) => c.name === "new")!.description).toBe("own new");
+  });
+
+  test("does not mutate its inputs", () => {
+    const cached = [cmd("a", "")];
+    const bundled = [cmd("b", "")];
+    combineClaudeCommands(cached, bundled);
+
+    expect(cached).toEqual([cmd("a", "")]);
+    expect(bundled).toEqual([cmd("b", "")]);
   });
 });
 

@@ -5,6 +5,8 @@ import { RootLayout } from "./layouts/root-layout";
 import { Home } from "./screens/home";
 import { NewSession } from "./screens/new-session";
 import { Session } from "./screens/session";
+import { warmUpClaudeCommands } from "./lib/command-warmup";
+import { getStorage } from "./lib/storage";
 
 const router = createMemoryRouter([
   {
@@ -27,3 +29,9 @@ const renderer = await createCliRenderer({
   exitOnCtrlC: false,
 });
 createRoot(renderer).render(<App />);
+
+// Fills the `/` menu's Claude Code command list without waiting for a chat turn; never delays or breaks the first render.
+void warmUpClaudeCommands({
+  cwd: process.cwd(),
+  save: (commands) => getStorage().saveClaudeCommands(commands),
+});
