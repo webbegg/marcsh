@@ -112,9 +112,10 @@ afterEach(async () => {
 });
 
 describe("each session runs on its own engine (S2)", () => {
-  test("a Claude session sends its alias to the Claude engine and labels itself claude", async () => {
+  test("a Claude session sends its alias to the Claude engine and shows no engine label", async () => {
     await openSession("claude");
-    expect(frame()).toContain("opus · claude");
+    expect(frame()).toContain("Build › opus");
+    expect(frame()).not.toContain("· claude");
 
     await type("hello");
     await press("RETURN");
@@ -202,7 +203,8 @@ describe("/engine (S2)", () => {
     expect(after).toContain("New sessions will use pi");
     expect(after).not.toContain("Claude (Agent SDK)");
     expect(getStorage().getSession(session.id)!.engine).toBe("claude");
-    expect(after).toContain("opus · claude");
+    expect(after).toContain("Build › opus");
+    expect(after).not.toContain("· claude");
 
     // The open session still runs on Claude.
     await type("hello");
@@ -226,7 +228,8 @@ describe("/engine (S2)", () => {
 
   test("the home screen shows the engine a new session will use", async () => {
     await open("/");
-    expect(frame()).toContain("opus · claude");
+    expect(frame()).toContain("Build › opus");
+    expect(frame()).not.toContain("· claude");
 
     rmSync(prefsPath, { force: true });
     writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi" }), "utf8");

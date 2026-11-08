@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act } from "react";
 
 process.env.MARCSH_DB_PATH = ":memory:";
+// Never the real ~/.marcsh/preferences.json: a missing file reads as no preferences, and writes land in tmp.
+process.env.MARCSH_PREFERENCES_PATH = join(tmpdir(), `marcsh-screen-prefs-${process.pid}`, "preferences.json");
 
 const PROBE = { name: "probe:hello", description: "Say hello to someone", argumentHint: "<who>", builtin: false };
 // Shares a name with a marcsh command, so the marcsh one must win.

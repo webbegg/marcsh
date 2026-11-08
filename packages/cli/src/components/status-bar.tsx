@@ -25,9 +25,12 @@ export function StatusBar({ engine }: Props) {
         ›
       </text>
       <text>{modelForEngine(engineId, model)}</text>
-      <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
-        · {engineId}
-      </text>
+      {/* Claude sessions look as they always did; only another engine is named. */}
+      {engineId === "claude" ? null : (
+        <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
+          · {engineId}
+        </text>
+      )}
     </box>
   );
 };

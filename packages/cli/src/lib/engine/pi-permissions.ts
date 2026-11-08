@@ -8,16 +8,32 @@ const INTERRUPTED_REASON = "The turn ended before this tool call was approved.";
 /** pi's read-only tools. Like Claude's default mode, they run without asking; everything else asks. */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
-export function needsApproval(toolName: string): boolean {
-  return !(READ_ONLY_TOOLS as readonly string[]).includes(toolName);
-}
+/** The part of pi's `ToolInfo` that says where a tool comes from: pi's own tools have the path `builtin:<name>`. */
+export type ToolSource = { name: string; sourceInfo: { path: string } };
 
 /**
- * The rule an "always" answer stores: the exact command for `bash`, the tool name for any other tool.
- * A `bash` call without a command has no rule, so "always" allows it once.
+ * Read-only means pi's own read, grep, find or ls. An extension can register a tool with one of those
+ * names and replace the built-in, so the name alone proves nothing: the tool must come from pi itself.
+ */
+export function isReadOnlyBuiltin(tool: ToolSource): boolean {
+  return (READ_ONLY_TOOLS as readonly string[]).includes(tool.name) && tool.sourceInfo.path === `builtin:${tool.name}`;
+}
+
+/** A tool that is not registered (or not pi's read-only one) asks. */
+export function needsApproval(toolName: string, tools: readonly ToolSource[]): boolean {
+  const tool = tools.find((candidate) => candidate.name === toolName);
+  return !tool || !isReadOnlyBuiltin(tool);
+}
+
+/** Shell tools: an "always" answer covers the exact command only. */
+const COMMAND_TOOLS = ["bash", "powershell"];
+
+/**
+ * The rule an "always" answer stores: the exact command for a shell tool (`bash`, `powershell`), the tool
+ * name for any other tool. A shell call without a command has no rule, so "always" allows it once.
  */
 export function ruleFor(cwd: string, toolName: string, input: Record<string, unknown>): PermissionRule | undefined {
-  if (toolName !== "bash") return { cwd, toolName };
+  if (!COMMAND_TOOLS.includes(toolName)) return { cwd, toolName };
   const command = input.command;
   return typeof command === "string" && command !== "" ? { cwd, toolName, command } : undefined;
 }
@@ -31,12 +47,14 @@ export type ApprovalOptions = {
   host: Pick<TurnHost, "askPermission">;
   /** Aborts when the turn ends; a pending ask is then declined and its call never runs. */
   signal: AbortSignal;
+  /** The session's tools with their sources (`pi.getAllTools()`), read when a call arrives. */
+  tools: () => readonly ToolSource[];
 };
 
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, tools }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
-    if (!needsApproval(call.toolName)) return undefined;
+    if (!needsApproval(call.toolName, tools())) return undefined;
     const rule = ruleFor(cwd, call.toolName, call.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
@@ -55,9 +73,9 @@ export function createApprovalHandler({ cwd, rules, host, signal }: ApprovalOpti
 }
 
 /** The pi extension that routes every tool call through marcsh's approval prompt. */
-export function createApprovalExtension(options: ApprovalOptions): ExtensionFactory {
-  const decide = createApprovalHandler(options);
+export function createApprovalExtension(options: Omit<ApprovalOptions, "tools">): ExtensionFactory {
   return (pi) => {
+    const decide = createApprovalHandler({ ...options, tools: () => pi.getAllTools() });
     pi.on("tool_call", (event) => decide({ toolName: event.toolName, input: event.input }));
   };
 }

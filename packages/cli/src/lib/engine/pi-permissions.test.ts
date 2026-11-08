@@ -6,19 +6,33 @@ import {
   needsApproval,
   READ_ONLY_TOOLS,
   ruleFor,
+  type ToolSource,
 } from "./pi-permissions";
 import type { PermissionAsk, PermissionDecision } from "./types";
 
+const builtin = (name: string): ToolSource => ({ name, sourceInfo: { path: `builtin:${name}` } });
+const fromExtension = (name: string): ToolSource => ({ name, sourceInfo: { path: `/agent/extensions/${name}.ts` } });
+const piTools = ["read", "grep", "find", "ls", "bash", "edit", "write", "powershell"].map(builtin);
+
 describe("needsApproval", () => {
-  test("pi's read-only tools run without asking", () => {
+  test("pi's built-in read-only tools run without asking", () => {
     expect([...READ_ONLY_TOOLS]).toEqual(["read", "grep", "find", "ls"]);
-    for (const tool of READ_ONLY_TOOLS) expect(needsApproval(tool)).toBe(false);
+    for (const tool of READ_ONLY_TOOLS) expect(needsApproval(tool, piTools)).toBe(false);
   });
 
   test("bash, edit, write and every other tool ask", () => {
+    const tools = [...piTools, ...["AskUserQuestion", "mcp__fs__delete", "my_extension_tool"].map(fromExtension)];
     for (const tool of ["bash", "edit", "write", "powershell", "AskUserQuestion", "mcp__fs__delete", "my_extension_tool"]) {
-      expect(needsApproval(tool)).toBe(true);
+      expect(needsApproval(tool, tools)).toBe(true);
     }
+  });
+
+  test("an extension tool named like a read-only tool asks", () => {
+    for (const tool of READ_ONLY_TOOLS) expect(needsApproval(tool, [fromExtension(tool)])).toBe(true);
+  });
+
+  test("a tool pi does not list asks", () => {
+    expect(needsApproval("read", [])).toBe(true);
   });
 });
 
@@ -37,6 +51,12 @@ describe("ruleFor", () => {
     expect(ruleFor("/work", "bash", { command: "" })).toBeUndefined();
     expect(ruleFor("/work", "bash", { command: 42 })).toBeUndefined();
   });
+
+  test("powershell is ruled like bash: the exact command, never the whole tool", () => {
+    expect(ruleFor("/work", "powershell", { command: "Get-Date" })).toEqual({ cwd: "/work", toolName: "powershell", command: "Get-Date" });
+    expect(ruleFor("/work", "powershell", {})).toBeUndefined();
+    expect(ruleFor("/work", "powershell", { command: "" })).toBeUndefined();
+  });
 });
 
 describe("createApprovalHandler", () => {
@@ -48,6 +68,7 @@ describe("createApprovalHandler", () => {
       cwd,
       rules,
       signal: controller.signal,
+      tools: () => piTools,
       host: {
         askPermission: async (ask) => {
           asks.push(ask);
@@ -63,6 +84,26 @@ describe("createApprovalHandler", () => {
 
     expect(await handler({ toolName: "read", input: { path: "a" } })).toBeUndefined();
     expect(asks).toEqual([]);
+  });
+
+  test("a read tool that an extension replaced asks", async () => {
+    const rules = openStorage(":memory:");
+    const asks: PermissionAsk[] = [];
+    const handler = createApprovalHandler({
+      cwd: "/work",
+      rules,
+      signal: new AbortController().signal,
+      tools: () => [fromExtension("read")],
+      host: {
+        askPermission: async (ask) => {
+          asks.push(ask);
+          return "deny";
+        },
+      },
+    });
+
+    expect(await handler({ toolName: "read", input: { path: "a" } })).toEqual({ block: true, reason: DENIED_REASON });
+    expect(asks).toHaveLength(1);
   });
 
   test("asks with the tool name and input, and lets an allowed call through", async () => {

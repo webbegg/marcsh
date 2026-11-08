@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act } from "react";
 
 process.env.MARCSH_DB_PATH = ":memory:";
+// Never the real ~/.marcsh/preferences.json: a missing file reads as no preferences, and writes land in tmp.
+process.env.MARCSH_PREFERENCES_PATH = join(tmpdir(), `marcsh-screen-prefs-${process.pid}`, "preferences.json");
 
 // Fake query(): init → Agent tool call → a hidden subagent tool call → task messages → result.
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
