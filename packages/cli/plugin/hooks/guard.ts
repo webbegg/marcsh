@@ -13,12 +13,24 @@ function git(cwd: string, ...args: string[]): string | null {
   }
 }
 
+function gitSucceeds(cwd: string, ...args: string[]): boolean {
+  try {
+    return Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 5000 }).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
 function lookupBranch(cwd: string, dir: string | null): BranchInfo | null {
   const where = dir ? resolve(cwd, dir) : cwd;
   const branch = git(where, "symbolic-ref", "--short", "HEAD");
   if (!branch) return null;
   const origin = git(where, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
-  return { branch, defaultBranch: origin ? origin.replace(/^origin\//, "") : null };
+  return {
+    branch,
+    defaultBranch: origin ? origin.replace(/^origin\//, "") : null,
+    isLocalBranch: (name) => gitSucceeds(where, "show-ref", "--verify", "--quiet", `refs/heads/${name}`),
+  };
 }
 
 async function main() {

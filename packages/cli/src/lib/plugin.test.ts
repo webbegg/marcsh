@@ -62,7 +62,10 @@ describe("plugin contents", () => {
     const entries = config.hooks.PreToolUse;
     expect(entries).toHaveLength(1);
     expect(entries[0].matcher).toBe("Bash");
-    expect(entries[0].hooks).toEqual([{ type: "command", command: 'bun "${CLAUDE_PLUGIN_ROOT}/hooks/guard.ts"' }]);
+    // Runs from the plugin root so a project's bunfig.toml preload cannot corrupt the hook JSON.
+    expect(entries[0].hooks).toEqual([
+      { type: "command", command: 'cd "${CLAUDE_PLUGIN_ROOT}" && bun "${CLAUDE_PLUGIN_ROOT}/hooks/guard.ts"' },
+    ]);
     expect(existsSync(join(path, "hooks", "guard.ts"))).toBe(true);
     expect(existsSync(join(path, "hooks", "guard-lib.ts"))).toBe(true);
   });

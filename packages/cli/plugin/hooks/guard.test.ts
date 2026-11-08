@@ -70,6 +70,29 @@ describe("guard.ts (hook script)", () => {
     expect(JSON.parse(runGuard(hook(`git -C ${repo} commit -m x`, plain)).out).hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
+  test("judges the branch a commit lands on after a switch earlier in the same command", () => {
+    git(repo, "switch", "-q", "-c", "feat/real");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "feature work");
+    try {
+      // On a real feature branch, checking out main (an existing local branch) and committing lands on main.
+      const out = runGuard(hook("git checkout main && git commit -m x", repo)).out;
+      expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toBe(
+        "marcsh: commits on main are blocked; create a branch first (git switch -c <type>/<description>)",
+      );
+      expect(JSON.parse(runGuard(hook("git switch main && git commit -m x", repo)).out).hookSpecificOutput.permissionDecision).toBe("deny");
+      // A file path or a name that is not a local branch is not a switch.
+      expect(runGuard(hook("git checkout -- main && git commit -m x", repo)).out).toBe("");
+      expect(runGuard(hook("git checkout no-such-branch && git commit -m x", repo)).out).toBe("");
+      // From main, switching to the existing feature branch first makes the commit allowed.
+      git(repo, "switch", "-q", "main");
+      expect(runGuard(hook("git switch feat/real && git commit -m x", repo)).out).toBe("");
+      expect(runGuard(hook("git checkout feat/real && git commit -m x", repo)).out).toBe("");
+      expect(JSON.parse(runGuard(hook("git commit -m x", repo)).out).hookSpecificOutput.permissionDecision).toBe("deny");
+    } finally {
+      git(repo, "switch", "-q", "main");
+    }
+  });
+
   test("the default branch comes from origin/HEAD when it is set", () => {
     git(repo, "switch", "-q", "-c", "develop");
     git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop");

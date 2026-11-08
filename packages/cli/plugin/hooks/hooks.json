@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.ts\""
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && bun \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.ts\""
           }
         ]
       }
