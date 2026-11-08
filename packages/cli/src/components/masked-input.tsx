@@ -66,8 +66,13 @@ export function MaskedInput({ onSubmit, placeholder = "" }: Props) {
         <text attributes={TextAttributes.DIM}>{placeholder}</text>
       ) : (
         <>
-          <text>{"•".repeat(Math.min(length, MAX_DOTS))}</text>
-          <text attributes={TextAttributes.DIM}>({length} characters)</text>
+          {/* The dots give way when the row is narrow; the count never does. */}
+          <box flexShrink={1} overflow="hidden">
+            <text wrapMode="none">{"•".repeat(Math.min(length, MAX_DOTS))}</text>
+          </box>
+          <box flexShrink={0}>
+            <text attributes={TextAttributes.DIM} wrapMode="none">({length} characters)</text>
+          </box>
         </>
       )}
     </box>

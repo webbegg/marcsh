@@ -75,6 +75,28 @@ describe("applyPiEvent", () => {
     expect(reply.parts[0]).toMatchObject({ state: "error", errorText: "boom!" });
   });
 
+  test("redacts keys and bearer tokens in a tool error", () => {
+    const withTool = applyPiEvent(empty, assistantEnd([{ type: "toolCall", id: "t1", name: "echo", arguments: {} }]));
+
+    const reply = applyPiEvent(
+      withTool,
+      event({
+        type: "tool_execution_end",
+        toolCallId: "t1",
+        toolName: "echo",
+        result: { content: [{ type: "text", text: "401 for key sk-ant-api03-AbCdEf0123456789 with Authorization: Bearer abc.def-123_456" }] },
+        isError: true,
+      }),
+    );
+
+    const part = reply.parts.find((p) => p.type === "tool");
+    expect(part).toMatchObject({ state: "error" });
+    const text = part?.type === "tool" ? part.errorText : "";
+    expect(text).toContain("401 for key");
+    expect(text).not.toContain("sk-ant");
+    expect(text).not.toContain("abc.def");
+  });
+
   test("ignores a tool result for an unknown call", () => {
     const reply = applyPiEvent(
       empty,

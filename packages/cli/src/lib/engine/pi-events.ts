@@ -1,5 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, MessagePart } from "../chat-types";
+import { redactSecrets } from "./pi-auth";
 
 type ContentBlock = Record<string, unknown> & { type?: string };
 
@@ -45,7 +46,7 @@ function finishTool(reply: ChatMessage, toolCallId: string, result: unknown, isE
   const part = reply.parts[index];
   if (!part || part.type !== "tool") return reply;
 
-  const next: MessagePart = isError ? { ...part, state: "error", errorText: resultText(result) } : { ...part, state: "done" };
+  const next: MessagePart = isError ? { ...part, state: "error", errorText: redactSecrets(resultText(result)) } : { ...part, state: "done" };
   return { ...reply, parts: reply.parts.map((p, i) => (i === index ? next : p)) };
 }
 

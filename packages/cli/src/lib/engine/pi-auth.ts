@@ -100,7 +100,7 @@ function openUrl(url: string) {
 const MASK = "•••";
 const MAX_ERROR_LENGTH = 300;
 
-/** Hides what the user typed, bearer tokens, JWTs and other long token-like strings in a message that may be shown. */
+/** Hides what the user typed, bearer tokens, `sk-` API keys, JWTs and other long token-like strings in a message that may be shown. */
 export function redactSecrets(text: string, secrets: Iterable<string> = []): string {
   let redacted = text;
   for (const secret of secrets) {
@@ -108,6 +108,7 @@ export function redactSecrets(text: string, secrets: Iterable<string> = []): str
   }
   return redacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${MASK}`)
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, MASK)
     .replace(/[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]*/g, MASK)
     .replace(/[A-Za-z0-9_-]{32,}/g, MASK);
 }

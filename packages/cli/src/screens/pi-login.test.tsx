@@ -211,6 +211,23 @@ describe("/login (S12)", () => {
     expect(text).not.toContain("abc123");
   });
 
+  test("a very long paste keeps the whole \"(N characters)\" label inside the dialog", async () => {
+    await openSession("pi");
+    await run("/login");
+    await type("fake subscr");
+    await press("RETURN");
+
+    const code = `code-${"abcdefghij".repeat(500)}xyz`;
+    expect(code).toHaveLength(5008);
+    await paste(code);
+
+    const text = frame();
+    expect(text).toContain("(5008 characters)");
+    expect(text).not.toContain("abcdefghij");
+    const dotsLine = screen!.captureCharFrame().split("\n").find((line) => line.includes("•"))!;
+    expect(dotsLine).toContain("(5008 characters)");
+  });
+
   test("device-code login shows the code and page and finishes once the flow does", async () => {
     await openSession("pi");
     await run("/login");
