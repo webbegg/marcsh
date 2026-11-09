@@ -115,6 +115,12 @@ function routed(script: Record<string, FauxResponseStep[]>): FauxResponseStep[] 
   return Array.from({ length: 30 }, () => step);
 }
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+// The approved command runs in a child process: under load it can finish after the next prompt is drawn.
+const eventually = async (check: () => boolean, timeoutMs = 8000) => {
+  const start = Date.now();
+  while (!check() && Date.now() - start < timeoutMs) await settle(25);
+  return check();
+};
 
 describe("S13 verifier: subagent approvals on screen", () => {
   test("parallel children's approvals show one at a time; each answer applies to its own child", async () => {
@@ -130,11 +136,13 @@ describe("S13 verifier: subagent approvals on screen", () => {
     expect(first).toContain("Task: Second job · running");
     const firstIsA = first.includes("a.txt");
     await press("y");
-    await settle(200);
+    // Wait for the other child's prompt itself, not just any "Allow bash?" (the first one can still be on screen).
+    const otherFile = firstIsA ? "b.txt" : "a.txt";
+    await eventually(() => frame().includes("Allow bash?") && frame().includes(otherFile) && !frame().includes(firstIsA ? "a.txt" : "b.txt"));
     const second = await frameContaining("Allow bash?");
     expect(count(second, "Allow bash?")).toBe(1);
-    expect(second.includes(firstIsA ? "b.txt" : "a.txt")).toBe(true);
-    expect(existsSync(firstIsA ? a : b)).toBe(true);
+    expect(second.includes(otherFile)).toBe(true);
+    expect(await eventually(() => existsSync(firstIsA ? a : b))).toBe(true);
     expect(existsSync(firstIsA ? b : a)).toBe(false);
     await press("n");
     const finished = await frameContaining("parent done");
