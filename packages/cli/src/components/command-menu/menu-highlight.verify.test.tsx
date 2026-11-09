@@ -1,6 +1,6 @@
 // S12 interaction (T11 B1): the `/` menu keeps `/new` highlighted on its first visible row at every height, on the session and home screens, while resizing and navigating.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -58,8 +58,10 @@ for (const kind of ["session", "home"] as const)
       try { check(`${kind} 80x${h}`, screen, h >= 40 ? 10 : undefined); } finally { await act(async () => screen.renderer.destroy()); }
     });
   }
-test("resize while open session 40->16->12->17->40 and home", async () => {
-  for (const kind of ["session", "home"] as const) {
+// Runs with the real default engine (pi): shrinking once left the menu scrolled with /new off the top.
+for (const kind of ["session", "home"] as const)
+  test(`resize while open ${kind} 40->16->12->17->9->40`, async () => {
+    const prefs = process.env.MARCSH_PREFERENCES_PATH!;
     const screen = await open(kind, 80, 40);
     try {
       check(`${kind} start 40`, screen, 10);
@@ -67,9 +69,11 @@ test("resize while open session 40->16->12->17->40 and home", async () => {
         await act(async () => screen.resize(80, h)); await settle(150);
         check(`${kind} resized ${h}`, screen, h === 40 ? 10 : undefined);
       }
-    } finally { await act(async () => screen.renderer.destroy()); }
-  }
-});
+    } finally {
+      await act(async () => screen.renderer.destroy());
+      rmSync(prefs, { force: true });
+    }
+  });
 test("arrow navigation at 80x16 keeps highlighted row visible; filtering re-measures", async () => {
   const screen = await open("session", 80, 16);
   try {

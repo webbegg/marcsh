@@ -22,7 +22,17 @@ const writeRaw = (text: string) => {
 };
 
 describe("default engine preference", () => {
-  test("is claude when there is no preferences file", () => {
+  test("is pi when there is no preferences file", () => {
+    expect(getDefaultEngine(path)).toBe("pi");
+  });
+
+  test("is pi when preferences exist but hold no engine", () => {
+    writeRaw(JSON.stringify({ themeName: "nord" }));
+    expect(getDefaultEngine(path)).toBe("pi");
+  });
+
+  test("an explicit stored claude is kept", () => {
+    writeRaw(JSON.stringify({ defaultEngine: "claude" }));
     expect(getDefaultEngine(path)).toBe("claude");
   });
 
@@ -36,20 +46,20 @@ describe("default engine preference", () => {
     expect(getDefaultEngine(path)).toBe("claude");
   });
 
-  test("an unknown stored value falls back to claude", () => {
+  test("an unknown stored value falls back to the default (pi)", () => {
     writeRaw(JSON.stringify({ defaultEngine: "gpt" }));
-    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getDefaultEngine(path)).toBe("pi");
 
     writeRaw(JSON.stringify({ defaultEngine: 7 }));
-    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getDefaultEngine(path)).toBe("pi");
   });
 
-  test("a broken preferences file falls back to claude", () => {
+  test("a broken preferences file falls back to the default (pi)", () => {
     writeRaw("{not json");
-    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getDefaultEngine(path)).toBe("pi");
 
     writeRaw("[]");
-    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getDefaultEngine(path)).toBe("pi");
   });
 
   test("setting it keeps the other preferences, and updating them keeps the engine", () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -42,6 +42,11 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { engines } = await import("../lib/engine");
+
+// pi is the default engine and its status line asks the pi runtime: a stand-in without one keeps the real pi engine from loading.
+beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} }));
+afterAll(() => engines.set("pi", undefined));
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));

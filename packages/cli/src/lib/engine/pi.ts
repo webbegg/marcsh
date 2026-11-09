@@ -17,9 +17,12 @@ import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subage
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
-/** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
+/**
+ * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
+ * `MARCSH_AGENT_DIR` moves it (tests point it at a temp dir so they never touch the real login).
+ */
 export function defaultPiAgentDir(): string {
-  return join(homedir(), ".marcsh", "agent");
+  return process.env.MARCSH_AGENT_DIR?.trim() || join(homedir(), ".marcsh", "agent");
 }
 
 /**

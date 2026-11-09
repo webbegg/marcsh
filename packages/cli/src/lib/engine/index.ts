@@ -8,7 +8,7 @@ import type { Engine } from "./types";
 export const ENGINE_IDS = ["claude", "pi"] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
-export const DEFAULT_ENGINE_ID: EngineId = "claude";
+export const DEFAULT_ENGINE_ID: EngineId = "pi";
 
 export const ENGINE_LABELS: Record<EngineId, string> = {
   claude: "Claude (Agent SDK)",

@@ -20,6 +20,9 @@ const logout = await removeLogin(runtime, (await listStoredLogins(runtime)).find
 console.log(JSON.stringify({ results, logout: logout.status }));
 `;
 
+// The test preload's MARCSH_AGENT_DIR must not reach the child, which checks the default ~/.marcsh/agent.
+const { MARCSH_AGENT_DIR: _agentDirOverride, ...parentEnv } = process.env;
+
 test("logins and a logout stay in ~/.marcsh/agent/auth.json (0600); ~/.pi, the decoy dir and the project .pi are untouched", async () => {
   const root = mkdtempSync(join(tmpdir(), "verify-agent-dir-"));
   try {
@@ -29,7 +32,7 @@ test("logins and a logout stay in ~/.marcsh/agent/auth.json (0600); ~/.pi, the d
     mkdirSync(project);
     const proc = Bun.spawn([process.execPath, "-e", child], {
       cwd: import.meta.dir,
-      env: { ...process.env, HOME: home, TMPDIR: root, PI_CODING_AGENT_DIR: join(root, "decoy"), ANTHROPIC_API_KEY: "", OPENROUTER_API_KEY: "", GROQ_API_KEY: "" },
+      env: { ...parentEnv, HOME: home, TMPDIR: root, PI_CODING_AGENT_DIR: join(root, "decoy"), ANTHROPIC_API_KEY: "", OPENROUTER_API_KEY: "", GROQ_API_KEY: "" },
       stdout: "pipe",
       stderr: "pipe",
     });

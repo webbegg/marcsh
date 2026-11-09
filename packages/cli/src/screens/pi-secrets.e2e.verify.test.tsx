@@ -25,8 +25,9 @@ const modelRuntime = await pi.ModelRuntime.create({ credentials: new InMemoryCre
 modelRuntime.registerNativeProvider(faux.provider);
 const piEngine = createPiEngine({ agentDir: join(dir, "agent"), modelRuntime, permissionRules: { addPermissionRule() {}, hasPermissionRule: () => true } });
 const wrapped = { ...piEngine, id: "claude", startTurn: (req: any, host: any) => piEngine.startTurn({ ...req, model: "faux/faux-1" }, host) };
-beforeAll(() => { engines.set("claude", wrapped as any); });
-afterAll(() => { engines.set("claude", undefined); });
+// pi is the default engine: the status line asks its runtime, so the isolated engine (faux provider only) stands in for the real one.
+beforeAll(() => { engines.set("claude", wrapped as any); engines.set("pi", piEngine); });
+afterAll(() => { engines.set("claude", undefined); engines.set("pi", undefined); });
 const needles = [KEY, KEY.slice(0, 20), "E2ELEAK", "E2EBEARER", "E2EOPAQUE", BEARER];
 function scan(label: string) {
   const hits: string[] = [];

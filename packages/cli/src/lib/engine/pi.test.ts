@@ -126,10 +126,39 @@ function answering(decision: PermissionDecision) {
   return { asks, host };
 }
 
+/** Runs `body` with MARCSH_AGENT_DIR set to `value` (unset when undefined), then restores it. */
+function withAgentDirEnv(value: string | undefined, body: () => void) {
+  const previous = process.env.MARCSH_AGENT_DIR;
+  try {
+    if (value === undefined) delete process.env.MARCSH_AGENT_DIR;
+    else process.env.MARCSH_AGENT_DIR = value;
+    body();
+  } finally {
+    if (previous === undefined) delete process.env.MARCSH_AGENT_DIR;
+    else process.env.MARCSH_AGENT_DIR = previous;
+  }
+}
+
 describe("createPiEngine", () => {
   test("keeps pi's files in marcsh's own agent directory, never pi's", () => {
-    expect(defaultPiAgentDir()).toBe(join(homedir(), ".marcsh", "agent"));
-    expect(defaultPiAgentDir()).not.toContain(join(".pi", "agent"));
+    withAgentDirEnv(undefined, () => {
+      expect(defaultPiAgentDir()).toBe(join(homedir(), ".marcsh", "agent"));
+      expect(defaultPiAgentDir()).not.toContain(join(".pi", "agent"));
+    });
+  });
+
+  test("MARCSH_AGENT_DIR overrides the agent directory, trimmed; empty or blank means the default", () => {
+    withAgentDirEnv(" /tmp/x/agent ", () => expect(defaultPiAgentDir()).toBe("/tmp/x/agent"));
+    withAgentDirEnv("", () => expect(defaultPiAgentDir()).toBe(join(homedir(), ".marcsh", "agent")));
+    withAgentDirEnv("   ", () => expect(defaultPiAgentDir()).toBe(join(homedir(), ".marcsh", "agent")));
+  });
+
+  test("the test preload points the agent directory at a temp dir, never the real one", () => {
+    const configured = process.env.MARCSH_AGENT_DIR;
+    expect(configured).toBeTruthy();
+    expect(defaultPiAgentDir()).toBe(configured as string);
+    expect(configured as string).not.toBe(join(homedir(), ".marcsh", "agent"));
+    expect((configured as string).startsWith(realpathSync(tmpdir())) || (configured as string).startsWith(tmpdir())).toBe(true);
   });
 
   test("identifies itself as pi", async () => {
@@ -941,10 +970,16 @@ await engine.getRuntime();
 console.log("ok");
 `;
 
+// The preload's agent dir override must not reach a child that checks the default path under its own HOME.
+function childBaseEnv() {
+  const { MARCSH_AGENT_DIR: _ignored, ...rest } = process.env;
+  return rest;
+}
+
 async function runChild(env: Record<string, string>) {
   const proc = Bun.spawn([process.execPath, "-e", touchAgentDir], {
     cwd: import.meta.dir,
-    env: { ...process.env, ...env },
+    env: { ...childBaseEnv(), ...env },
     stdout: "pipe",
     stderr: "pipe",
   });

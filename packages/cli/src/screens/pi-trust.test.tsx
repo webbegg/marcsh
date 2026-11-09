@@ -412,8 +412,8 @@ describe("the trust prompt fits any terminal (S18)", () => {
     await press("RETURN");
     await settle(QUIET_MS);
 
-    expect(frame()).toContain(TITLE);
-    expect(frame()).toContain("scroll to the end first");
+    // Enter restarts the quiet window: under a loaded suite the hint can take longer than one window to return.
+    expect(await frameContaining("scroll to the end first")).toContain(TITLE);
     expect(frame()).not.toContain("press Enter to trust");
     expect(getStorage().getProjectTrust(cwd)).toBeNull();
     expect(existsSync(marker())).toBe(false);

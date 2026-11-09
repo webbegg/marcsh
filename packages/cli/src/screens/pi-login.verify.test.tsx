@@ -172,7 +172,8 @@ describe("secrets in the TUI", () => {
 
 describe("models and Claude sessions", () => {
   test("S-g a Claude session sends its Claude alias and never asks the pi runtime", async () => {
-    writeFileSync(prefsPath, JSON.stringify({ piModel: "v-key/v-key-m" }));
+    // Claude is the stored default here: with pi as the default, the status line asks the runtime for its model.
+    writeFileSync(prefsPath, JSON.stringify({ piModel: "v-key/v-key-m", defaultEngine: "claude" }));
     await openSession("claude");
     await type("hi");
     await press("RETURN");

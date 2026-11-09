@@ -257,7 +257,19 @@ describe("the / menu on the home screen follows the default engine (S11)", () =>
     expect(frame()).not.toContain("claude-only");
   });
 
+  test("with no stored preference it lists pi's commands (pi is the default)", async () => {
+    getStorage().saveCommands("pi", PI_LIST);
+    getStorage().saveClaudeCommands(CLAUDE_LIST);
+    await open("/");
+
+    await type("/dep");
+
+    expect(frame()).toContain("/deploy");
+    expect(frame()).not.toContain("claude-only");
+  });
+
   test("with Claude as the default it lists Claude's commands", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "claude" }), "utf8");
     getStorage().saveCommands("pi", PI_LIST);
     getStorage().saveClaudeCommands(CLAUDE_LIST);
     await open("/");
