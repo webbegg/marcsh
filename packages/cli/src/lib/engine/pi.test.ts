@@ -416,7 +416,7 @@ describe("pi engine permissions (S8)", () => {
     expect(toolParts(reply)[0]?.state).toBe("error");
   });
 
-  test("build mode keeps pi's default tools", async () => {
+  test("build mode offers pi's default tools plus the built-in ls, grep and find", async () => {
     let offered: string[] | undefined;
     const building: FauxResponseStep = (context) => {
       offered = offeredTools(context.messages);
@@ -426,7 +426,40 @@ describe("pi engine permissions (S8)", () => {
 
     await runTurn(engine, model, { mode: Mode.BUILD });
 
-    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "AskUserQuestion", "Task"]));
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "write"]);
+  });
+
+  test("a model's ls call in build mode lists the directory without an approval prompt", async () => {
+    writeFileSync(join(cwd, "visible.txt"), "x");
+    const { seen, step } = reading();
+    const lsCall = fauxAssistantMessage([fauxToolCall("ls", { path: cwd }, { id: "ls-1" })], { stopReason: "toolUse" });
+    const { engine, model } = await setup([lsCall, step]);
+    const { asks, host } = answering("deny");
+
+    const { reply, errors } = await runTurn(engine, model, { mode: Mode.BUILD }, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(toolParts(reply).map((t) => [t.toolName, t.state])).toEqual([["ls", "done"]]);
+    expect(seen[0]?.[0]).toContain("visible.txt");
+  });
+
+  test.each([
+    ["the agent dir's settings", () => join(agentDir, "settings.json")],
+    ["the project's settings", () => join(cwd, ".pi", "settings.json")],
+  ])("a defaultTools setting in %s is respected exactly: no ls, grep or find are added", async (_where, file) => {
+    mkdirSync(join(file(), ".."), { recursive: true });
+    writeFileSync(file(), JSON.stringify({ defaultTools: ["read", "bash"] }));
+    let offered: string[] | undefined;
+    const building: FauxResponseStep = (context) => {
+      offered = offeredTools(context.messages);
+      return fauxAssistantMessage([fauxText("ok")]);
+    };
+    const { engine, model } = await setup([building]);
+
+    await runTurn(engine, model, { mode: Mode.BUILD });
+
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "read"]);
   });
 
   test("aborting the turn while an approval is pending leaves the call unexecuted", async () => {
@@ -512,7 +545,7 @@ describe("pi engine plan and build turns on one session (S8)", () => {
   }
 
   const PLAN = ["AskUserQuestion", "Task", "find", "grep", "ls", "read"];
-  const BUILD = ["AskUserQuestion", "Task", "bash", "edit", "read", "write"];
+  const BUILD = ["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "write"];
 
   test("plan, build, plan, build: each turn offers its mode's tools", async () => {
     const { offered, steps } = recording(5);
@@ -1411,8 +1444,19 @@ describe("pi engine subagents (S13)", () => {
 
     await runTurn(engine, model);
 
-    expect(parentTools).toEqual(["AskUserQuestion", "Task", "bash", "edit", "ext_tool", "read", "write"]);
-    expect(kid.seen[0]?.tools).toEqual(["bash", "edit", "read", "write"]);
+    expect(parentTools).toEqual(["AskUserQuestion", "Task", "bash", "edit", "ext_tool", "find", "grep", "ls", "read", "write"]);
+    expect(kid.seen[0]?.tools).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
+  });
+
+  test("the child follows the user's defaultTools setting too", async () => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+    const kid = child();
+    const { engine, model } = await setup([taskCall("Look around", "go"), kid.step, fauxAssistantMessage([fauxText("ok")])]);
+
+    await runTurn(engine, model);
+
+    expect(kid.seen[0]?.tools).toEqual(["bash", "read"]);
   });
 
   test("the parent reply gets a task line: running with the description first, then completed with the summary and usage", async () => {

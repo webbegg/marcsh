@@ -84,7 +84,8 @@ async function open(path: string) {
     { initialEntries: [path] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 30 });
-  await settle();
+  // A pi screen first asks which pi model it can use; this fake pi engine has no runtime, so the status line shows the default once that fails.
+  await settle(120);
 }
 
 const openSession = (engine?: string) => {

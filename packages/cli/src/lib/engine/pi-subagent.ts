@@ -151,7 +151,7 @@ export type ChildSessionOptions = {
   model: NonNullable<ReturnType<ModelRuntime["getModel"]>>;
   /** The inline extensions the child loads: marcsh's approval extension, bound to the parent turn's host. No others load. */
   extensions: InlineExtension[];
-  /** Restricts the child's active tools by name (plan mode); default: pi's defaults. */
+  /** Restricts the child's active tools by name (plan mode), or `+name` entries added to the defaults; default: pi's defaults. */
   tools?: string[];
   prompt: string;
   signal: AbortSignal;

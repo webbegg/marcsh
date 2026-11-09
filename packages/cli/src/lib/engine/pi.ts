@@ -73,6 +73,21 @@ export type PiEngine = Engine & {
 const BUILTIN_PREFIX = "builtin:";
 
 /**
+ * pi's own read-only exploration tools, offered next to its default ones (read, bash, edit, write). They run without
+ * approval like `read` (see `pi-permissions.ts`). pi applies `+name` entries on top of the `defaultTools` setting, on new
+ * and resumed sessions alike.
+ */
+const EXPLORATION_TOOLS = ["+ls", "+grep", "+find"];
+
+/**
+ * The `tools` option for a build session: the exploration tools are added when the user has no `defaultTools` setting
+ * (agent dir or project), and a user's list is left exactly as they wrote it.
+ */
+function buildToolsOption(settingsManager: { getDefaultTools(): string[] | undefined }): { tools?: string[] } {
+  return settingsManager.getDefaultTools() === undefined ? { tools: [...EXPLORATION_TOOLS] } : {};
+}
+
+/**
  * A resumed session whose active tools hold none of pi's own write or run tools (bash, edit, write): pi
  * restored the read-only loadout that a plan turn recorded in the session file. A build turn needs the
  * tools a new session offers instead.
@@ -99,14 +114,16 @@ async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, m
     noContextFiles: true,
   });
   await resourceLoader.reload();
+  const freshSettings = pi.SettingsManager.create(cwd, agentDir);
   const { session: fresh } = await pi.createAgentSession({
     cwd,
     agentDir,
     modelRuntime: models,
     model,
     sessionManager: pi.SessionManager.inMemory(cwd),
-    settingsManager: pi.SettingsManager.create(cwd, agentDir),
+    settingsManager: freshSettings,
     resourceLoader,
+    ...buildToolsOption(freshSettings),
   });
   const builtin = fresh.getActiveToolNames();
   await disposePiSession(fresh);
@@ -234,7 +251,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
                 models,
                 model: resolved,
                 extensions: [createApprovalExtension(approval)],
-                ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : {}),
+                ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : buildToolsOption(settingsManager)),
               }),
           }),
         ],
@@ -251,7 +268,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL] } : {}),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL] } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name));
