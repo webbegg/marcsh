@@ -176,8 +176,8 @@ describe("the branch/ship guard on a pi session (S10)", () => {
     await openPiSession([bashCall("echo hi"), afterTool]);
 
     await frameContaining("Allow bash?");
-    await settle(QUIET_MS + 100);
-    const prompt = frame();
+    await settle(QUIET_MS);
+    const prompt = await frameContaining("a always allow");
 
     expect(prompt).toContain("Allow bash?");
     expect(prompt).not.toContain("Reason:");
