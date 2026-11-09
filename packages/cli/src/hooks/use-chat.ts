@@ -3,6 +3,7 @@ import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
+import type { ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import type { Engine, EngineEvent, EngineTurn, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
 import { finishReply } from "../lib/reply";
 import { getStorage, type StoredSession } from "../lib/storage";
@@ -55,7 +56,16 @@ export type EditorRequest = {
   respond: (text: string | undefined) => void;
 };
 
-export type PendingRequest = PermissionRequest | QuestionRequest | SelectRequest | ConfirmRequest | InputRequest | EditorRequest;
+/** marcsh's own question before pi loads a project's pi files (not an extension dialog): `respond` takes the answer; "skip" = untrusted for this turn only. */
+export type TrustRequest = {
+  kind: "trust";
+  id: string;
+  cwd: string;
+  resources: ProjectResource[];
+  respond: (answer: TrustAnswer) => void;
+};
+
+export type PendingRequest = PermissionRequest | QuestionRequest | SelectRequest | ConfirmRequest | InputRequest | EditorRequest | TrustRequest;
 
 export type ChatOptions = {
   /** Shows a message from the engine that needs no answer (a toast). */
@@ -71,6 +81,8 @@ function decline(request: PendingRequest) {
       return request.respond(null);
     case "confirm":
       return request.respond(false);
+    case "trust":
+      return request.respond("skip");
     default:
       return request.respond(undefined);
   }
@@ -202,6 +214,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             prefill,
             respond,
           })),
+        askProjectTrust: (ask, signal) =>
+          waitForUser<TrustAnswer>(signal, "skip", (respond) => ({ kind: "trust", id: crypto.randomUUID(), ...ask, respond })),
         notify: (message, level) => notifyRef.current?.(message, level),
       };
 

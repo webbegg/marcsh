@@ -140,7 +140,8 @@ describe("slash commands from Claude Code (S11a)", () => {
     extraMessages = [{ type: "system", subtype: "commands_changed", commands: [CHANGED], uuid: "u1", session_id: "claude-1" }];
     await openAfterTurn();
 
-    await type("/");
+    // marcsh's own commands (ten with /trust) fill the menu's ten rows, so the Claude list is looked at through a filter.
+    await type("/chan");
 
     const text = frame();
     expect(text).toContain("Pushed mid-turn");

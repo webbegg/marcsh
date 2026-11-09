@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -18,6 +18,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
+import type { ProjectTrustAsk, TrustAnswer } from "./pi-trust";
 import type { Engine, EngineEvent, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string;
@@ -35,6 +36,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// The tests of a project's own pi files predate project trust (S18): unless a test says otherwise, every project is trusted and they load as before.
+const trustEverything: NonNullable<PiEngineOptions["projectTrust"]> = { getProjectTrust: () => "trusted", setProjectTrust: () => {} };
+
 async function setup(responses: FauxResponseStep[], permissionRules: Storage = openStorage(":memory:"), engineOptions: PiEngineOptions = {}) {
   const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const modelRuntime = await ModelRuntime.create({
@@ -45,7 +49,7 @@ async function setup(responses: FauxResponseStep[], permissionRules: Storage = o
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
 
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules, ...engineOptions });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust: trustEverything, ...engineOptions });
   return { engine, faux, model: "faux/faux-1", permissionRules };
 }
 
@@ -1841,4 +1845,347 @@ export default function (pi) {
       });
     });
   }
+});
+
+// A stdio MCP server in one small Bun script that logs each start: only the launch matters to these tests.
+const TRUST_SERVER = `import { appendFileSync } from "node:fs";
+appendFileSync(process.argv[2], "start\\n");
+let buffer = "";
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+function handle(request) {
+  if (request.id === undefined) return;
+  if (request.method === "initialize") return send({ id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1.0.0" } } });
+  if (request.method === "tools/list") return send({ id: request.id, result: { tools: [{ name: "echo", description: "Echoes", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] } });
+  return send({ id: request.id, result: {} });
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  for (let end = buffer.indexOf("\\n"); end >= 0; end = buffer.indexOf("\\n")) {
+    const line = buffer.slice(0, end);
+    buffer = buffer.slice(end + 1);
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+`;
+
+describe("project trust on the pi engine (S18)", () => {
+  const marker = () => join(cwd, "marker-written.txt");
+  const starts = () => join(dir, "mcp-starts.log");
+  const startCount = () => (existsSync(starts()) ? readFileSync(starts(), "utf8").split("\n").filter(Boolean).length : 0);
+  const MARKER_TOOL = "marker_tool";
+  const MCP_TOOL = "mcp__fixture__echo";
+
+  // A project with a pi extension that writes a marker file the moment it is loaded, and an MCP server that logs its start.
+  function writeProjectFiles() {
+    mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "extensions", "marker.ts"),
+      `import { writeFileSync } from "node:fs";
+import { Type } from "typebox";
+writeFileSync(${JSON.stringify(marker())}, "loaded");
+export default function (pi) {
+  pi.registerTool({ name: ${JSON.stringify(MARKER_TOOL)}, label: "marker", description: "A marker tool", parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "marker ran" }] }; } });
+  pi.registerCommand("marker-cmd", { description: "A marker command", handler: async () => {} });
+}
+`,
+    );
+    const script = join(dir, "trust-server.ts");
+    writeFileSync(script, TRUST_SERVER);
+    writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { fixture: { command: process.execPath, args: [script, starts()], exposure: "direct" } } }));
+  }
+
+  /** A host that answers the trust question with `answer` and records what it saw when asked. */
+  function trusting(answer: TrustAnswer | ((signal: AbortSignal) => Promise<TrustAnswer>)) {
+    const asks: { ask: ProjectTrustAsk; markerExisted: boolean; mcpStarts: number }[] = [];
+    const host: Partial<TurnHost> = {
+      askProjectTrust: async (ask, signal) => {
+        asks.push({ ask, markerExisted: existsSync(marker()), mcpStarts: startCount() });
+        return typeof answer === "function" ? answer(signal) : answer;
+      },
+    };
+    return { asks, host };
+  }
+
+  const offeredInTurn = (engine: Engine, model: string, host: Partial<TurnHost> = {}) => runTurn(engine, model, {}, host);
+
+  function recordingOffer() {
+    const offered: string[][] = [];
+    const step: FauxResponseStep = (context) => {
+      offered.push(offeredTools(context.messages));
+      return fauxAssistantMessage([fauxText("ok")]);
+    };
+    return { offered, step };
+  }
+
+  beforeEach(() => writeProjectFiles());
+
+  test("an undecided project asks the host before anything of the project is loaded: no marker yet, no MCP server started", async () => {
+    const { offered, step } = recordingOffer();
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([step], undefined, { projectTrust: records });
+    const { asks, host } = trusting("trust");
+
+    await offeredInTurn(engine, model, host);
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ markerExisted: false, mcpStarts: 0 });
+    expect(asks[0]!.ask.resources).toEqual([
+      { path: ".pi/extensions/marker.ts" },
+      { path: ".pi/mcp.json", detail: expect.stringContaining("server fixture: ") },
+    ]);
+    expect(offered[0]).toBeDefined();
+  });
+
+  test("trust: the project's extension and MCP server load as before, and the decision is stored", async () => {
+    const { offered, step } = recordingOffer();
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([step], undefined, { projectTrust: records });
+    const { host } = trusting("trust");
+
+    const { errors } = await offeredInTurn(engine, model, host);
+
+    expect(errors).toEqual([]);
+    expect(existsSync(marker())).toBe(true);
+    expect(startCount()).toBeGreaterThan(0);
+    expect(offered[0]).toContain(MARKER_TOOL);
+    expect(offered[0]).toContain(MCP_TOOL);
+    expect(records.getProjectTrust(cwd)).toBe("trusted");
+  });
+
+  test("don't trust: the extension never loads (no marker), the MCP server never starts, its tools are not offered, and the turn still runs", async () => {
+    const { offered, step } = recordingOffer();
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([step], undefined, { projectTrust: records });
+    const { host } = trusting("distrust");
+
+    const { errors, reply } = await offeredInTurn(engine, model, host);
+
+    expect(errors).toEqual([]);
+    expect(reply.parts.some((p) => p.type === "text" && p.text === "ok")).toBe(true);
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+    expect(offered[0]).not.toContain(MARKER_TOOL);
+    expect(offered[0]).not.toContain(MCP_TOOL);
+    expect(offered[0]).toContain("bash");
+    expect(records.getProjectTrust(cwd)).toBe("untrusted");
+  });
+
+  test("a stored decision is not asked again: trusted loads without asking", async () => {
+    const records = openStorage(":memory:");
+    records.setProjectTrust(cwd, "trusted");
+    const { offered, step } = recordingOffer();
+    const { engine, model } = await setup([step], undefined, { projectTrust: records });
+    const { asks, host } = trusting("distrust");
+
+    await offeredInTurn(engine, model, host);
+
+    expect(asks).toEqual([]);
+    expect(existsSync(marker())).toBe(true);
+    expect(offered[0]).toContain(MARKER_TOOL);
+  });
+
+  test("a stored decision is not asked again: untrusted stays untrusted without asking", async () => {
+    const records = openStorage(":memory:");
+    records.setProjectTrust(cwd, "untrusted");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("ok")])], undefined, { projectTrust: records });
+    const { asks, host } = trusting("trust");
+
+    await offeredInTurn(engine, model, host);
+
+    expect(asks).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+  });
+
+  test("the first answer covers the next turns of the project: one question across two turns", async () => {
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("one")]), fauxAssistantMessage([fauxText("two")])], undefined, { projectTrust: records });
+    const { asks, host } = trusting("distrust");
+
+    await offeredInTurn(engine, model, host);
+    await offeredInTurn(engine, model, host);
+
+    expect(asks).toHaveLength(1);
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  test("the decision is per project: another folder with the same files is asked again", async () => {
+    const records = openStorage(":memory:");
+    records.setProjectTrust(cwd, "trusted");
+    const other = join(dir, "other");
+    mkdirSync(join(other, ".pi", "extensions"), { recursive: true });
+    writeFileSync(join(other, ".pi", "extensions", "x.ts"), "export default function () {}\n");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("ok")])], undefined, { projectTrust: records });
+    const { asks, host } = trusting("skip");
+
+    await runTurn(engine, model, { cwd: other }, host);
+
+    // The question names the project by its real path (macOS temp folders are symlinks).
+    expect(asks.map((a) => a.ask.cwd)).toEqual([realpathSync(other)]);
+  });
+
+  test("a project without pi files is never asked about and nothing is stored", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    writeFileSync(join(cwd, "AGENTS.md"), "# rules");
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("ok")])], undefined, { projectTrust: records });
+    const { asks, host } = trusting("trust");
+
+    const { errors } = await offeredInTurn(engine, model, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(records.getProjectTrust(cwd)).toBeNull();
+  });
+
+  test("Esc (skip): untrusted for this turn only, nothing is stored, the turn still runs, and the next turn asks again", async () => {
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("one")]), fauxAssistantMessage([fauxText("two")])], undefined, { projectTrust: records });
+    const { asks, host } = trusting("skip");
+
+    const first = await offeredInTurn(engine, model, host);
+    await offeredInTurn(engine, model, host);
+
+    expect(first.errors).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+    expect(asks).toHaveLength(2);
+    expect(records.getProjectTrust(cwd)).toBeNull();
+  });
+
+  test("a host that cannot ask leaves the project untrusted without storing anything", async () => {
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("ok")])], undefined, { projectTrust: records });
+
+    const { errors } = await runTurn(engine, model);
+
+    expect(errors).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+    expect(records.getProjectTrust(cwd)).toBeNull();
+  });
+
+  test("a project's own settings are ignored while untrusted: its defaultTools does not narrow the tools", async () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
+    const records = openStorage(":memory:");
+    const { offered, step } = recordingOffer();
+    const { engine, model } = await setup([step], undefined, { projectTrust: records });
+    const { host } = trusting("distrust");
+
+    await offeredInTurn(engine, model, host);
+
+    expect(offered[0]).toEqual(expect.arrayContaining(["bash", "edit", "write"]));
+  });
+
+  test("aborting the turn while the trust question is pending loads nothing and stores nothing", async () => {
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("unused")])], undefined, { projectTrust: records });
+    let asked: () => void = () => {};
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    const running = start(engine, model, {}, {
+      askProjectTrust: (_ask, signal) =>
+        new Promise<TrustAnswer>((resolve) => {
+          asked();
+          signal.addEventListener("abort", () => resolve("skip"), { once: true });
+        }),
+    });
+
+    await pending;
+    running.controller.abort();
+    await running.turn.done;
+
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+    expect(records.getProjectTrust(cwd)).toBeNull();
+    expect(summarize(running.events).errors).toEqual([]);
+  });
+
+  test("an answer of 'trust' that arrives after the turn was aborted does not load the project", async () => {
+    const records = openStorage(":memory:");
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("unused")])], undefined, { projectTrust: records });
+    const controller = new AbortController();
+    const { host } = trusting(async () => {
+      controller.abort();
+      return "trust";
+    });
+    const events: EngineEvent[] = [];
+    const turn = engine.startTurn(
+      { prompt: "hello", cwd, mode: Mode.BUILD, model, signal: controller.signal },
+      { emit: (event) => events.push(event), askPermission: async () => "deny", askQuestions: async () => null, ...host },
+    );
+    await turn.done;
+
+    expect(existsSync(marker())).toBe(false);
+    expect(startCount()).toBe(0);
+    expect(records.getProjectTrust(cwd)).toBeNull();
+  });
+
+  describe("command warm-up", () => {
+    const warm = async (engine: Engine) => {
+      const saved: Parameters<Parameters<Engine["warmUpCommands"]>[0]["save"]>[0][] = [];
+      await engine.warmUpCommands({ cwd, save: (commands) => saved.push(commands) });
+      return saved;
+    };
+
+    test("for an undecided project it never loads the project's extension or starts its MCP server, and still lists the other commands", async () => {
+      const records = openStorage(":memory:");
+      const { engine } = await setup([], undefined, { projectTrust: records });
+
+      const saved = await warm(engine);
+
+      expect(existsSync(marker())).toBe(false);
+      expect(startCount()).toBe(0);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]!.map((command) => command.name)).not.toContain("marker-cmd");
+      expect(records.getProjectTrust(cwd)).toBeNull();
+    });
+
+    test("for an untrusted project it loads nothing of the project", async () => {
+      const records = openStorage(":memory:");
+      records.setProjectTrust(cwd, "untrusted");
+      const { engine } = await setup([], undefined, { projectTrust: records });
+
+      await warm(engine);
+
+      expect(existsSync(marker())).toBe(false);
+      expect(startCount()).toBe(0);
+    });
+
+    test("for a trusted project it loads the extension as before and lists its command", async () => {
+      const records = openStorage(":memory:");
+      records.setProjectTrust(cwd, "trusted");
+      const { engine } = await setup([], undefined, { projectTrust: records });
+
+      const saved = await warm(engine);
+
+      expect(existsSync(marker())).toBe(true);
+      expect(saved[0]!.find((command) => command.name === "marker-cmd")).toMatchObject({ source: "extension" });
+    });
+  });
+
+  describe("subagent child sessions follow the parent's trust", () => {
+    const taskCall = fauxAssistantMessage([fauxToolCall("Task", { description: "Look", prompt: "go" }, { id: "task-1" })], { stopReason: "toolUse" });
+    const childTools = async (decision: "trusted" | "untrusted") => {
+      writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
+      const records = openStorage(":memory:");
+      records.setProjectTrust(cwd, decision);
+      let tools: string[] = [];
+      const kid: FauxResponseStep = (context) => {
+        tools = offeredTools(context.messages).sort();
+        return fauxAssistantMessage([fauxText("child done")]);
+      };
+      const { engine, model } = await setup([taskCall, kid, fauxAssistantMessage([fauxText("ok")])], undefined, { projectTrust: records });
+      await runTurn(engine, model);
+      return tools;
+    };
+
+    test("in a trusted project the child reads the project's settings", async () => {
+      expect(await childTools("trusted")).toEqual(["read"]);
+    });
+
+    test("in an untrusted project the child ignores them, like its parent", async () => {
+      expect(await childTools("untrusted")).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
+    });
+  });
 });

@@ -10,6 +10,8 @@ export type CommandContext = {
   toast: ToastContextValue;
   /** The engine the prompt runs on: the open session's, or the default for a new one. */
   engine: string;
+  /** The folder the prompt works in: the open session's, or where marcsh was started. */
+  cwd: string;
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
   /** The model pi turns use ("provider/id"). */

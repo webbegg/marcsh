@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ChatMessage } from "./chat-types";
@@ -28,6 +28,9 @@ export type PermissionRule = {
   command?: string;
 };
 
+/** Whether pi may load a project's own pi files (extensions, MCP servers, settings...). A project nobody decided about has no decision. */
+export type ProjectTrust = "trusted" | "untrusted";
+
 export type Storage = {
   listSessions(): SessionSummary[];
   getSession(id: string): StoredSession | null;
@@ -41,6 +44,10 @@ export type Storage = {
   saveCommands(engine: string, commands: ClaudeCommand[]): void;
   addPermissionRule(rule: PermissionRule): void;
   hasPermissionRule(rule: PermissionRule): boolean;
+  /** The stored decision for the project at `cwd` (its resolved real path), or null when undecided. */
+  getProjectTrust(cwd: string): ProjectTrust | null;
+  /** Stores the decision for the project at `cwd`; null forgets it. */
+  setProjectTrust(cwd: string, decision: ProjectTrust | null): void;
 };
 
 type SessionRow = {
@@ -61,6 +68,15 @@ const CLAUDE_COMMANDS_KEY = "claude_commands";
 const commandsKey = (engine: string) => (engine === "claude" ? CLAUDE_COMMANDS_KEY : `${engine}_commands`);
 
 const marcshDir = () => join(homedir(), ".marcsh");
+
+/** A project is known by its real path, so a symlink and its target share one decision. A folder that is not there yet keeps its absolute path. */
+function projectPath(cwd: string): string {
+  try {
+    return realpathSync(cwd);
+  } catch {
+    return resolve(cwd);
+  }
+}
 
 export function defaultDbPath() {
   return process.env.MARCSH_DB_PATH?.trim() || join(marcshDir(), "marcsh.db");
@@ -121,6 +137,15 @@ export function openStorage(path = defaultDbPath()): Storage {
       command TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
       PRIMARY KEY (cwd, tool_name, command)
+    )
+  `);
+
+  // One row per project (its real path); undecided projects have no row.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_trust (
+      path TEXT PRIMARY KEY,
+      decision TEXT NOT NULL CHECK (decision IN ('trusted', 'untrusted')),
+      decided_at INTEGER NOT NULL
     )
   `);
 
@@ -233,6 +258,25 @@ export function openStorage(path = defaultDbPath()): Storage {
           .query("SELECT 1 FROM permission_rules WHERE cwd = $cwd AND tool_name = $toolName AND command = $command")
           .get({ cwd, toolName, command }) !== null
       );
+    },
+
+    getProjectTrust(cwd) {
+      const row = db
+        .query<{ decision: ProjectTrust }, { path: string }>("SELECT decision FROM project_trust WHERE path = $path")
+        .get({ path: projectPath(cwd) });
+      return row?.decision ?? null;
+    },
+
+    setProjectTrust(cwd, decision) {
+      const path = projectPath(cwd);
+      if (decision === null) {
+        db.query("DELETE FROM project_trust WHERE path = $path").run({ path });
+        return;
+      }
+      db.query(
+        `INSERT INTO project_trust (path, decision, decided_at) VALUES ($path, $decision, $now)
+         ON CONFLICT(path) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at`,
+      ).run({ path, decision, now: Date.now() });
     },
   };
 }

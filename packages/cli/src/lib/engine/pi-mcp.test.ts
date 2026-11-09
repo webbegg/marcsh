@@ -86,7 +86,9 @@ async function setup(responses: FauxResponseStep[], permissionRules = openStorag
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
-  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules }), faux, model: "faux/faux-1", permissionRules };
+  // These tests predate project trust (S18): the fixture projects are trusted, as every project was then.
+  const projectTrust = { getProjectTrust: () => "trusted" as const, setProjectTrust: () => {} };
+  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust }), faux, model: "faux/faux-1", permissionRules };
 }
 
 function summarize(events: EngineEvent[]) {

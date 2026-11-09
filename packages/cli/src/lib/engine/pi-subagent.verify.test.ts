@@ -54,7 +54,7 @@ async function setup(script: Script, opts: { rules?: Storage; guard?: Guard } = 
   const seen: Record<string, Ctx[]> = {};
   faux.setResponses(Array.from({ length: 60 }, () => router(script, seen)) as any);
   const rules = opts.rules ?? openStorage(":memory:");
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: rules, sessionDir, ...(opts.guard ? { guard: opts.guard } : {}), pluginPath: null });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: rules, projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} }, sessionDir, ...(opts.guard ? { guard: opts.guard } : {}), pluginPath: null });
   return { engine, seen, rules };
 }
 

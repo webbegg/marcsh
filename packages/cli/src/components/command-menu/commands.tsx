@@ -11,6 +11,7 @@ import {
   PiModelsDialogContent,
   SessionsDialogContent,
   ThemeDialogContent,
+  TrustDialogContent,
 } from "../dialogs";
 import type { Command, CommandContext } from "./types";
 
@@ -128,6 +129,17 @@ export const COMMANDS: Command[] = [
     description: "Remove a pi provider login",
     value: "/logout",
     action: openLogout,
+  },
+  {
+    name: "trust",
+    description: "Trust or distrust this project's pi files",
+    value: "/trust",
+    action: (ctx) => {
+      ctx.dialog.open({
+        title: "Project Trust",
+        children: <TrustDialogContent cwd={ctx.cwd} />,
+      })
+    },
   },
   {
     name: "engine",

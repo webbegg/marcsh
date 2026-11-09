@@ -6,3 +6,4 @@ export { PiModelsDialogContent } from "./pi-models-dialog";
 export { EngineDialogContent } from "./engine-dialog";
 export { LoginDialogContent } from "./login-dialog";
 export { LogoutDialogContent } from "./logout-dialog";
+export { TrustDialogContent } from "./trust-dialog";
