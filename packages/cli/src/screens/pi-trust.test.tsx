@@ -93,7 +93,7 @@ const frameContaining = async (text: string, timeoutMs = 8000) => {
 };
 
 // A real pi engine on pi's faux provider (no network). With a prompt it is the session's first turn; without one the session just opens.
-async function openPiSession(prompt?: string) {
+async function openPiSession(prompt?: string, size = { width: 110, height: 40 }) {
   const faux = fauxProvider({ models: [{ id: "faux-1" }] });
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
@@ -111,7 +111,7 @@ async function openPiSession(prompt?: string) {
       ],
     },
   );
-  screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 40 });
+  screen = await testRender(<RouterProvider router={router} />, size);
   await settle();
   return session;
 }
@@ -328,6 +328,134 @@ describe("the trust prompt shows everything trusting runs (S18)", () => {
     expect(prompt).toContain("sh \\u200brun\\ufeff");
     expect(prompt).not.toContain(override);
   }, 30000);
+});
+
+// The prompt owns the screen while it is pending: its header and footer are always whole, and the list takes the rest.
+describe("the trust prompt fits any terminal (S18)", () => {
+  const rawLines = () => screen!.captureCharFrame().split("\n");
+  const extensions = (name: (i: number) => string, count = 10) => {
+    for (let i = 0; i < count; i++) writeFileSync(join(cwd, ".pi", "extensions", name(i)), "export default function () {}\n");
+    writeFileSync(join(cwd, ".pi", "extensions", "zz-evil.ts"), "export default function () {}\n");
+  };
+  const pageDown = async (times: number) => {
+    for (let i = 0; i < times; i++) await pressNow("\u001b[6~");
+  };
+  const indicator = () => /rows (\d+)–(\d+) of (\d+) · ↑\/↓ PgUp\/PgDn/.exec(frame());
+  const NEAR_WIDTH = (i: number) => `helper_${String(i).padStart(2, "0")}_${"a".repeat(46)}.ts`;
+  const CJK = (i: number) => `a-${"日本語の拡張機能".repeat(5)}-${i}.ts`;
+
+  for (const [width, height] of [
+    [80, 20],
+    [80, 24],
+    [80, 30],
+  ] as const) {
+    test(`${width}x${height}: the title, folder, count, position and key hints are all on screen, and the dangerous MCP row is the first row`, async () => {
+      for (let i = 1; i <= 20; i++) writeFileSync(join(cwd, ".pi", "extensions", `e${String(i).padStart(2, "0")}.ts`), "export default function () {}\n");
+      mcp({ evil: { command: "sh", args: ["-c", `echo ${"benign ".repeat(40)}; touch evil-ran`] } });
+      await openPiSession("hello", { width, height });
+      await frameContaining("not now (this turn only)");
+
+      const lines = rawLines();
+      const text = frame();
+      expect(lines[1]).toContain(TITLE);
+      expect(lines[2]).toContain("marcsh-pi-trust-");
+      // The folder may wrap onto a second row; the list starts right under the count.
+      const count = lines.findIndex((line) => line.includes("items pi would load or run, most dangerous first"));
+      expect(count).toBeGreaterThan(2);
+      expect(count).toBeLessThanOrEqual(4);
+      expect(lines[count + 1]).toMatch(/^│ {2}• \.pi\/mcp\.json — server evil: sh -c echo/);
+      expect(text).toContain("Trusting lets pi load these files and run their code with your permissions.");
+      expect(lines[height - 2]).toMatch(/d {2}don't trust {2}Esc {2}not now \(this turn only\)/);
+      expect(lines[height - 2]).toContain("scroll to the end first");
+      const position = indicator();
+      expect(position).not.toBeNull();
+      expect(Number(position![1])).toBe(1);
+      expect(Number(position![3])).toBeGreaterThan(Number(position![2]));
+      expect(existsSync(join(cwd, "evil-ran"))).toBe(false);
+    }, 30000);
+  }
+
+  for (const [label, name] of [
+    ["ASCII names close to the row width", NEAR_WIDTH],
+    ["CJK (double-width) names", CJK],
+  ] as const) {
+    test(`${label}: the position is shown, wrapped lines are indented under their bullet, and the last entry is reachable`, async () => {
+      extensions(name);
+      await openPiSession("hello", { width: 80, height: 24 });
+      await frameContaining("not now (this turn only)");
+
+      expect(indicator()).not.toBeNull();
+      expect(frame()).not.toContain("zz-evil.ts");
+      // Between the count line and the position line, every line starts a bullet or continues one with an indent.
+      const lines = rawLines();
+      const from = lines.findIndex((line) => line.includes("most dangerous first")) + 1;
+      const to = lines.findIndex((line) => line.includes("rows ") && line.includes("PgUp/PgDn"));
+      expect(to).toBeGreaterThan(from);
+      for (const line of lines.slice(from, to)) expect(line.slice(1)).toMatch(/^\s{2}(• |  )/);
+
+      await pageDown(10);
+
+      expect(frame()).toContain("zz-evil.ts");
+      const position = indicator()!;
+      expect(position[2]).toBe(position[3]);
+      expect(frame()).toContain(TITLE);
+      expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    }, 30000);
+  }
+
+  test("t is ignored until the list has been scrolled to the end; then t and Enter trust", async () => {
+    extensions(NEAR_WIDTH, 30);
+    await openPiSession("hello", { width: 80, height: 24 });
+    await frameContaining("scroll to the end first");
+
+    await press("t");
+    await press("RETURN");
+    await settle(QUIET_MS);
+
+    expect(frame()).toContain(TITLE);
+    expect(frame()).toContain("scroll to the end first");
+    expect(frame()).not.toContain("press Enter to trust");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    expect(existsSync(marker())).toBe(false);
+
+    // Part of the way is not enough.
+    await pageDown(1);
+    await press("t");
+    expect(frame()).not.toContain("press Enter to trust");
+
+    await pageDown(30);
+    expect(indicator()![2]).toBe(indicator()![3]);
+    expect(frame()).not.toContain("scroll to the end first");
+    await press("t");
+    expect(frame()).toContain("press Enter to trust");
+    await press("RETURN");
+
+    expect(await frameContaining(REPLY)).toContain(REPLY);
+    expect(existsSync(marker())).toBe(true);
+    expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
+  }, 30000);
+
+  test("d and Esc answer at once without scrolling", async () => {
+    extensions(NEAR_WIDTH, 30);
+    await openPiSession("hello", { width: 80, height: 24 });
+    await frameContaining("scroll to the end first");
+
+    await press("d");
+
+    expect(await frameContaining(REPLY)).toContain(REPLY);
+    expect(getStorage().getProjectTrust(cwd)).toBe("untrusted");
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("a list that fits needs no scrolling: t arms at once and no position is shown", async () => {
+    await openPiSession("hello", { width: 80, height: 30 });
+    await frameContaining("trust (then Enter)");
+
+    expect(indicator()).toBeNull();
+    expect(frame()).not.toContain("scroll to the end first");
+  }, 30000);
+
+  const mcp = (servers: Record<string, unknown>) => writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: servers }));
 });
 
 describe("/trust (S18)", () => {
