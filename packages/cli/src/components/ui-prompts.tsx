@@ -13,10 +13,28 @@ import type { ConfirmRequest, EditorRequest, InputRequest, SelectRequest } from 
 const MAX_VISIBLE_OPTIONS = 8;
 const MAX_QUICK_PICK = 9;
 
+// Every dialog starts with this line, so an extension's "Allow bash?" cannot pass as marcsh's own approval prompt.
+// pi gives its UI context no extension name, so the line cannot say which extension asks.
+export const EXTENSION_LABEL = "pi extension asks";
+
+// Strings that end at BEL or ST (OSC, DCS, SOS, PM, APC), then CSI, then other ESC sequences, then any control left.
+const CONTROL_SEQUENCES: RegExp[] = [
+  /(?:\u001b[\]PX^_]|[\u0090\u0098\u009d\u009e\u009f])[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)/g,
+  /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g,
+  /\u001b[ -/]*[0-~]/g,
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g,
+];
+
+/**
+ * Text from an extension as it may reach the terminal: C0 controls (except newline and tab), ESC sequences
+ * (colors, cursor moves, window titles, links) and C1 controls are removed, the text between them stays.
+ */
+export function stripControlChars(text: string): string {
+  return CONTROL_SEQUENCES.reduce((clean, pattern) => clean.replace(pattern, ""), text);
+}
+
 type PromptProps<R> = {
   request: R;
-  /** Tells the session an Esc belongs to the prompt (it cancels the ask), not to the turn's interrupt. */
-  onTextEntryChange?: (active: boolean) => void;
 };
 
 function Frame({ children }: { children: ReactNode }) {
@@ -32,29 +50,23 @@ function Frame({ children }: { children: ReactNode }) {
       width="100%"
       paddingX={2}
     >
+      <text attributes={TextAttributes.BOLD | TextAttributes.DIM}>{EXTENSION_LABEL}</text>
       {children}
     </box>
   );
 }
 
-// While a prompt is open, Esc cancels it; the session must not also read that Esc as "interrupt the turn".
-function useOwnEscape(onTextEntryChange?: (active: boolean) => void) {
-  useEffect(() => {
-    onTextEntryChange?.(true);
-    return () => onTextEntryChange?.(false);
-  }, [onTextEntryChange]);
-}
-
+// Esc on any of these prompts cancels the ask, and the session's own Esc handler also interrupts the turn, as it does
+// on an approval or a question: an extension that asks again cannot trap the session.
 const hasModifier = (key: { ctrl: boolean; meta: boolean; option: boolean; super?: boolean; hyper?: boolean }) =>
   key.ctrl || key.meta || key.option || key.super || key.hyper;
 
-export function SelectPrompt({ request, onTextEntryChange }: PromptProps<SelectRequest>) {
+export function SelectPrompt({ request }: PromptProps<SelectRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
   const [index, setIndex] = useState(0);
   const { options } = request;
-  useOwnEscape(onTextEntryChange);
 
   useKeyboard((key) => {
     if (!isTopLayer("base") || hasModifier(key)) {
@@ -94,7 +106,7 @@ export function SelectPrompt({ request, onTextEntryChange }: PromptProps<SelectR
   return (
     <Frame>
       <text>
-        <em fg={colors.info}>{request.title}</em>
+        <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
       {start > 0 ? <text attributes={TextAttributes.DIM}>↑ {start} more</text> : null}
       {visible.map((option, offset) => {
@@ -103,13 +115,13 @@ export function SelectPrompt({ request, onTextEntryChange }: PromptProps<SelectR
           <text key={i} attributes={i === index ? TextAttributes.BOLD : undefined}>
             {i === index ? "› " : "  "}
             {i < MAX_QUICK_PICK ? `${i + 1} ` : ""}
-            {option}
+            {stripControlChars(option)}
           </text>
         );
       })}
       {below > 0 ? <text attributes={TextAttributes.DIM}>↓ {below} more</text> : null}
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "↑/↓ move · Enter selects · 1-9 pick · Esc cancels" : "waiting for typing to stop…"}
+        {quiet ? "↑/↓ move · Enter selects · 1-9 pick · Esc cancels and stops the turn" : "waiting for typing to stop…"}
       </text>
     </Frame>
   );
@@ -120,13 +132,12 @@ export function SelectPrompt({ request, onTextEntryChange }: PromptProps<SelectR
  * default-no ask: keys count only after the quiet window, `y` alone confirms nothing (it arms Enter), and
  * any other key disarms it.
  */
-export function ConfirmPrompt({ request, onTextEntryChange }: PromptProps<ConfirmRequest>) {
+export function ConfirmPrompt({ request }: PromptProps<ConfirmRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
   const [armedRequest, setArmedRequest] = useState<ConfirmRequest | null>(null);
   const armed = armedRequest === request;
-  useOwnEscape(onTextEntryChange);
 
   useKeyboard((key) => {
     if (isTopLayer("base") && !hasModifier(key) && key.name === "escape") {
@@ -160,9 +171,9 @@ export function ConfirmPrompt({ request, onTextEntryChange }: PromptProps<Confir
   return (
     <Frame>
       <text>
-        <em fg={colors.info}>{request.title}</em>
+        <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
-      {request.message ? <text attributes={TextAttributes.DIM} wrapMode="char">{request.message}</text> : null}
+      {request.message ? <text attributes={TextAttributes.DIM} wrapMode="char">{stripControlChars(request.message)}</text> : null}
       <box flexDirection="row" gap={2}>
         {!quiet ? (
           <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
@@ -172,6 +183,8 @@ export function ConfirmPrompt({ request, onTextEntryChange }: PromptProps<Confir
             <text attributes={TextAttributes.DIM}>{armed ? "press Enter to confirm" : "confirm (then Enter)"}</text>
             <text>n</text>
             <text attributes={TextAttributes.DIM}>cancel</text>
+            <text>Esc</text>
+            <text attributes={TextAttributes.DIM}>cancel and stop the turn</text>
           </>
         )}
       </box>
@@ -179,12 +192,11 @@ export function ConfirmPrompt({ request, onTextEntryChange }: PromptProps<Confir
   );
 }
 
-export function InputPrompt({ request, onTextEntryChange }: PromptProps<InputRequest>) {
+export function InputPrompt({ request }: PromptProps<InputRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
   const inputRef = useRef<InputRenderable>(null);
-  useOwnEscape(onTextEntryChange);
 
   useKeyboard((key) => {
     if (!isTopLayer("base") || hasModifier(key)) return;
@@ -203,11 +215,11 @@ export function InputPrompt({ request, onTextEntryChange }: PromptProps<InputReq
   return (
     <Frame>
       <text>
-        <em fg={colors.info}>{request.title}</em>
+        <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
-      <input ref={inputRef} placeholder={request.placeholder ?? ""} focused />
+      <input ref={inputRef} placeholder={stripControlChars(request.placeholder ?? "")} focused />
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "Enter submits · Esc cancels" : "waiting for typing to stop…"}
+        {quiet ? "Enter submits · Esc cancels and stops the turn" : "waiting for typing to stop…"}
       </text>
     </Frame>
   );
@@ -221,13 +233,12 @@ const EDITOR_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function EditorPrompt({ request, onTextEntryChange }: PromptProps<EditorRequest>) {
+export function EditorPrompt({ request }: PromptProps<EditorRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
   const editorRef = useRef<TextareaRenderable>(null);
-  const prefill = request.prefill ?? "";
-  useOwnEscape(onTextEntryChange);
+  const prefill = stripControlChars(request.prefill ?? "");
 
   // Typing continues after the prefill.
   useEffect(() => {
@@ -251,11 +262,11 @@ export function EditorPrompt({ request, onTextEntryChange }: PromptProps<EditorR
   return (
     <Frame>
       <text>
-        <em fg={colors.info}>{request.title}</em>
+        <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
       <textarea ref={editorRef} initialValue={prefill} keyBindings={EDITOR_KEY_BINDINGS} focused />
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "Enter submits · Shift+Enter adds a line · Esc cancels" : "waiting for typing to stop…"}
+        {quiet ? "Enter submits · Shift+Enter adds a line · Esc cancels and stops the turn" : "waiting for typing to stop…"}
       </text>
     </Frame>
   );

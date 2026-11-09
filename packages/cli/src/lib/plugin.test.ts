@@ -89,6 +89,15 @@ describe("readPluginEntries", () => {
     ]);
   });
 
+  test("gives the file each entry was read from", () => {
+    const path = marcshPluginPath()!;
+
+    expect(readPluginEntries(path).map((entry) => entry.file)).toEqual([
+      join(path, "commands", "feature.md"),
+      join(path, "skills", "workflow", "SKILL.md"),
+    ]);
+  });
+
   test("a command is known by its file name and a skill by its name field, whatever the Claude name says", () => {
     const root = mkdtempSync(join(tmpdir(), "marcsh-plugin-"));
     try {

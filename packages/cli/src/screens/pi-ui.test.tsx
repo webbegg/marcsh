@@ -152,18 +152,18 @@ describe("select from a pi extension (S7)", () => {
     expect(await frameContaining("got=Green")).toContain("got=Green");
   }, 30000);
 
-  test("Esc cancels the select (the extension gets undefined) without interrupting the turn", async () => {
+  test("Esc cancels the select (the extension gets undefined) and interrupts the turn: its next ask is cancelled unseen", async () => {
     writeCommand(
       "pick",
-      `    const choice = await ctx.ui.select("Pick a color", ["Red", "Green"]);\n    ctx.ui.notify("got=" + choice);\n    const again = await ctx.ui.input("Still running?");\n    ctx.ui.notify("again=" + again);`,
+      `    const choice = await ctx.ui.select("Pick a color", ["Red", "Green"]);\n    const again = await ctx.ui.input("Still running?");\n    ctx.ui.notify("got=" + choice + " again=" + again);`,
     );
     await openPiSession("/pick");
     await frameContaining("Pick a color");
 
     await press("ESCAPE");
 
-    expect(await frameContaining("got=undefined")).toContain("got=undefined");
-    expect(await frameContaining("Still running?")).toContain("Still running?");
+    expect(await frameContaining("got=undefined again=undefined")).toContain("got=undefined again=undefined");
+    expect(frame()).not.toContain("Still running?");
   }, 30000);
 
   test("many options scroll with the highlight: the last one can be chosen", async () => {
@@ -321,6 +321,131 @@ describe("input and editor from a pi extension (S7)", () => {
     await press("ESCAPE");
 
     expect(await frameContaining("got=undefined")).toContain("got=undefined");
+  }, 30000);
+});
+
+describe("Esc on an extension dialog stops the turn (S7)", () => {
+  // An extension that asks again until it gets an answer (here up to 5 times) cannot trap the session.
+  const reasking: Record<string, [string, string]> = {
+    select: ["Pick again", `    for (let i = 0; i < 5 && !(await ctx.ui.select("Pick again", ["Red", "Green"])); i++) {}\n    ctx.ui.notify("left the loop");`],
+    confirm: ["Sure?", `    for (let i = 0; i < 5 && !(await ctx.ui.confirm("Sure?", "m")); i++) {}\n    ctx.ui.notify("left the loop");`],
+    input: ["Name?", `    for (let i = 0; i < 5 && !(await ctx.ui.input("Name?")); i++) {}\n    ctx.ui.notify("left the loop");`],
+    editor: ["Note?", `    for (let i = 0; i < 5 && !(await ctx.ui.editor("Note?", "x")); i++) {}\n    ctx.ui.notify("left the loop");`],
+  };
+
+  for (const [kind, [title, body]] of Object.entries(reasking)) {
+    test(`${kind}: one Esc ends the turn instead of showing the same ask again`, async () => {
+      writeCommand("loop", body);
+      await openPiSession("/loop");
+      await frameContaining(title);
+
+      await press("ESCAPE");
+      await settle(300);
+
+      expect(await frameContaining("left the loop")).toContain("left the loop");
+      expect(frame()).not.toContain(title);
+      expect(frame()).not.toContain("waiting for typing to stop");
+    }, 30000);
+  }
+});
+
+describe("extension dialogs are labelled as the extension's (S7)", () => {
+  const LABEL = "pi extension asks";
+
+  test("each dialog says that a pi extension is asking", async () => {
+    for (const [name, call] of [
+      ["label-select", `ctx.ui.select("Which?", ["a", "b"])`],
+      ["label-confirm", `ctx.ui.confirm("Sure?", "m")`],
+      ["label-input", `ctx.ui.input("Who?")`],
+      ["label-editor", `ctx.ui.editor("Text?", "x")`],
+    ] as const) {
+      writeCommand(name, `    await ${call};`);
+    }
+
+    for (const [name, title] of [
+      ["label-select", "Which?"],
+      ["label-confirm", "Sure?"],
+      ["label-input", "Who?"],
+      ["label-editor", "Text?"],
+    ] as const) {
+      await openPiSession(`/${name}`);
+      expect(await frameContaining(title)).toContain(LABEL);
+      await act(async () => screen!.renderer.destroy());
+      screen = null;
+      engines.set("pi", undefined);
+    }
+  }, 60000);
+
+  test("an extension's confirm titled like marcsh's approval prompt still carries the label", async () => {
+    writeCommand("spoof", `    await ctx.ui.confirm("Allow bash?", "rm -rf ~");`);
+    await openPiSession("/spoof");
+
+    const prompt = await frameContaining("Allow bash?");
+
+    expect(prompt).toContain(LABEL);
+    expect(prompt.indexOf(LABEL)).toBeLessThan(prompt.indexOf("Allow bash?"));
+  }, 30000);
+});
+
+describe("terminal control characters in extension text (S7)", () => {
+  test("stripControlChars removes C0 (except newline and tab), ESC sequences and C1, and keeps the visible text", async () => {
+    const { stripControlChars } = await import("../components/ui-prompts");
+
+    expect(stripControlChars("plain text")).toBe("plain text");
+    expect(stripControlChars("a\tb\nc")).toBe("a\tb\nc");
+    expect(stripControlChars("a\u0000b\u0007c\u0008d\re\u007ff")).toBe("abcdef");
+    expect(stripControlChars("\u001b[31mred\u001b[0m \u001b[2J\u001b[1;5Hgone")).toBe("red gone");
+    expect(stripControlChars("x\u001b]0;evil title\u0007y\u001b]8;;http://e\u001b\\link")).toBe("xylink");
+    expect(stripControlChars("a\u001bPdcs payload\u001b\\b\u001b_apc\u001b\\c")).toBe("abc");
+    expect(stripControlChars("a\u001bcb\u001b7c")).toBe("abc");
+    expect(stripControlChars("a\u009b31mb\u0085c\u009d0;t\u009cd")).toBe("abcd");
+    expect(stripControlChars("lone \u001b")).toBe("lone ");
+  });
+
+  test("titles, messages, options, placeholders, prefills and notify text render without them; the extension still gets its own option back", async () => {
+    writeCommand(
+      "messy",
+      [
+        `    const choice = await ctx.ui.select("Pick\\u001b[31m one\\u0007", ["Re\\u001b[1md", "Gr\\u0000een"]);`,
+        `    ctx.ui.notify("got=" + JSON.stringify(choice));`,
+        `    await ctx.ui.confirm("Allow\\u001b[2J\\u001b]0;pwned\\u0007 files\\u009b2K now", "mess\\u0007age\\r\\u001b[31mred");`,
+        `    await ctx.ui.input("Name", "hold\\u001b[31mer");`,
+        `    await ctx.ui.editor("Text", "pre\\u0007fill\\u001b[2K");`,
+        `    ctx.ui.notify("Done\\u001b[31m!\\u0007");`,
+      ].join("\n"),
+    );
+    await openPiSession("/messy");
+
+    const select = await frameContaining("Pick");
+    expect(select).toContain("Pick one");
+    expect(select).toContain("1 Red");
+    expect(select).toContain("2 Green");
+    await press("1");
+    expect(await frameContaining("got=")).toContain('got="Re\\u001b[1md"');
+
+    const confirm = await frameContaining("Allow");
+    expect(confirm).toContain("Allow files now");
+    expect(confirm).toContain("message");
+    expect(confirm).toContain("red");
+    expect(confirm).not.toContain("pwned");
+    await press("n");
+
+    const input = await frameContaining("Name");
+    expect(input).toContain("holder");
+    await press("ESCAPE");
+  }, 60000);
+
+  test("editor prefill and notify text render without them", async () => {
+    writeCommand(
+      "messy-editor",
+      [`    ctx.ui.notify("Done\\u001b[31m!\\u0007");`, `    await ctx.ui.editor("Text", "pre\\u0007fill\\u001b[2K");`].join("\n"),
+    );
+    await openPiSession("/messy-editor");
+
+    const editor = await frameContaining("Text");
+
+    expect(editor).toContain("prefill");
+    expect(editor).toContain("Done!");
   }, 30000);
 });
 

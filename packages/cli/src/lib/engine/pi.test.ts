@@ -1332,6 +1332,20 @@ describe("pi commands (S11)", () => {
     expect(requests[0]![0]).toEndWith("fix the login bug");
   });
 
+  test("/marcsh:feature and /marcsh:workflow send the text pi itself builds for /feature and /skill:workflow", async () => {
+    const own = recording();
+    const ours = recording();
+    const first = await setup([own.step, own.step, ours.step, ours.step]);
+
+    await runTurn(first.engine, first.model, { prompt: '/feature one "two words" ${3:-x}' });
+    await runTurn(first.engine, first.model, { prompt: "/skill:workflow  fix the login bug " });
+    await runTurn(first.engine, first.model, { prompt: '/marcsh:feature one "two words" ${3:-x}' });
+    await runTurn(first.engine, first.model, { prompt: "/marcsh:workflow  fix the login bug " });
+
+    expect(ours.requests).toHaveLength(2);
+    expect(ours.requests.map((r) => r[0])).toEqual(own.requests.map((r) => r[0]));
+  });
+
   test("the plugin files are read in place: nothing is copied into the agent dir", async () => {
     const { engine, model } = await setup([fauxAssistantMessage([fauxText("hi")])]);
 

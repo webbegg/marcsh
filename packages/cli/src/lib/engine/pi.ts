@@ -9,7 +9,7 @@ import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
-import { createCommandLister, normalizePiCommands, resolvePiInvocation, toMenuCommands } from "./pi-commands";
+import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
 import { createPiUiContext } from "./pi-ui";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
@@ -140,7 +140,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
   const pluginPath = options.pluginPath === undefined ? marcshPluginPath() : options.pluginPath;
   // The plugin's `commands/*.md` become prompt templates (`/feature`) and its `skills/*/SKILL.md` skills (`/skill:workflow`),
-  // read where they are; the `/` menu and `resolvePiInvocation` call them `marcsh:feature` and `marcsh:workflow`.
+  // read where they are, so the `/` menu lists them (as `marcsh:feature` and `marcsh:workflow`). Typing those names is
+  // answered by `expandPluginInvocation`, not by pi, so a user's own `feature` or `workflow` cannot take their place.
   const pluginResources = pluginPath
     ? { additionalPromptTemplatePaths: [join(pluginPath, "commands")], additionalSkillPaths: [join(pluginPath, "skills")] }
     : {};
@@ -200,14 +201,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ? pi.SessionManager.create(cwd, options.sessionDir)
           : undefined;
       const settingsManager = pi.SettingsManager.create(cwd, agentDir);
-      const commandLister = createCommandLister();
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
         agentDir,
         settingsManager,
         ...pluginResources,
         extensionFactories: [
-          commandLister.extension,
           createApprovalExtension({
             cwd,
             host,
@@ -260,9 +259,6 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       });
       if (aborted) return;
 
-      // The commands this session can run, for the plugin's `/marcsh:...` names. The `/` menu's list is the warm-up's.
-      const commands = normalizePiCommands(commandLister.list(), pluginPath);
-
       const errors = createErrorTracker();
       session.subscribe((event) => {
         const failure = errors.observe(event);
@@ -274,8 +270,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
 
       try {
-        // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed.
-        await session.prompt(resolvePiInvocation(prompt, commands));
+        // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
+        // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
+        const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
+        await session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
         await session.waitForIdle();
       } finally {
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });

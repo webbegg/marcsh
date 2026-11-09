@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stripFrontmatter, type SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { getMenuCommands } from "../../components/command-menu/filter-commands";
 import { marcshPluginPath } from "../plugin";
-import { bundledPiCommands, normalizePiCommands, resolvePiInvocation, toMenuCommands } from "./pi-commands";
+import { bundledPiCommands, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 
 const PLUGIN = "/opt/marcsh/plugin";
 
@@ -127,34 +130,71 @@ describe("bundledPiCommands", () => {
   });
 });
 
-describe("resolvePiInvocation", () => {
-  const commands = normalizePiCommands(
-    [
-      info("feature", "prompt", `${PLUGIN}/commands/feature.md`),
-      info("skill:workflow", "skill", `${PLUGIN}/skills/workflow/SKILL.md`),
-      info("deploy", "extension"),
-    ],
-    PLUGIN,
-  );
+// marcsh expands its plugin's /marcsh:... entries itself, so a user's own `feature` template or `workflow` skill
+// (which pi would pick for the plain name) cannot hide them.
+describe("expandPluginInvocation", () => {
+  const withPlugin = (run: (root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), "marcsh-expand-"));
+    try {
+      mkdirSync(join(root, "commands"));
+      mkdirSync(join(root, "skills", "folder"), { recursive: true });
+      writeFileSync(join(root, "commands", "echo.md"), "---\ndescription: Echo\n---\nA:$1|B:$2|ALL:$ARGUMENTS|AT:$@|D:${3:-dflt}|S:${@:2}|L:${@:2:1}|X:$9\n");
+      writeFileSync(join(root, "skills", "folder", "SKILL.md"), "---\nname: skillname\ndescription: A skill\n---\n\n# Body\n\nDo it.\n");
+      run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const expand = (text: string, root: string | null) => expandPluginInvocation(text, root, stripFrontmatter);
 
-  test("sends the menu name of a plugin command as the name pi knows, with the arguments untouched", () => {
-    expect(resolvePiInvocation("/marcsh:feature my-feature", commands)).toBe("/feature my-feature");
-    expect(resolvePiInvocation("/marcsh:workflow  fix the bug\nnow", commands)).toBe("/skill:workflow  fix the bug\nnow");
-    expect(resolvePiInvocation("/marcsh:feature", commands)).toBe("/feature");
+  test("a plugin command expands like a pi prompt template: $1.., $@, $ARGUMENTS, defaults, slices, quoted arguments", () => {
+    withPlugin((root) => {
+      expect(expand('/marcsh:echo one "two words" ', root)).toBe("A:one|B:two words|ALL:one two words|AT:one two words|D:dflt|S:two words|L:two words|X:");
+      expect(expand("/marcsh:echo", root)).toBe("A:|B:|ALL:|AT:|D:dflt|S:|L:|X:");
+      expect(expand("/marcsh:echo\n  a\nb", root)).toBe("A:a|B:b|ALL:a b|AT:a b|D:dflt|S:b|L:b|X:");
+    });
+  });
+
+  test("the real feature command gets its arguments and nothing else of pi's name resolution", () => {
+    const text = expand("/marcsh:feature my-feature", marcshPluginPath());
+
+    expect(text).toContain("Create or resume the feature doc named `my-feature`.");
+    expect(text).not.toContain("$ARGUMENTS");
+    expect(text).not.toContain("argument-hint");
+  });
+
+  test("a plugin skill expands like pi's /skill:<name>: a <skill> block with its location, base dir and the arguments after it", () => {
+    withPlugin((root) => {
+      const file = join(root, "skills", "folder", "SKILL.md");
+      const block = `<skill name="skillname" location="${file}">\nReferences are relative to ${join(root, "skills", "folder")}.\n\n# Body\n\nDo it.\n</skill>`;
+
+      expect(expand("/marcsh:skillname fix the bug\nnow  ", root)).toBe(`${block}\n\nfix the bug\nnow`);
+      expect(expand("/marcsh:skillname", root)).toBe(block);
+      expect(expand("/marcsh:skillname   ", root)).toBe(block);
+    });
   });
 
   test("leaves every other text as typed", () => {
-    for (const text of [
-      "/deploy prod",
-      "/feature already-pi-name",
-      "/marcsh:featurex",
-      "/marcsh:unknown a b",
-      "hello /marcsh:feature",
-      " /marcsh:feature",
-      "plain text",
-      "",
-    ]) {
-      expect(resolvePiInvocation(text, commands)).toBe(text);
-    }
+    withPlugin((root) => {
+      for (const text of [
+        "/deploy prod",
+        "/feature already-pi-name",
+        "/skill:skillname x",
+        "/marcsh:echox",
+        "/marcsh:unknown a b",
+        "/marcsh:folder",
+        "hello /marcsh:echo",
+        " /marcsh:echo",
+        "plain text",
+        "",
+      ]) {
+        expect(expand(text, root)).toBe(text);
+      }
+    });
+  });
+
+  test("without a plugin, or with one that cannot be read, the text is left as typed", () => {
+    expect(expand("/marcsh:feature x", null)).toBe("/marcsh:feature x");
+    expect(expand("/marcsh:feature x", "/nonexistent/marcsh/plugin")).toBe("/marcsh:feature x");
   });
 });

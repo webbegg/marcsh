@@ -33,6 +33,8 @@ export type PluginEntry = ClaudeCommand & {
   kind: "command" | "skill";
   /** A command's file name without `.md`; a skill's `name` field, else its folder name. */
   id: string;
+  /** The `.md` file the entry was read from: the command's file or the skill's `SKILL.md`. */
+  file: string;
 };
 
 function entry(file: string, kind: PluginEntry["kind"], fallbackName: string): PluginEntry | null {
@@ -44,6 +46,7 @@ function entry(file: string, kind: PluginEntry["kind"], fallbackName: string): P
       argumentHint: fields["argument-hint"] ?? "",
       kind,
       id: kind === "command" ? fallbackName : fields.name || fallbackName,
+      file,
     };
   } catch {
     return null;

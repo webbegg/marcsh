@@ -11,7 +11,7 @@ import {
 } from "../components/messages";
 import { PermissionPrompt } from "../components/permission-prompt";
 import { QuestionPrompt } from "../components/question-prompt";
-import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt } from "../components/ui-prompts";
+import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
 import { usePromptConfig } from "../providers/prompt-config";
@@ -72,11 +72,13 @@ function SessionChat({
     [session.engine],
   );
   const toast = useToast();
-  // An engine's notices are toasts; a warning has no color of its own, so it says so.
+  // An engine's notices are toasts (an extension's text is stripped of terminal controls); a warning has no color of its own, so it says so.
   const chatOptions = useMemo(
     () => ({
-      notify: (message: string, level: NoticeLevel) =>
-        toast.show({ variant: level === "error" ? "error" : "info", message: level === "warning" ? `Warning: ${message}` : message }),
+      notify: (message: string, level: NoticeLevel) => {
+        const text = stripControlChars(message);
+        toast.show({ variant: level === "error" ? "error" : "info", message: level === "warning" ? `Warning: ${text}` : text });
+      },
     }),
     [toast],
   );
@@ -159,18 +161,10 @@ function SessionChat({
       {pendingRequest?.kind === "question" && (
         <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
       )}
-      {pendingRequest?.kind === "select" && (
-        <SelectPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
-      )}
-      {pendingRequest?.kind === "confirm" && (
-        <ConfirmPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
-      )}
-      {pendingRequest?.kind === "input" && (
-        <InputPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
-      )}
-      {pendingRequest?.kind === "editor" && (
-        <EditorPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
-      )}
+      {pendingRequest?.kind === "select" && <SelectPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "confirm" && <ConfirmPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "input" && <InputPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "editor" && <EditorPrompt key={pendingRequest.id} request={pendingRequest} />}
       {error && <ErrorMessage message={error} />}
     </SessionShell>
   );
