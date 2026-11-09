@@ -156,9 +156,11 @@ export function TrustPrompt({ request }: Props) {
   );
   const smallNotice = "Terminal too small to review the list: make it taller to trust.";
 
+  // Distinct keys: switching between the compact and full layouts must not reuse one's boxes (and their gaps) for the other.
   if (compact) {
     return (
       <box
+        key="compact"
         position="absolute"
         left={0}
         top={0}
@@ -182,6 +184,7 @@ export function TrustPrompt({ request }: Props) {
 
   return (
     <box
+      key="full"
       position="absolute"
       left={0}
       top={0}
