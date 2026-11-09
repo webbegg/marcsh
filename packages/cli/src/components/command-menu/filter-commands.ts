@@ -2,13 +2,13 @@ import type { Command } from "./types";
 import { COMMANDS } from "./commands";
 import { mergeCommands, type ClaudeCommand } from "../../lib/claude-commands";
 
-/** Marcsh's commands, then the given Claude Code commands (marcsh wins name clashes). */
+/** Marcsh's commands, then the given engine's commands (marcsh wins name clashes). Commands without a source are Claude's. */
 export function getMenuCommands(claude: ClaudeCommand[]): Command[] {
   return mergeCommands(COMMANDS, claude, (command) => ({
     name: command.name,
     description: command.description,
     value: `/${command.name}`,
-    source: "claude",
+    source: command.source ?? "claude",
     argumentHint: command.argumentHint,
   }));
 }

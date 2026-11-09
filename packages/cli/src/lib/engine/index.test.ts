@@ -9,6 +9,7 @@ import {
   isEngineId,
   piHandle,
   unknownEngine,
+  warmUpEngineCommands,
 } from "./index";
 import type { Engine, EngineEvent, TurnHost, TurnRequest } from "./types";
 
@@ -67,6 +68,55 @@ describe("engine registry", () => {
 
     registry.set("claude", undefined);
     expect(registry.get("claude")).toBe(claudeEngine);
+  });
+});
+
+describe("warmUpEngineCommands", () => {
+  const commands = [{ name: "deploy", description: "", argumentHint: "", source: "extension" }];
+
+  test("warms up only the engine asked for: Claude's warm-up never creates pi", async () => {
+    let created = 0;
+    const warmed: string[] = [];
+    const claude: Engine = { ...fakeEngine("claude"), warmUpCommands: async () => void warmed.push("claude") };
+    const registry = createEngineRegistry(() => {
+      created += 1;
+      return fakeEngine("pi");
+    });
+    registry.set("claude", claude);
+
+    await warmUpEngineCommands("claude", { registry, save: () => {} });
+
+    expect(warmed).toEqual(["claude"]);
+    expect(created).toBe(0);
+  });
+
+  test("passes the directory and the saver to the engine, and what it lists is saved", async () => {
+    const saved: unknown[] = [];
+    const seen: string[] = [];
+    const registry = createEngineRegistry(() => ({
+      ...fakeEngine("pi"),
+      warmUpCommands: async ({ cwd, save }) => {
+        seen.push(cwd);
+        save(commands);
+      },
+    }));
+
+    await warmUpEngineCommands("pi", { cwd: "/work", registry, save: (list) => saved.push(list) });
+
+    expect(seen).toEqual(["/work"]);
+    expect(saved).toEqual([commands]);
+  });
+
+  test("never throws: an engine that fails, or an id nobody knows, is ignored", async () => {
+    const registry = createEngineRegistry(() => ({
+      ...fakeEngine("pi"),
+      warmUpCommands: async () => {
+        throw new Error("pi could not start");
+      },
+    }));
+
+    await warmUpEngineCommands("pi", { registry, save: () => {} });
+    await warmUpEngineCommands("gpt", { registry, save: () => {} });
   });
 });
 

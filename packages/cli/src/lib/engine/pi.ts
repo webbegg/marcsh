@@ -3,12 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Mode } from "../modes";
+import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
+import { createCommandLister, normalizePiCommands, resolvePiInvocation, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
+import { createPiUiContext } from "./pi-ui";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
 /** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
@@ -53,6 +56,8 @@ export type PiEngineOptions = {
   permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
   /** The branch/ship guard for pi's `bash` tool. Default: the decision Claude's PreToolUse hook makes (tests inject others). */
   guard?: Guard;
+  /** The marcsh plugin whose `feature` command and `workflow` skill pi loads in place. Default: the bundled one; null for none. */
+  pluginPath?: string | null;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -133,6 +138,12 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  */
 export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
+  const pluginPath = options.pluginPath === undefined ? marcshPluginPath() : options.pluginPath;
+  // The plugin's `commands/*.md` become prompt templates (`/feature`) and its `skills/*/SKILL.md` skills (`/skill:workflow`),
+  // read where they are; the `/` menu and `resolvePiInvocation` call them `marcsh:feature` and `marcsh:workflow`.
+  const pluginResources = pluginPath
+    ? { additionalPromptTemplatePaths: [join(pluginPath, "commands")], additionalSkillPaths: [join(pluginPath, "skills")] }
+    : {};
   // An engine given another agent dir (tests) points pi's lazy readers at it; see AGENT_DIR_ENV.
   process.env[AGENT_DIR_ENV] = agentDir;
   // Before pi writes anything there: its settings (the device id), logins, models and sessions.
@@ -189,11 +200,14 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ? pi.SessionManager.create(cwd, options.sessionDir)
           : undefined;
       const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+      const commandLister = createCommandLister();
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
         agentDir,
         settingsManager,
+        ...pluginResources,
         extensionFactories: [
+          commandLister.extension,
           createApprovalExtension({
             cwd,
             host,
@@ -227,6 +241,28 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       }
       if (aborted) return;
 
+      // Dialogs from extensions render in marcsh. The mode pi's own RPC host uses keeps `ctx.hasUI` true (dialogs work)
+      // while telling extensions this is not pi's terminal (`ctx.mode` is not "tui"), so they skip pi-tui components.
+      const started = session;
+      await started.bindExtensions({
+        uiContext: createPiUiContext({ host, signal: turnEnded.signal, theme: started.extensionRunner.getUIContext().theme }),
+        mode: "rpc",
+        // An extension command cannot replace the session marcsh is driving.
+        commandContextActions: {
+          waitForIdle: () => started.waitForIdle(),
+          newSession: async () => ({ cancelled: true }),
+          fork: async () => ({ cancelled: true }),
+          navigateTree: async () => ({ cancelled: true }),
+          switchSession: async () => ({ cancelled: true }),
+          reload: async () => {},
+        },
+        onError: (error) => host.notify?.(redactSecrets(`Extension error in ${error.extensionPath}: ${error.error}`), "error"),
+      });
+      if (aborted) return;
+
+      // The commands this session can run, for the plugin's `/marcsh:...` names. The `/` menu's list is the warm-up's.
+      const commands = normalizePiCommands(commandLister.list(), pluginPath);
+
       const errors = createErrorTracker();
       session.subscribe((event) => {
         const failure = errors.observe(event);
@@ -238,7 +274,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
 
       try {
-        await session.prompt(prompt);
+        // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed.
+        await session.prompt(resolvePiInvocation(prompt, commands));
         await session.waitForIdle();
       } finally {
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });
@@ -262,7 +299,40 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   return {
     id: "pi",
     startTurn,
-    warmUpCommands: async () => {},
+    // The command list comes from a throwaway in-memory session: no model call, no session file.
+    warmUpCommands: async ({ cwd, save }) => {
+      try {
+        process.env[AGENT_DIR_ENV] = agentDir;
+        prepareAgentDir();
+        const pi = await loadPi();
+        const models = await runtimeFor(pi);
+        const commandLister = createCommandLister();
+        const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+        const resourceLoader = new pi.DefaultResourceLoader({
+          cwd,
+          agentDir,
+          settingsManager,
+          ...pluginResources,
+          extensionFactories: [commandLister.extension],
+        });
+        await resourceLoader.reload();
+        const { session } = await pi.createAgentSession({
+          cwd,
+          agentDir,
+          modelRuntime: models,
+          sessionManager: pi.SessionManager.inMemory(cwd),
+          settingsManager,
+          resourceLoader,
+        });
+        try {
+          save(toMenuCommands(normalizePiCommands(commandLister.list(), pluginPath)));
+        } finally {
+          session.dispose();
+        }
+      } catch {
+        // Best effort: the menu keeps the last list it had.
+      }
+    },
     getRuntime: async () => {
       process.env[AGENT_DIR_ENV] = agentDir;
       prepareAgentDir();

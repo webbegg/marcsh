@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -18,7 +18,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
-import type { Engine, EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
+import type { Engine, EngineEvent, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string;
 let agentDir: string;
@@ -128,13 +128,10 @@ describe("createPiEngine", () => {
     expect(defaultPiAgentDir()).not.toContain(join(".pi", "agent"));
   });
 
-  test("identifies itself as pi and has nothing to warm up", async () => {
+  test("identifies itself as pi", async () => {
     const { engine } = await setup([]);
-    const saved: unknown[] = [];
 
     expect(engine.id).toBe("pi");
-    await engine.warmUpCommands({ cwd, save: (commands) => saved.push(commands) });
-    expect(saved).toEqual([]);
   });
 
   test("replies with the scripted text and records duration and cost metadata", async () => {
@@ -958,5 +955,389 @@ describe("the agent directory's permissions (S5)", () => {
     expect(modeOf(shared)).toBe(0o755);
     expect(modeOf(custom)).toBe(0o755);
     expect(existsSync(join(home, ".marcsh"))).toBe(false);
+  });
+});
+
+// Extensions are loaded from the agent dir like a user's own: their code is plain text in the test.
+function writeExtension(name: string, body: string) {
+  mkdirSync(join(agentDir, "extensions"), { recursive: true });
+  writeFileSync(
+    join(agentDir, "extensions", `${name}.ts`),
+    `import { Type } from "typebox";\nexport default function (pi) {\n${body}\n}\n`,
+  );
+}
+
+describe("pi extension UI (S7)", () => {
+  const out = () => join(cwd, "ui-out.json");
+  const written = () => JSON.parse(readFileSync(out(), "utf8")) as Record<string, unknown>;
+
+  // A host that records each UI ask and answers it from `answers`; `hang` leaves asks open until they are cancelled.
+  function uiHost(answers: { select?: string; confirm?: boolean; input?: string; editor?: string } = {}, hang = false) {
+    const asked: unknown[][] = [];
+    const signals: AbortSignal[] = [];
+    const notices: { message: string; level: NoticeLevel }[] = [];
+    let opened: () => void = () => {};
+    const firstAsk = new Promise<void>((resolve) => (opened = resolve));
+    const reply = <T,>(kind: string, args: unknown[], signal: AbortSignal, answer: T, cancelled: T) => {
+      asked.push([kind, ...args]);
+      signals.push(signal);
+      opened();
+      if (!hang) return Promise.resolve(answer);
+      return new Promise<T>((resolve) => signal.addEventListener("abort", () => resolve(cancelled), { once: true }));
+    };
+    const host: Partial<TurnHost> = {
+      select: (title, options, signal) => reply("select", [title, options], signal, answers.select, undefined),
+      confirm: (title, message, signal) => reply("confirm", [title, message], signal, answers.confirm ?? false, false),
+      input: (title, placeholder, signal) => reply("input", [title, placeholder], signal, answers.input, undefined),
+      editor: (title, prefill, signal) => reply("editor", [title, prefill], signal, answers.editor, undefined),
+      notify: (message, level) => notices.push({ message, level }),
+    };
+    return { host, asked, signals, notices, firstAsk };
+  }
+
+  const dialogCommand = () => `
+    pi.registerCommand("probe-ui", { description: "probe", handler: async (args, ctx) => {
+      const result = { args, hasUI: ctx.hasUI, mode: ctx.mode };
+      result.select = await ctx.ui.select("Pick one", ["a", "b"]);
+      result.confirm = await ctx.ui.confirm("Sure?", "Really sure");
+      result.input = await ctx.ui.input("Name", "kebab-case");
+      result.editor = await ctx.ui.editor("Edit", "prefill");
+      ctx.ui.notify("all asked", "warning");
+      require("node:fs").writeFileSync(${JSON.stringify(out())}, JSON.stringify(result));
+    } });`;
+
+  test("an extension's select, confirm, input, editor and notify reach the host, and it gets the answers", async () => {
+    writeExtension("probe-ui", dialogCommand());
+    const { engine, faux, model } = await setup([fauxAssistantMessage([fauxText("never used")])]);
+    const { host, asked, notices } = uiHost({ select: "b", confirm: true, input: "my-name", editor: "edited text" });
+
+    const { errors } = await runTurn(engine, model, { prompt: "/probe-ui now" }, host);
+
+    expect(errors).toEqual([]);
+    expect(asked).toEqual([
+      ["select", "Pick one", ["a", "b"]],
+      ["confirm", "Sure?", "Really sure"],
+      ["input", "Name", "kebab-case"],
+      ["editor", "Edit", "prefill"],
+    ]);
+    expect(notices).toEqual([{ message: "all asked", level: "warning" }]);
+    expect(written()).toMatchObject({ args: "now", select: "b", confirm: true, input: "my-name", editor: "edited text" });
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  test("extensions are told dialogs work (hasUI) but that this is not pi's terminal UI (mode is not tui)", async () => {
+    writeExtension("probe-ui", dialogCommand());
+    const { engine, model } = await setup([]);
+
+    await runTurn(engine, model, { prompt: "/probe-ui" }, uiHost().host);
+
+    expect(written()).toMatchObject({ hasUI: true, mode: "rpc" });
+  });
+
+  test("a host without dialogs cancels the asks instead of breaking the extension", async () => {
+    writeExtension("probe-ui", dialogCommand());
+    const { engine, model } = await setup([]);
+
+    const { errors } = await runTurn(engine, model, { prompt: "/probe-ui" });
+
+    expect(errors).toEqual([]);
+    const result = written();
+    expect(result.select).toBeUndefined();
+    expect(result.confirm).toBe(false);
+    expect(result.input).toBeUndefined();
+    expect(result.editor).toBeUndefined();
+  });
+
+  test("a component dialog (custom) says once that pi's own terminal UI is not supported, and resolves as cancelled", async () => {
+    writeExtension(
+      "probe-custom",
+      `pi.registerCommand("probe-custom", { description: "probe", handler: async (_args, ctx) => {
+        const first = await ctx.ui.custom(() => { throw new Error("must not be built"); });
+        const second = await ctx.ui.custom(() => { throw new Error("must not be built"); });
+        require("node:fs").writeFileSync(${JSON.stringify(out())}, JSON.stringify({ first: first ?? null, second: second ?? null }));
+      } });`,
+    );
+    const { engine, model } = await setup([]);
+    const { host, notices } = uiHost();
+
+    const { errors } = await runTurn(engine, model, { prompt: "/probe-custom" }, host);
+
+    expect(errors).toEqual([]);
+    expect(written()).toEqual({ first: null, second: null });
+    expect(notices).toEqual([
+      { message: "This extension needs pi's own terminal UI, which marcsh does not support", level: "warning" },
+    ]);
+  });
+
+  test("every member of pi's UI context exists, so an extension never meets a missing function", async () => {
+    writeExtension(
+      "probe-members",
+      `pi.registerCommand("probe-members", { description: "probe", handler: async (_args, ctx) => {
+        require("node:fs").writeFileSync(${JSON.stringify(out())}, JSON.stringify(Object.keys(ctx.ui).sort()));
+      } });`,
+    );
+    const { engine, model } = await setup([]);
+
+    await runTurn(engine, model, { prompt: "/probe-members" }, uiHost().host);
+
+    expect(JSON.parse(readFileSync(out(), "utf8")) as string[]).toEqual(
+      [
+        "select", "confirm", "input", "notify", "onTerminalInput", "setStatus", "setWorkingMessage", "setWorkingVisible",
+        "setWorkingIndicator", "setHiddenThinkingLabel", "setWidget", "setFooter", "setHeader", "setTitle", "custom",
+        "pasteToEditor", "setEditorText", "getEditorText", "editor", "addAutocompleteProvider", "setEditorComponent",
+        "getEditorComponent", "theme", "getAllThemes", "getTheme", "setTheme", "getToolsExpanded", "setToolsExpanded",
+      ].sort(),
+    );
+  });
+
+  test("interrupting the turn cancels the open ask, and the extension carries on with the cancelled value", async () => {
+    writeExtension("probe-ui", dialogCommand());
+    const { engine, model } = await setup([]);
+    const { host, asked, signals, firstAsk } = uiHost({}, true);
+
+    const running = start(engine, model, { prompt: "/probe-ui" }, host);
+    await firstAsk;
+    expect(signals[0]!.aborted).toBe(false);
+    running.controller.abort();
+    await running.turn.done;
+
+    expect(signals[0]!.aborted).toBe(true);
+    expect(asked).toHaveLength(1);
+    const result = written();
+    expect(result.select).toBeUndefined();
+    expect(result.confirm).toBe(false);
+    expect(summarize(running.events).errors).toEqual([]);
+  });
+
+  test("an ask the extension leaves open when the turn ends is cancelled", async () => {
+    writeExtension(
+      "probe-leave",
+      `pi.registerCommand("probe-leave", { description: "probe", handler: async (_args, ctx) => {
+        globalThis.__piUiLeftOpen = ctx.ui.confirm("Still there?", "asked and not awaited");
+      } });`,
+    );
+    const { engine, model } = await setup([]);
+    const { host, signals, firstAsk } = uiHost({}, true);
+
+    try {
+      const running = start(engine, model, { prompt: "/probe-leave" }, host);
+      await firstAsk;
+      await running.turn.done;
+
+      expect(signals[0]!.aborted).toBe(true);
+      expect(await (globalThis as any).__piUiLeftOpen).toBe(false);
+    } finally {
+      delete (globalThis as any).__piUiLeftOpen;
+    }
+  });
+
+  test("a tool can ask through the UI mid-turn and the model reads the answer", async () => {
+    writeExtension(
+      "ask-ui",
+      `pi.registerTool({ name: "ask_ui", label: "ask", description: "asks the user", parameters: Type.Object({}),
+        async execute(_id, _params, _signal, _update, ctx) {
+          const pick = await ctx.ui.select("Which?", ["x", "y"]);
+          ctx.ui.notify("picked " + pick);
+          return { content: [{ type: "text", text: "user picked " + pick }] };
+        } });`,
+    );
+    const { seen, step } = reading();
+    const { engine, model } = await setup([
+      fauxAssistantMessage([fauxToolCall("ask_ui", {}, { id: "u1" })], { stopReason: "toolUse" }),
+      step,
+    ]);
+    const { host: ui, notices } = uiHost({ select: "y" });
+    const { host: permissions } = answering("allow");
+
+    const { errors } = await runTurn(engine, model, {}, { ...permissions, ...ui });
+
+    expect(errors).toEqual([]);
+    expect(seen[0]).toEqual(["user picked y"]);
+    expect(notices).toEqual([{ message: "picked y", level: "info" }]);
+  });
+});
+
+describe("pi commands (S11)", () => {
+  const writePrompt = (name: string, text: string) => {
+    mkdirSync(join(agentDir, "prompts"), { recursive: true });
+    writeFileSync(join(agentDir, "prompts", `${name}.md`), text);
+  };
+  const writeSkill = (name: string, description: string, body: string) => {
+    mkdirSync(join(agentDir, "skills", name), { recursive: true });
+    writeFileSync(join(agentDir, "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`);
+  };
+
+  // What the model is sent as the user's messages, one entry per model request.
+  const userTexts = (messages: Message[]) =>
+    messages.flatMap((m) =>
+      m.role === "user" ? [typeof m.content === "string" ? m.content : m.content.map((b) => ("text" in b ? b.text : "")).join("")] : [],
+    );
+  function recording() {
+    const requests: string[][] = [];
+    const step: FauxResponseStep = (context) => {
+      requests.push(userTexts(context.messages));
+      return fauxAssistantMessage([fauxText("ok")]);
+    };
+    return { requests, step };
+  }
+
+  const BUILTINS = ["settings", "model", "tree", "thinking", "export", "session", "fork", "login", "logout", "new", "compact", "resume", "reload", "quit"];
+
+  async function listed() {
+    writeExtension("deploy", `pi.registerCommand("deploy", { description: "Ship it", handler: async () => {} });`);
+    writePrompt("review", "---\ndescription: Review a file\n---\nReview $1");
+    writeSkill("pdf", "Read PDFs", "Use the pdf tools.");
+    const { engine, faux } = await setup([fauxAssistantMessage([fauxText("unused")])]);
+    const saved: Parameters<Parameters<Engine["warmUpCommands"]>[0]["save"]>[0][] = [];
+    await engine.warmUpCommands({ cwd, save: (commands) => saved.push(commands) });
+    return { saved, faux };
+  }
+
+  test("warm-up lists extension commands, prompt templates and skills with their source, and the plugin's, saving once", async () => {
+    const { saved } = await listed();
+
+    expect(saved).toHaveLength(1);
+    const byName = new Map(saved[0]!.map((command) => [command.name, command]));
+    expect(byName.get("deploy")).toMatchObject({ source: "extension", description: "Ship it" });
+    expect(byName.get("review")).toMatchObject({ source: "prompt", description: "Review a file" });
+    expect(byName.get("skill:pdf")).toMatchObject({ source: "skill", description: "Read PDFs" });
+    expect(byName.get("marcsh:feature")).toMatchObject({ source: "prompt", description: "Create or resume the feature doc for a large change" });
+    expect(byName.get("marcsh:workflow")).toMatchObject({ source: "skill" });
+    expect(byName.has("feature")).toBe(false);
+    expect(byName.has("skill:workflow")).toBe(false);
+  });
+
+  test("warm-up does not list pi's interactive-only built-ins", async () => {
+    const { saved } = await listed();
+
+    const names = saved[0]!.map((command) => command.name);
+    for (const builtin of BUILTINS) expect(names).not.toContain(builtin);
+  });
+
+  test("warm-up makes no model call and leaves no session file", async () => {
+    const { faux } = await listed();
+
+    expect(faux.state.callCount).toBe(0);
+    expect(faux.getPendingResponseCount()).toBe(1);
+    expect(existsSync(join(agentDir, "sessions"))).toBe(false);
+  });
+
+  test("warm-up never throws and saves nothing when pi cannot start", async () => {
+    const { engine } = await setup([], undefined, { modelRuntime: {} as never });
+    const saved: unknown[] = [];
+
+    await engine.warmUpCommands({ cwd, save: (commands) => saved.push(commands) });
+
+    expect(saved).toEqual([]);
+  });
+
+  test("a turn leaves the command list to the warm-up: it reports none", async () => {
+    writeExtension("deploy", `pi.registerCommand("deploy", { description: "Ship it", handler: async () => {} });`);
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("hi")])]);
+
+    const { events } = await runTurn(engine, model);
+
+    expect(events.filter((event) => event.type === "commands")).toEqual([]);
+  });
+
+  test("/name args runs a prompt template: the model gets the expanded text", async () => {
+    writePrompt("greet", "---\ndescription: Greet\n---\nSay hello to $1, then $2.");
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    const { errors } = await runTurn(engine, model, { prompt: "/greet Bob 'a long goodbye'" });
+
+    expect(errors).toEqual([]);
+    expect(requests).toEqual([["Say hello to Bob, then a long goodbye."]]);
+  });
+
+  test("/skill:name args expands a skill", async () => {
+    writeSkill("pdf", "Read PDFs", "Use the pdf tools.");
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    await runTurn(engine, model, { prompt: "/skill:pdf summarize it" });
+
+    expect(requests[0]![0]).toContain('<skill name="pdf"');
+    expect(requests[0]![0]).toContain("Use the pdf tools.");
+    expect(requests[0]![0]).toEndWith("summarize it");
+  });
+
+  test("/name args runs an extension command with its arguments, with no model call", async () => {
+    writeExtension(
+      "probe-args",
+      `pi.registerCommand("probe-args", { description: "probe", handler: async (args, ctx) => {
+        require("node:fs").writeFileSync(${JSON.stringify(join(cwd, "args.txt"))}, JSON.stringify([args, ctx.hasUI]));
+      } });`,
+    );
+    const { engine, faux, model } = await setup([fauxAssistantMessage([fauxText("unused")])]);
+
+    const { errors } = await runTurn(engine, model, { prompt: "/probe-args first  second" });
+
+    expect(errors).toEqual([]);
+    expect(JSON.parse(readFileSync(join(cwd, "args.txt"), "utf8"))).toEqual(["first  second", true]);
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  test("an extension command that throws is reported as a notice and does not fail the turn", async () => {
+    writeExtension("boom", `pi.registerCommand("boom", { description: "probe", handler: async () => { throw new Error("it broke"); } });`);
+    const { engine, model } = await setup([]);
+    const notices: { message: string; level: NoticeLevel }[] = [];
+
+    const { errors } = await runTurn(engine, model, { prompt: "/boom" }, { notify: (message, level) => notices.push({ message, level }) });
+
+    expect(errors).toEqual([]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.level).toBe("error");
+    expect(notices[0]!.message).toContain("it broke");
+  });
+
+  test("an unknown /name args goes to the model exactly as typed", async () => {
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    await runTurn(engine, model, { prompt: "/nope some args" });
+
+    expect(requests).toEqual([["/nope some args"]]);
+  });
+
+  test("the plugin's feature command runs as /marcsh:feature, with the argument in the template", async () => {
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    const { errors } = await runTurn(engine, model, { prompt: "/marcsh:feature my-feature" });
+
+    expect(errors).toEqual([]);
+    expect(requests[0]![0]).toContain("Create or resume the feature doc named `my-feature`.");
+    expect(requests[0]![0]).not.toContain("$ARGUMENTS");
+  });
+
+  test("the plugin's feature command also runs under pi's own name, /feature", async () => {
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    await runTurn(engine, model, { prompt: "/feature other-feature" });
+
+    expect(requests[0]![0]).toContain("Create or resume the feature doc named `other-feature`.");
+  });
+
+  test("the plugin's workflow skill runs as /marcsh:workflow", async () => {
+    const { requests, step } = recording();
+    const { engine, model } = await setup([step]);
+
+    await runTurn(engine, model, { prompt: "/marcsh:workflow fix the login bug" });
+
+    expect(requests[0]![0]).toContain('<skill name="workflow"');
+    expect(requests[0]![0]).toContain("# marcsh workflow");
+    expect(requests[0]![0]).toEndWith("fix the login bug");
+  });
+
+  test("the plugin files are read in place: nothing is copied into the agent dir", async () => {
+    const { engine, model } = await setup([fauxAssistantMessage([fauxText("hi")])]);
+
+    await runTurn(engine, model);
+
+    expect(existsSync(join(agentDir, "prompts"))).toBe(false);
+    expect(existsSync(join(agentDir, "skills"))).toBe(false);
   });
 });

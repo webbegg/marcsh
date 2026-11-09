@@ -27,8 +27,8 @@ export type Command = {
   name: string;
   description: string;
   value: string;
-  /** Set on Claude Code commands and skills; marcsh's own commands leave it unset. */
-  source?: "claude";
+  /** Where an engine's command comes from (`claude`; pi: `extension`, `prompt`, `skill`); marcsh's own commands leave it unset. */
+  source?: string;
   argumentHint?: string;
   action?: (ctx: CommandContext) => void | Promise<void>;
 };

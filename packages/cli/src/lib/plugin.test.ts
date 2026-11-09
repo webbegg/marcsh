@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { marcshPluginPath, readPluginCommands } from "./plugin";
+import { marcshPluginPath, readPluginCommands, readPluginEntries } from "./plugin";
 
 const CLI_ROOT = join(import.meta.dir, "..", "..");
 
@@ -76,6 +76,42 @@ describe("readPluginCommands", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("readPluginEntries", () => {
+  test("tells the command from the skill and gives the file or folder name each is known by", () => {
+    const entries = readPluginEntries(marcshPluginPath()!);
+
+    expect(entries.map((entry) => [entry.name, entry.kind, entry.id])).toEqual([
+      ["marcsh:feature", "command", "feature"],
+      ["marcsh:workflow", "skill", "workflow"],
+    ]);
+  });
+
+  test("a command is known by its file name and a skill by its name field, whatever the Claude name says", () => {
+    const root = mkdtempSync(join(tmpdir(), "marcsh-plugin-"));
+    try {
+      mkdirSync(join(root, "commands"));
+      mkdirSync(join(root, "skills", "folder"), { recursive: true });
+      writeFileSync(join(root, "commands", "file.md"), "---\nname: shown\ndescription: A command\n---\n");
+      writeFileSync(join(root, "skills", "folder", "SKILL.md"), "---\nname: skillname\ndescription: A skill\n---\n");
+
+      expect(readPluginEntries(root).map((entry) => [entry.name, entry.kind, entry.id])).toEqual([
+        ["marcsh:shown", "command", "file"],
+        ["marcsh:skillname", "skill", "skillname"],
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("readPluginCommands lists the same entries without the extra fields", () => {
+    const path = marcshPluginPath()!;
+
+    expect(readPluginCommands(path)).toEqual(
+      readPluginEntries(path).map(({ name, description, argumentHint }) => ({ name, description, argumentHint })),
+    );
   });
 });
 

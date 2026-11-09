@@ -21,7 +21,9 @@ import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
+import { warmUpEngineCommands } from "../lib/engine";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -293,6 +295,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
 
+  // The `/` menu of a new default engine should not be empty: pi's commands are listed ahead of its first session.
+  const switchDefaultEngine = useCallback(
+    (next: EngineId) => {
+      setDefaultEngine(next);
+      if (next === "pi") void warmUpEngineCommands("pi", { cwd });
+    },
+    [setDefaultEngine, cwd],
+  );
+
   const {
     showCommandMenu,
     commands,
@@ -301,7 +312,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     handleContentChange,
     resolveCommand,
     setSelectedIndex,
-  } = useCommandMenu();
+  } = useCommandMenu(engineId);
 
   const showMentionMenu = activeMention !== null;
 
@@ -398,7 +409,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         toast,
         engine: engineId,
         defaultEngine,
-        setDefaultEngine,
+        setDefaultEngine: switchDefaultEngine,
         piModel,
         setPiModel,
         refreshPiModel,
@@ -410,7 +421,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {

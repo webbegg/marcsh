@@ -28,13 +28,22 @@ function frontmatter(file: string): Record<string, string> {
   return fields;
 }
 
-function entry(file: string, fallbackName: string): ClaudeCommand | null {
+/** A plugin command or skill: the menu entry, what it is, and the name its file or folder gives it outside Claude. */
+export type PluginEntry = ClaudeCommand & {
+  kind: "command" | "skill";
+  /** A command's file name without `.md`; a skill's `name` field, else its folder name. */
+  id: string;
+};
+
+function entry(file: string, kind: PluginEntry["kind"], fallbackName: string): PluginEntry | null {
   try {
     const fields = frontmatter(file);
     return {
       name: `marcsh:${fields.name || fallbackName}`,
       description: fields.description ?? "",
       argumentHint: fields["argument-hint"] ?? "",
+      kind,
+      id: kind === "command" ? fallbackName : fields.name || fallbackName,
     };
   } catch {
     return null;
@@ -49,16 +58,21 @@ function listDir(path: string) {
   }
 }
 
+/** The plugin's commands (`commands/*.md`) then skills (`skills/<dir>/SKILL.md`), read from disk. A missing or unreadable directory yields []. */
+export function readPluginEntries(pluginPath: string): PluginEntry[] {
+  const commands = listDir(join(pluginPath, "commands"))
+    .filter((item) => item.isFile() && item.name.endsWith(".md"))
+    .map((item) => entry(join(pluginPath, "commands", item.name), "command", basename(item.name, ".md")));
+  const skills = listDir(join(pluginPath, "skills"))
+    .filter((item) => item.isDirectory())
+    .map((item) => entry(join(pluginPath, "skills", item.name, "SKILL.md"), "skill", item.name));
+  return [...commands, ...skills].filter((found): found is PluginEntry => found !== null);
+}
+
 /**
  * The plugin's slash entries as the `/` menu shows Claude commands: `marcsh:<file>` for `commands/*.md`
  * and `marcsh:<skill>` for `skills/<dir>/SKILL.md`, read from disk. A missing or unreadable directory yields [].
  */
 export function readPluginCommands(pluginPath: string): ClaudeCommand[] {
-  const commands = listDir(join(pluginPath, "commands"))
-    .filter((item) => item.isFile() && item.name.endsWith(".md"))
-    .map((item) => entry(join(pluginPath, "commands", item.name), basename(item.name, ".md")));
-  const skills = listDir(join(pluginPath, "skills"))
-    .filter((item) => item.isDirectory())
-    .map((item) => entry(join(pluginPath, "skills", item.name, "SKILL.md"), item.name));
-  return [...commands, ...skills].filter((command): command is ClaudeCommand => command !== null);
+  return readPluginEntries(pluginPath).map(({ name, description, argumentHint }) => ({ name, description, argumentHint }));
 }
