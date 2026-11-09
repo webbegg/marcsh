@@ -35,6 +35,14 @@ describe("needsApproval", () => {
   test("a tool pi does not list asks", () => {
     expect(needsApproval("read", [])).toBe(true);
   });
+
+  test("marcsh's own Task runs without asking, because the subagent it starts asks for its own tool calls", () => {
+    expect(needsApproval("Task", [{ name: "Task", sourceInfo: { path: "<inline:marcsh-subagent>" } }])).toBe(false);
+  });
+
+  test("an extension's tool named Task asks", () => {
+    expect(needsApproval("Task", [fromExtension("Task")])).toBe(true);
+  });
 });
 
 describe("ruleFor", () => {

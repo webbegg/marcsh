@@ -287,7 +287,7 @@ describe("S8: plan mode", () => {
     const step: FauxResponseStep = (ctx) => { names = offered(ctx.messages); return call("mcp__fake__write", {}); };
     const { engine } = await setup([step, call("my_tool", {}, "m2"), done()]);
     const r = await run(engine, { mode: Mode.PLAN }, always("allow"));
-    expect(names.sort()).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
+    expect(names.sort()).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
     expect(r.asks).toEqual([]);
     expect(tools(r.reply).map((t: any) => t.state)).toEqual(["error", "error"]);
     expect(existsSync(marker)).toBe(false);

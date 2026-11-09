@@ -2,6 +2,7 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
+import { isMarcshTask } from "./pi-subagent";
 import type { TurnHost } from "./types";
 
 export const DENIED_REASON = "The user denied this tool call.";
@@ -23,11 +24,12 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
 }
 
 /**
- * Tools that run without the approval prompt, and the only ones plan mode offers: pi's read-only built-ins, and
- * marcsh's own `AskUserQuestion` (answering the question is the approval).
+ * Tools that run without the approval prompt, and the only ones plan mode offers: pi's read-only built-ins,
+ * marcsh's own `AskUserQuestion` (answering the question is the approval), and marcsh's own `Task` (the
+ * subagent it starts asks for its own tool calls, and has only the read-only tools in plan mode).
  */
 export function runsUnasked(tool: ToolSource): boolean {
-  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool);
+  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool) || isMarcshTask(tool);
 }
 
 /** A tool that is not registered (or not one that runs unasked) asks. */
