@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import { useTerminalDimensions } from "@opentui/react";
+import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { Command } from "./types";
 import { useTheme } from "../../providers/theme";
 
@@ -51,7 +51,15 @@ export function CommandMenu({
     const menu = scrollRef.current;
     if (menu) setMeasuredRows(menu.y + menu.height);
   }, [scrollRef]);
-  // After a resize the new layout is not computed yet, so measure on the next tick.
+  // After a resize the new layout is not computed yet: measure once it is (growing the terminal moves the menu
+  // without resizing it, so its own onSizeChange would not fire), and on the next tick for the first render.
+  const renderer = useRenderer();
+  useEffect(() => {
+    renderer.root.on("layout-changed", measure);
+    return () => {
+      renderer.root.off("layout-changed", measure);
+    };
+  }, [renderer, measure]);
   useEffect(() => {
     const timer = setTimeout(measure, 0);
     return () => clearTimeout(timer);
