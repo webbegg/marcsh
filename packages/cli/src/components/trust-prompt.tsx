@@ -16,9 +16,17 @@ type View = { top: number; total: number; viewport: number };
 
 const UNMEASURED: View = { top: 0, total: 0, viewport: 0 };
 
-// The whole list has been on screen when it fits, or the last row is in view. Nothing is measured before the first layout.
-function reachedEnd({ top, total, viewport }: View): boolean {
-  return viewport > 0 && top + viewport >= total;
+// Fewest list rows a person can review a list in; with less room the prompt never offers `t`.
+const MIN_LIST_ROWS = 3;
+// Rows around the list when the layout is whole: padding (2), title, count, the warning, the hints, and the position line.
+const FIXED_ROWS = 2 + 1 + 1 + 3;
+// Screen columns the folder line cannot use: horizontal padding (4) and the left border.
+const SIDE_COLUMNS = 5;
+
+// The whole list has been on screen when it fits, or the last row is in view. A collapsed or unmeasured layout (no
+// viewport, less than the minimum, or fewer content rows than entries, which each take at least one) never counts.
+function reachedEnd({ top, total, viewport }: View, entries: number): boolean {
+  return viewport >= MIN_LIST_ROWS && total >= entries && top + viewport >= total;
 }
 
 type Props = {
@@ -48,18 +56,25 @@ export function TrustPrompt({ request }: Props) {
   const [view, setView] = useState<View>(UNMEASURED);
   const [endSeen, setEndSeen] = useState(false);
   const endSeenRef = useRef(false);
+  const entries = request.resources.length;
+
+  // Too short for the whole layout: only the title, a notice and the answers that need no reading are drawn.
+  const folderRows = Math.max(1, Math.ceil(request.cwd.length / Math.max(1, width - SIDE_COLUMNS)));
+  const compact = height < FIXED_ROWS + folderRows + MIN_LIST_ROWS;
+  const compactRef = useRef(compact);
+  compactRef.current = compact;
 
   const measure = useCallback((): View => {
     const box = scrollRef.current;
     if (!box) return UNMEASURED;
     const next = { top: box.scrollTop, total: box.scrollHeight, viewport: box.viewport.height };
     setView((prev) => (prev.top === next.top && prev.total === next.total && prev.viewport === next.viewport ? prev : next));
-    if (reachedEnd(next) && !endSeenRef.current) {
+    if (!compactRef.current && reachedEnd(next, entries) && !endSeenRef.current) {
       endSeenRef.current = true;
       setEndSeen(true);
     }
     return next;
-  }, []);
+  }, [entries]);
 
   // Layout (first render, resize) is not known until it is computed; the wheel moves the list without a layout change.
   useEffect(() => {
@@ -74,6 +89,8 @@ export function TrustPrompt({ request }: Props) {
 
   const rows = request.resources.map((resource) => escapeProjectText(resource.detail ? `${resource.path} — ${resource.detail}` : resource.path));
   const scrolls = view.viewport > 0 && view.total > view.viewport;
+  // Judged from the layout that is on screen: less room than the minimum means the list cannot be reviewed.
+  const tooSmall = compact || (view !== UNMEASURED && view.viewport < MIN_LIST_ROWS);
 
   useKeyboard((key) => {
     const modified = key.ctrl || key.meta || key.option || key.super || key.hyper;
@@ -107,9 +124,9 @@ export function TrustPrompt({ request }: Props) {
       request.respond("distrust");
     } else if (key.name === "t") {
       key.preventDefault();
-      // Trusting is only offered once the whole list has been on screen; until then `t` does nothing.
-      measure();
-      if (endSeenRef.current) setArmedRequest(request);
+      // Trusting is only offered once the whole list has been on screen, in a terminal tall enough to read it.
+      const now = measure();
+      if (endSeenRef.current && !compactRef.current && now.viewport >= MIN_LIST_ROWS) setArmedRequest(request);
     } else if ((key.name === "return" || key.name === "enter") && armed) {
       key.preventDefault();
       request.respond("trust");
@@ -118,6 +135,50 @@ export function TrustPrompt({ request }: Props) {
       restartQuiet();
     }
   });
+
+  const keyHints = !quiet ? (
+    <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
+  ) : (
+    <>
+      {tooSmall ? null : endSeen ? (
+        <>
+          <text>t</text>
+          <text attributes={TextAttributes.DIM}>{armed ? "press Enter to trust" : "trust (then Enter)"}</text>
+        </>
+      ) : (
+        <text attributes={TextAttributes.DIM}>scroll to the end first</text>
+      )}
+      <text>d</text>
+      <text attributes={TextAttributes.DIM}>don&apos;t trust</text>
+      <text>Esc</text>
+      <text attributes={TextAttributes.DIM}>not now (this turn only)</text>
+    </>
+  );
+  const smallNotice = "Terminal too small to review the list: make it taller to trust.";
+
+  if (compact) {
+    return (
+      <box
+        position="absolute"
+        left={0}
+        top={0}
+        width={width}
+        height={height}
+        zIndex={50}
+        backgroundColor={colors.background}
+        flexDirection="column"
+        paddingX={2}
+      >
+        <text>
+          <em fg={colors.info}>Trust this project&apos;s pi files?</em>
+        </text>
+        <text attributes={TextAttributes.DIM}>{smallNotice}</text>
+        <box flexDirection="row" gap={2}>
+          {keyHints}
+        </box>
+      </box>
+    );
+  }
 
   return (
     <box
@@ -162,31 +223,16 @@ export function TrustPrompt({ request }: Props) {
         ))}
       </scrollbox>
       <box flexShrink={0} flexDirection="column">
-        {scrolls ? (
+        {tooSmall ? (
+          <text attributes={TextAttributes.DIM}>{smallNotice}</text>
+        ) : scrolls ? (
           <text attributes={TextAttributes.DIM}>
             {`rows ${view.top + 1}–${Math.min(view.total, view.top + view.viewport)} of ${view.total} · ↑/↓ PgUp/PgDn`}
           </text>
         ) : null}
         <text attributes={TextAttributes.DIM}>Trusting lets pi load these files and run their code with your permissions.</text>
         <box flexDirection="row" gap={2}>
-          {!quiet ? (
-            <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
-          ) : (
-            <>
-              {endSeen ? (
-                <>
-                  <text>t</text>
-                  <text attributes={TextAttributes.DIM}>{armed ? "press Enter to trust" : "trust (then Enter)"}</text>
-                </>
-              ) : (
-                <text attributes={TextAttributes.DIM}>scroll to the end first</text>
-              )}
-              <text>d</text>
-              <text attributes={TextAttributes.DIM}>don&apos;t trust</text>
-              <text>Esc</text>
-              <text attributes={TextAttributes.DIM}>not now (this turn only)</text>
-            </>
-          )}
+          {keyHints}
         </box>
       </box>
     </box>

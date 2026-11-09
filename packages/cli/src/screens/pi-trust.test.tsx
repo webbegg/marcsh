@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -358,11 +358,11 @@ describe("the trust prompt fits any terminal (S18)", () => {
       const lines = rawLines();
       const text = frame();
       expect(lines[1]).toContain(TITLE);
-      expect(lines[2]).toContain("marcsh-pi-trust-");
-      // The folder may wrap onto a second row; the list starts right under the count.
+      // The folder wraps onto as many rows as its length needs (a long TMPDIR makes it several); the list starts right under the count.
       const count = lines.findIndex((line) => line.includes("items pi would load or run, most dangerous first"));
       expect(count).toBeGreaterThan(2);
-      expect(count).toBeLessThanOrEqual(4);
+      expect(count).toBeLessThanOrEqual(2 + Math.ceil(realpathSync(cwd).length / 70));
+      expect(lines.slice(2, count).map((line) => line.replace(/[│┃\s]+/g, "")).join("")).toContain("marcsh-pi-trust-");
       expect(lines[count + 1]).toMatch(/^│ {2}• \.pi\/mcp\.json — server evil: sh -c echo/);
       expect(text).toContain("Trusting lets pi load these files and run their code with your permissions.");
       expect(lines[height - 2]).toMatch(/d {2}don't trust {2}Esc {2}not now \(this turn only\)/);
