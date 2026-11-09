@@ -6,7 +6,9 @@ import { Mode } from "../modes";
 import { getStorage, type Storage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
-import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS } from "./pi-permissions";
+import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
+import type { Guard } from "./pi-guard";
+import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
 /** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
@@ -49,6 +51,8 @@ export type PiEngineOptions = {
   modelRuntime?: ModelRuntime;
   /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
   permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  /** The branch/ship guard for pi's `bash` tool. Default: the decision Claude's PreToolUse hook makes (tests inject others). */
+  guard?: Guard;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -123,8 +127,9 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * The pi engine. Each turn opens its own pi session (new, or the file named by `resumeRef`), prompts it
  * once, and disposes it when pi has settled.
  *
- * Every tool except pi's read-only ones asks through the host before it runs (see `pi-permissions.ts`).
- * In plan mode the session only has the read-only tools.
+ * Every tool except pi's read-only ones and marcsh's `AskUserQuestion` asks through the host before it runs
+ * (see `pi-permissions.ts`), and a `bash` command the branch/ship guard flags is blocked or always asked
+ * (see `pi-guard.ts`). In plan mode the session only has the read-only tools and `AskUserQuestion`.
  */
 export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
@@ -195,7 +200,9 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             rules: options.permissionRules ?? getStorage(),
             signal: turnEnded.signal,
             planMode: mode === Mode.PLAN,
+            guard: options.guard,
           }),
+          createAskUserExtension({ host, signal: turnEnded.signal }),
         ],
       });
       await resourceLoader.reload();
@@ -209,11 +216,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         sessionManager,
         settingsManager,
         resourceLoader,
-        // Plan mode: only the read-only tools exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : {}),
+        // Plan mode: only the read-only tools and the question tool exist, so nothing that writes or runs can be called.
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL] } : {}),
       }));
-      // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own.
-      if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(isReadOnlyBuiltin).map((tool) => tool.name));
+      // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
+      if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name));
       // pi gives a resumed session the tools of its last turn: after a plan turn, a build turn sets them again.
       else if (resumeRef && restoredPlanTools(session)) {
         session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved }));

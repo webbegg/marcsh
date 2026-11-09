@@ -109,7 +109,7 @@ test("P1 build -> plan -> build: third turn offers the fresh build set incl. ext
   const p = await run(engine, { mode: Mode.PLAN, resumeRef: b1.ref }, "allow");
   const b3 = await run(engine, { resumeRef: p.ref ?? b1.ref }, "allow");
   console.log("P1 offered", JSON.stringify(offered), "asks", JSON.stringify(b3.asks.map((a: any) => a.toolName ?? a.tool ?? a.name)), "errors", b3.errors, "parts", JSON.stringify(b3.parts));
-  expect(offered[1]).toEqual(["find", "grep", "ls", "read"]);
+  expect(offered[1]).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
   expect(offered[2]).toEqual(offered[0]);
   expect(offered[0]).toContain("my_tool");
   expect(offered[0]).toContain("late_tool");
@@ -151,8 +151,8 @@ test("P2 plan(new) -> build -> plan -> build: plan turns read-only, build turns 
   const e2 = await engineWith([rec(fresh, done)]);
   await run(e2, {}, "allow");
   console.log("P2 offered", JSON.stringify(offered), "fresh", JSON.stringify(fresh), "refs", !!p1.ref, !!b2.ref, !!p3.ref, "b4 asks", b4.asks.length);
-  expect(offered[0]).toEqual(["find", "grep", "ls", "read"]);
-  expect(offered[2]).toEqual(["find", "grep", "ls", "read"]);
+  expect(offered[0]).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
+  expect(offered[2]).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
   expect(offered[1]).toEqual(fresh[0]);
   expect(offered[3]).toEqual(fresh[0]);
   expect(b4.asks.length).toBe(1);
@@ -174,7 +174,7 @@ for (const defaultTools of [["read", "bash", "grep", "ls"], ["read", "grep"], ["
     console.log("P3", JSON.stringify(defaultTools), JSON.stringify(a));
     expect(a[1]).toEqual(a[0]);
     expect(a[2]).toEqual(a[0]);
-    expect(a[3]).toEqual(["find", "grep", "ls", "read"]);
+    expect(a[3]).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
     expect(a[4]).toEqual(a[0]);
   });
 }

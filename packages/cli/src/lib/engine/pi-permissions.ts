@@ -1,5 +1,7 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { PermissionRule, Storage } from "../storage";
+import { isMarcshAskUser } from "./pi-ask-user";
+import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
 import type { TurnHost } from "./types";
 
 export const DENIED_REASON = "The user denied this tool call.";
@@ -20,10 +22,18 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
   return (READ_ONLY_TOOLS as readonly string[]).includes(tool.name) && tool.sourceInfo.path === `builtin:${tool.name}`;
 }
 
-/** A tool that is not registered (or not pi's read-only one) asks. */
+/**
+ * Tools that run without the approval prompt, and the only ones plan mode offers: pi's read-only built-ins, and
+ * marcsh's own `AskUserQuestion` (answering the question is the approval).
+ */
+export function runsUnasked(tool: ToolSource): boolean {
+  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool);
+}
+
+/** A tool that is not registered (or not one that runs unasked) asks. */
 export function needsApproval(toolName: string, tools: readonly ToolSource[]): boolean {
   const tool = tools.find((candidate) => candidate.name === toolName);
-  return !tool || !isReadOnlyBuiltin(tool);
+  return !tool || !runsUnasked(tool);
 }
 
 /** Shell tools: an "always" answer covers the exact command only. */
@@ -52,19 +62,43 @@ export type ApprovalOptions = {
   planMode?: boolean;
   /** The session's tools with their sources (`pi.getAllTools()`), read when a call arrives. */
   tools: () => readonly ToolSource[];
+  /** The branch/ship guard for pi's built-in `bash`. Default: the same decision Claude's PreToolUse hook makes. */
+  guard?: Guard;
 };
 
+/** The guard's verdict on a call, or null: only pi's own `bash` with a command string is guarded, and a guard that fails is no verdict (fail open, like the Claude hook). */
+function guardVerdict(guard: Guard, cwd: string, call: { toolName: string; input: Record<string, unknown> }, tools: readonly ToolSource[]): Decision | null {
+  const tool = tools.find((candidate) => candidate.name === call.toolName);
+  const command = call.input.command;
+  if (!tool || !isBuiltinBash(tool) || typeof command !== "string") return null;
+  try {
+    return guard(command, cwd);
+  } catch {
+    return null;
+  }
+}
+
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
     if (!needsApproval(call.toolName, tools())) return undefined;
     if (planMode) return { block: true, reason: PLAN_MODE_REASON };
-    const rule = ruleFor(cwd, call.toolName, call.input);
+
+    const verdict = guardVerdict(guard, cwd, call, tools());
+    if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
+    // A guarded action always asks and can never be always-allowed: no rule is matched, and none is stored.
+    const guarded = verdict?.decision === "ask" ? verdict : undefined;
+    const rule = guarded ? undefined : ruleFor(cwd, call.toolName, call.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
     try {
-      decision = await host.askPermission({ toolName: call.toolName, input: call.input }, signal);
+      decision = await host.askPermission(
+        guarded
+          ? { toolName: call.toolName, input: call.input, decisionReason: guarded.reason, suppressAlwaysAllowRule: true }
+          : { toolName: call.toolName, input: call.input },
+        signal,
+      );
     } catch {
       return { block: true, reason: DENIED_REASON };
     }
@@ -78,7 +112,7 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
 
 /**
  * The pi extension that routes every tool call through marcsh's approval prompt. In plan mode it also keeps
- * the session's active tools to pi's read-only built-ins: an extension that registers a tool later (in
+ * the session's active tools to the ones that run unasked: an extension that registers a tool later (in
  * `before_agent_start` or `turn_start`) has it activated by pi, and these handlers run after it. The
  * `tool_call` block is the backstop if a tool is offered anyway.
  */
@@ -88,7 +122,7 @@ export function createApprovalExtension(options: Omit<ApprovalOptions, "tools">)
     pi.on("tool_call", (event) => decide({ toolName: event.toolName, input: event.input }));
     if (!options.planMode) return;
     const keepReadOnly = () => {
-      pi.setActiveTools(pi.getAllTools().filter(isReadOnlyBuiltin).map((tool) => tool.name));
+      pi.setActiveTools(pi.getAllTools().filter(runsUnasked).map((tool) => tool.name));
     };
     pi.on("before_agent_start", keepReadOnly);
     pi.on("turn_start", keepReadOnly);

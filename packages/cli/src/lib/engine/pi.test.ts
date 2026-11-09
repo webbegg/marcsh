@@ -17,7 +17,7 @@ import {
 import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
-import { createPiEngine, defaultPiAgentDir } from "./pi";
+import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
 import type { Engine, EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string;
@@ -35,7 +35,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(responses: FauxResponseStep[], permissionRules: Storage = openStorage(":memory:")) {
+async function setup(responses: FauxResponseStep[], permissionRules: Storage = openStorage(":memory:"), engineOptions: PiEngineOptions = {}) {
   const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
@@ -45,7 +45,7 @@ async function setup(responses: FauxResponseStep[], permissionRules: Storage = o
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
 
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules, ...engineOptions });
   return { engine, faux, model: "faux/faux-1", permissionRules };
 }
 
@@ -402,7 +402,7 @@ describe("pi engine permissions (S8)", () => {
     expect(toolParts(reply)[0]?.state).toBe("done");
   });
 
-  test("plan mode offers only the read-only tools, so bash cannot run or ask", async () => {
+  test("plan mode offers only the read-only tools and AskUserQuestion, so bash cannot run or ask", async () => {
     let offered: string[] | undefined;
     const planned: FauxResponseStep = (context) => {
       offered = offeredTools(context.messages);
@@ -413,7 +413,7 @@ describe("pi engine permissions (S8)", () => {
 
     const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
 
-    expect(offered?.sort()).toEqual(["find", "grep", "ls", "read"]);
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
     expect(asks).toEqual([]);
     expect(existsSync(made())).toBe(false);
     expect(toolParts(reply)[0]?.state).toBe("error");
@@ -429,7 +429,7 @@ describe("pi engine permissions (S8)", () => {
 
     await runTurn(engine, model, { mode: Mode.BUILD });
 
-    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write"]));
+    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "AskUserQuestion"]));
   });
 
   test("aborting the turn while an approval is pending leaves the call unexecuted", async () => {
@@ -514,8 +514,8 @@ describe("pi engine plan and build turns on one session (S8)", () => {
     }
   }
 
-  const PLAN = ["find", "grep", "ls", "read"];
-  const BUILD = ["bash", "edit", "read", "write"];
+  const PLAN = ["AskUserQuestion", "find", "grep", "ls", "read"];
+  const BUILD = ["AskUserQuestion", "bash", "edit", "read", "write"];
 
   test("plan, build, plan, build: each turn offers its mode's tools", async () => {
     const { offered, steps } = recording(5);
@@ -549,7 +549,352 @@ export default function (pi) {
 
     await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
 
-    expect(offered).toEqual([["bash", "ext_tool", "read"], PLAN, ["bash", "ext_tool", "read"]]);
+    expect(offered).toEqual([["AskUserQuestion", "bash", "ext_tool", "read"], PLAN, ["AskUserQuestion", "bash", "ext_tool", "read"]]);
+  });
+});
+
+const COLOR = {
+  question: "Which color do you prefer?",
+  header: "Color",
+  options: [
+    { label: "Red", description: "A warm color" },
+    { label: "Green", description: "A natural color" },
+  ],
+  multiSelect: false,
+};
+
+const askCall = (input: Parameters<typeof fauxToolCall>[1], id = "ask-1") =>
+  fauxAssistantMessage([fauxToolCall("AskUserQuestion", input, { id })], { stopReason: "toolUse" });
+
+// The text of every tool result in the transcript: what the model reads after its tool calls.
+const toolResultTexts = (messages: Message[]) =>
+  messages.flatMap((m) => (m.role === "toolResult" ? [m.content.map((block) => ("text" in block ? block.text : "")).join("")] : []));
+
+// A host that answers every question with `answers` (null = declines) and records what it was asked.
+function answeringQuestions(answers: Record<string, string> | null) {
+  const questions: unknown[] = [];
+  const host: Partial<TurnHost> = {
+    askQuestions: async (asked) => {
+      questions.push(asked);
+      return answers;
+    },
+  };
+  return { questions, host };
+}
+
+// What the model reads after the tool call, from a recording step that ends the turn.
+function reading() {
+  const seen: string[][] = [];
+  const step: FauxResponseStep = (context) => {
+    seen.push(toolResultTexts(context.messages));
+    return fauxAssistantMessage([fauxText("ok")]);
+  };
+  return { seen, step };
+}
+
+describe("pi engine AskUserQuestion (S9)", () => {
+  const marker = () => join(cwd, "ext-ran.txt");
+  const shadowingExtension = () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "ask.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "AskUserQuestion", label: "ask", description: "an extension's own tool", parameters: Type.Object({}),
+    async execute() { require("node:fs").writeFileSync(${JSON.stringify(marker())}, "ran"); return { content: [{ type: "text", text: "ext ran" }] }; } });
+}
+`,
+    );
+  };
+
+  test("the answers go to the model as the tool result, without any approval prompt", async () => {
+    const { seen, step } = reading();
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), step]);
+    const { asks, host: permissions } = answering("deny");
+    const { questions, host: asking } = answeringQuestions({ [COLOR.question]: "Green" });
+
+    const { reply, errors } = await runTurn(engine, model, {}, { ...permissions, ...asking });
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(questions).toEqual([[COLOR]]);
+    expect(toolParts(reply).map((t) => [t.toolName, t.state])).toEqual([["AskUserQuestion", "done"]]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toHaveLength(1);
+    expect(seen[0]?.[0]).toContain(`"${COLOR.question}"="Green"`);
+  });
+
+  test("a multi-select answer reaches the model comma-separated, as the host built it", async () => {
+    const toppings = { ...COLOR, question: "Which toppings?", header: "Toppings", multiSelect: true };
+    const { seen, step } = reading();
+    const { engine, model } = await setup([askCall({ questions: [toppings] }), step]);
+    const { host } = answeringQuestions({ [toppings.question]: "Red, Green" });
+
+    await runTurn(engine, model, {}, host);
+
+    expect(seen[0]?.[0]).toContain(`"${toppings.question}"="Red, Green"`);
+  });
+
+  test("a declined question is a tool error: The user declined to answer.", async () => {
+    const { seen, step } = reading();
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), step]);
+    const { asks, host: permissions } = answering("allow");
+    const { host: asking } = answeringQuestions(null);
+
+    const { reply, errors } = await runTurn(engine, model, {}, { ...permissions, ...asking });
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain("The user declined to answer.");
+    expect(seen[0]?.[0]).toContain("The user declined to answer.");
+  });
+
+  test("input pi's schema check rejects is a tool error that never asks", async () => {
+    const oneOption = { ...COLOR, options: COLOR.options.slice(0, 1) };
+    const { engine, model } = await setup([askCall({ questions: [oneOption] }), fauxAssistantMessage([fauxText("ok")])]);
+    const { questions, host } = answeringQuestions({});
+
+    const { reply } = await runTurn(engine, model, {}, host);
+
+    expect(questions).toEqual([]);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain("options");
+  });
+
+  test("input marcsh's own check rejects (two identical questions) is a tool error that explains the schema", async () => {
+    const { seen, step } = reading();
+    const { engine, model } = await setup([askCall({ questions: [COLOR, COLOR] }), step]);
+    const { questions, host } = answeringQuestions({});
+
+    const { reply } = await runTurn(engine, model, {}, host);
+
+    expect(questions).toEqual([]);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain("Invalid AskUserQuestion input");
+    expect(seen[0]?.[0]).toMatch(/1-4.*2-9.*multiSelect/s);
+  });
+
+  test("is allowed in plan mode: asked and answered with no approval prompt", async () => {
+    const { seen, step } = reading();
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), step]);
+    const { asks, host: permissions } = answering("deny");
+    const { questions, host: asking } = answeringQuestions({ [COLOR.question]: "Red" });
+
+    const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, { ...permissions, ...asking });
+
+    expect(asks).toEqual([]);
+    expect(questions).toEqual([[COLOR]]);
+    expect(toolParts(reply)[0]?.state).toBe("done");
+    expect(seen[0]?.[0]).toContain(`"${COLOR.question}"="Red"`);
+  });
+
+  test("a question still open when the turn is interrupted is declined and the turn ends quietly", async () => {
+    let asked: () => void = () => {};
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), fauxAssistantMessage([fauxText("ok")])]);
+    let seen: AbortSignal | undefined;
+    const running = start(engine, model, {}, {
+      askQuestions: (_questions, signal) =>
+        new Promise<null>((resolve) => {
+          seen = signal;
+          asked();
+          signal.addEventListener("abort", () => resolve(null), { once: true });
+        }),
+    });
+
+    await pending;
+    running.turn.interrupt();
+    await running.turn.done;
+
+    expect(seen?.aborted).toBe(true);
+    expect(summarize(running.events).errors).toEqual([]);
+  });
+
+  test("an extension tool named AskUserQuestion is not marcsh's: it asks in build mode and nothing is asked of the user", async () => {
+    shadowingExtension();
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host: permissions } = answering("deny");
+    const { questions, host: asking } = answeringQuestions({ [COLOR.question]: "Red" });
+
+    const { reply } = await runTurn(engine, model, {}, { ...permissions, ...asking });
+
+    expect(asks.map((a) => a.toolName)).toEqual(["AskUserQuestion"]);
+    expect(questions).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    expect(toolParts(reply)[0]?.errorText).toContain("The user denied this tool call.");
+  });
+
+  test("an approved extension tool named AskUserQuestion runs as the extension's own", async () => {
+    shadowingExtension();
+    const { engine, model } = await setup([askCall({ questions: [COLOR] }), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host: permissions } = answering("allow");
+    const { questions, host: asking } = answeringQuestions({ [COLOR.question]: "Red" });
+
+    const { reply } = await runTurn(engine, model, {}, { ...permissions, ...asking });
+
+    expect(asks).toHaveLength(1);
+    expect(questions).toEqual([]);
+    expect(existsSync(marker())).toBe(true);
+    expect(toolParts(reply)[0]?.state).toBe("done");
+  });
+
+  test("an extension tool named AskUserQuestion is blocked in plan mode, without asking, even with a stored rule", async () => {
+    shadowingExtension();
+    const { engine, model, permissionRules } = await setup([askCall({ questions: [COLOR] }), fauxAssistantMessage([fauxText("ok")])]);
+    permissionRules.addPermissionRule({ cwd, toolName: "AskUserQuestion" });
+    const { asks, host: permissions } = answering("allow");
+    const { questions, host: asking } = answeringQuestions({ [COLOR.question]: "Red" });
+
+    const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, { ...permissions, ...asking });
+
+    expect(asks).toEqual([]);
+    expect(questions).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    expect(toolParts(reply)[0]?.state).toBe("error");
+  });
+});
+
+describe("pi engine branch/ship guard (S10)", () => {
+  const marker = () => join(cwd, "ran.txt");
+  const repo = (branch: string) => {
+    const git = Bun.spawnSync(["git", "init", "-q", "-b", branch], { cwd, stdout: "ignore", stderr: "pipe" });
+    if (git.exitCode !== 0) throw new Error(git.stderr.toString());
+  };
+  const REASON_PUSH = "marcsh: git push needs your approval";
+  const REASON_COMMIT = "marcsh: commits on main are blocked; create a branch first (git switch -c <type>/<description>)";
+
+  test("a commit on the default branch is blocked with the guard's reason, without a prompt", async () => {
+    repo("main");
+    const command = `git commit -m x; touch ${marker()}`;
+    const { seen, step } = reading();
+    const { engine, model, permissionRules } = await setup([bashCall(command), step]);
+    permissionRules.addPermissionRule({ cwd, toolName: "bash", command });
+    const { asks, host } = answering("allow");
+
+    const { reply, errors } = await runTurn(engine, model, {}, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain(REASON_COMMIT);
+    expect(seen[0]?.[0]).toContain(REASON_COMMIT);
+  });
+
+  test("a push always asks with the guard's reason and no always-allow, even when an always rule matches", async () => {
+    repo("feat/x");
+    const command = `git push; touch ${marker()}`;
+    const { engine, model, permissionRules } = await setup([bashCall(command), fauxAssistantMessage([fauxText("ok")])]);
+    permissionRules.addPermissionRule({ cwd, toolName: "bash", command });
+    const { asks, host } = answering("allow");
+
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([{ toolName: "bash", input: { command }, decisionReason: REASON_PUSH, suppressAlwaysAllowRule: true }]);
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  test("a denied push does not run, and answering always stores no rule", async () => {
+    repo("feat/x");
+    const command = `git push; touch ${marker()}`;
+    const { engine, model, permissionRules } = await setup([
+      bashCall(command),
+      fauxAssistantMessage([fauxText("one")]),
+      bashCall(command, "call-2"),
+      fauxAssistantMessage([fauxText("two")]),
+    ]);
+    const denied = answering("deny");
+    const first = await runTurn(engine, model, {}, denied.host);
+    expect(toolParts(first.reply)[0]?.errorText).toContain("The user denied this tool call.");
+    expect(existsSync(marker())).toBe(false);
+
+    const always = answering("always");
+    await runTurn(engine, model, {}, always.host);
+
+    expect(existsSync(marker())).toBe(true);
+    expect(permissionRules.hasPermissionRule({ cwd, toolName: "bash", command })).toBe(false);
+  });
+
+  test("a push whose prompt is open when the turn is interrupted does not run", async () => {
+    repo("feat/x");
+    let asked: () => void = () => {};
+    const pending = new Promise<void>((resolve) => (asked = resolve));
+    const { engine, model } = await setup([bashCall(`git push; touch ${marker()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const running = start(engine, model, {}, {
+      askPermission: (_ask, signal) =>
+        new Promise<PermissionDecision>((resolve) => {
+          asked();
+          signal.addEventListener("abort", () => resolve("deny"), { once: true });
+        }),
+    });
+
+    await pending;
+    running.turn.interrupt();
+    await running.turn.done;
+
+    expect(existsSync(marker())).toBe(false);
+    expect(summarize(running.events).errors).toEqual([]);
+  });
+
+  test("an ordinary command, and a commit on a feature branch, go through the normal approval with no guard reason", async () => {
+    repo("feat/x");
+    const { engine, model } = await setup([
+      bashCall("echo hi"),
+      fauxAssistantMessage([fauxText("one")]),
+      bashCall("git commit -m x", "call-2"),
+      fauxAssistantMessage([fauxText("two")]),
+    ]);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, {}, host);
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([
+      { toolName: "bash", input: { command: "echo hi" } },
+      { toolName: "bash", input: { command: "git commit -m x" } },
+    ]);
+  });
+
+  test("a guard that fails is no decision: the commit goes through the normal approval (fail open, like the Claude hook)", async () => {
+    repo("main");
+    const command = `git commit -m x; touch ${marker()}`;
+    const guard = () => {
+      throw new Error("guard exploded");
+    };
+    const { engine, model } = await setup([bashCall(command), fauxAssistantMessage([fauxText("ok")])], openStorage(":memory:"), { guard });
+    const { asks, host } = answering("allow");
+
+    const { errors } = await runTurn(engine, model, {}, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([{ toolName: "bash", input: { command } }]);
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  test("a directory that is not a repository is no decision either", async () => {
+    const command = `git commit -m x; touch ${marker()}`;
+    const { engine, model } = await setup([bashCall(command), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("allow");
+
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([{ toolName: "bash", input: { command } }]);
+  });
+
+  test("plan mode never reaches the guard: bash is not offered", async () => {
+    repo("main");
+    const { engine, model } = await setup([bashCall(`git commit -m x; touch ${marker()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("allow");
+
+    await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+    expect(asks).toEqual([]);
+    expect(existsSync(marker())).toBe(false);
   });
 });
 
