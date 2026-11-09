@@ -2,6 +2,7 @@ import type { AgentSession, InlineExtension, ModelRuntime, ToolDefinition } from
 import type { ChatMessage, MessagePart } from "../chat-types";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { createErrorTracker } from "./pi-events";
+import { disposePiSession } from "./pi-mcp";
 import type { ToolSource } from "./pi-permissions";
 import type { TurnHost } from "./types";
 
@@ -201,7 +202,7 @@ export async function runChildSession(pi: PiModule, options: ChildSessionOptions
     return await promptChild(session, options);
   } finally {
     signal.removeEventListener("abort", abort);
-    session.dispose();
+    await disposePiSession(session);
   }
 }
 
