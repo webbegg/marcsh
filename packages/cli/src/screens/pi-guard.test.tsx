@@ -119,9 +119,9 @@ describe("the branch/ship guard on a pi session (S10)", () => {
     await openPiSession([bashCall(command), afterTool]);
 
     await frameContaining("Allow bash?");
-    // The keys are listed once the keyboard has been quiet.
-    await settle(QUIET_MS + 100);
-    const prompt = frame();
+    // The keys are listed once the keyboard has been quiet (a loaded suite can take longer than the window).
+    await settle(QUIET_MS);
+    const prompt = await frameContaining("y allow once");
 
     expect(prompt).toContain("Allow bash?");
     expect(prompt).toContain(`Reason: ${REASON_PUSH}`);
