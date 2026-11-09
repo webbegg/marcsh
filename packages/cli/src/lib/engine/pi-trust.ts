@@ -18,11 +18,14 @@ import type { Storage } from "../storage";
 /** pi's project config folder (`piConfig.configDir` in its package.json). */
 const CONFIG_DIR = ".pi";
 
-/** What a project holds that pi would load or run once the project is trusted. */
+/**
+ * What a project holds that pi would load or run once the project is trusted. Both strings come from the project, so
+ * `findProjectResources` returns them escaped (see `escapeProjectText`): each is one line of printable text.
+ */
 export type ProjectResource = {
   /** Relative to the project folder, e.g. `.pi/extensions/foo.ts`. */
   path: string;
-  /** What it does when loaded, e.g. an MCP server's command. */
+  /** What it does when loaded, e.g. an MCP server's command. Whole, never shortened. */
   detail?: string;
 };
 
@@ -38,9 +41,6 @@ export type ProjectTrustAsk = {
 
 export type ProjectTrustRecords = Pick<Storage, "getProjectTrust" | "setProjectTrust">;
 
-const MAX_CHILDREN = 20;
-const MAX_DETAIL = 200;
-
 const canonical = (path: string) => {
   try {
     return realpathSync(path);
@@ -49,7 +49,23 @@ const canonical = (path: string) => {
   }
 };
 
-const clip = (text: string) => (text.length > MAX_DETAIL ? `${text.slice(0, MAX_DETAIL)}…` : text);
+// Control characters (C0, DEL, C1: ESC and the sequences it starts included), format characters (zero-width, bidi marks,
+// embeddings, overrides and isolates, byte order mark, tags...), line and paragraph separators, lone surrogates
+// and unassigned code points (U+2065 sits inside the invisible-operators block).
+const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Cn}]/gu;
+const NAMED_ESCAPES: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+/**
+ * Text from a project as the trust prompt may draw it: every character that could move the cursor, start a new row,
+ * reorder or hide text is replaced by a visible escape (a newline becomes backslash and n, U+202E becomes backslash and u202e, a tag
+ * character backslash and u{e0041}), nothing is dropped silently. Escaping twice changes nothing more, so a shown string is always one line.
+ */
+export function escapeProjectText(text: string): string {
+  return text.replace(UNSAFE_CHAR, (char) => {
+    const code = char.codePointAt(0)!;
+    return NAMED_ESCAPES[char] ?? (code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`);
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -66,32 +82,69 @@ function readJson(path: string): unknown {
   }
 }
 
-/** `command arg arg` or the URL of one `mcp.json` server. */
-function describeServer(name: string, config: unknown): string {
-  if (!isRecord(config)) return `server ${name}`;
+const show = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
+
+/** `key=value` for each entry of a string map (an MCP server's `env`, its HTTP `headers`). */
+const entries = (value: unknown, separator: string) =>
+  isRecord(value) ? Object.entries(value).map(([key, entry]) => `${key}${separator}${show(entry)}`) : [];
+
+/**
+ * One row for what the server starts or connects to (`command arg arg`, or the URL), then one row per environment
+ * entry, header and working folder: all of them change what runs or where it talks.
+ */
+function describeServer(name: string, config: unknown): string[] {
+  if (!isRecord(config)) return [`server ${name}`];
+  const rows: string[] = [];
   if (typeof config.command === "string") {
     const args = Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === "string") : [];
-    return clip(`server ${name}: ${[config.command, ...args].join(" ")}`);
+    rows.push(`server ${name}: ${[config.command, ...args].join(" ")}`);
   }
-  if (typeof config.url === "string") return clip(`server ${name}: ${config.url}`);
-  return `server ${name}`;
+  if (typeof config.url === "string") rows.push(`server ${name}: ${config.url}`);
+  if (rows.length === 0) rows.push(`server ${name}`);
+  if (typeof config.cwd === "string") rows.push(`server ${name} runs in: ${config.cwd}`);
+  for (const env of entries(config.env, "=")) rows.push(`server ${name} env: ${env}`);
+  for (const header of entries(config.headers, ": ")) rows.push(`server ${name} header: ${header}`);
+  return rows;
 }
 
 function mcpResources(file: string, path: string): ProjectResource[] {
   const parsed = readJson(file);
   const servers = isRecord(parsed) && isRecord(parsed.mcpServers) ? Object.entries(parsed.mcpServers) : [];
   if (servers.length === 0) return [{ path, detail: parsed === undefined ? "could not be read" : "no servers" }];
-  return servers.map(([name, config]) => ({ path, detail: describeServer(name, config) }));
+  return servers.flatMap(([name, config]) => describeServer(name, config).map((detail) => ({ path, detail })));
 }
 
-function settingsResource(file: string, path: string): ProjectResource {
+// Settings pi runs or installs from: a shell prefix and shell, the npm and self-update commands, the editor, proxy,
+// packages (pi installs them on trust) and extension paths (pi loads them).
+const EXECUTABLE_SETTINGS = ["shellCommandPrefix", "shellPath", "npmCommand", "selfUpdateCommand", "externalEditor", "httpProxy", "packages", "extensions"];
+// Settings that point pi at more files to load.
+const PATH_SETTINGS = ["skills", "prompts", "themes"];
+
+/** A `packages` entry: `npm:x`, or an object with its source and the resources it narrows to. */
+function describeSettingValue(key: string, value: unknown): string[] {
+  if (Array.isArray(value) && key === "npmCommand" && value.every((part) => typeof part === "string")) return [value.join(" ")];
+  if (Array.isArray(value)) return value.length === 0 ? ["(none)"] : value.map(describePackage);
+  return [show(value)];
+}
+
+function describePackage(entry: unknown): string {
+  if (!isRecord(entry) || typeof entry.source !== "string") return show(entry);
+  const { source, ...rest } = entry;
+  const options = Object.entries(rest).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.map(show).join(", ") : show(value)}`);
+  return options.length > 0 ? `${source} (${options.join("; ")})` : source;
+}
+
+/** `.pi/settings.json`: executable settings go first (they run on trust), the rest after the extensions. */
+function settingsResources(file: string, path: string): { runs: ProjectResource[]; others: ProjectResource[] } {
   const parsed = readJson(file);
-  if (!isRecord(parsed)) return { path, detail: parsed === undefined ? "could not be read" : undefined };
-  const keys = Object.keys(parsed);
-  const prefix = typeof parsed.shellCommandPrefix === "string" ? `shellCommandPrefix: ${parsed.shellCommandPrefix}` : undefined;
-  const others = keys.filter((key) => key !== "shellCommandPrefix").slice(0, 8);
-  const detail = [prefix, others.length > 0 ? `sets ${others.join(", ")}` : undefined].filter(Boolean).join("; ");
-  return { path, detail: detail ? clip(detail) : undefined };
+  if (!isRecord(parsed)) return { runs: [], others: [{ path, detail: parsed === undefined ? "could not be read" : undefined }] };
+  const rowsFor = (keys: string[]) =>
+    keys.filter((key) => key in parsed).flatMap((key) => describeSettingValue(key, parsed[key]).map((value) => ({ path, detail: `${key}: ${value}` })));
+  const listed = new Set([...EXECUTABLE_SETTINGS, ...PATH_SETTINGS]);
+  const rest = Object.keys(parsed).filter((key) => !listed.has(key));
+  const others = [...rowsFor(PATH_SETTINGS), ...(rest.length > 0 ? [{ path, detail: `sets ${rest.join(", ")}` }] : [])];
+  const runs = rowsFor(EXECUTABLE_SETTINGS);
+  return { runs, others: runs.length + others.length === 0 ? [{ path }] : others };
 }
 
 /** The entries of a resource folder, one per child; an empty folder is itself the resource. */
@@ -105,8 +158,7 @@ function folderResources(dir: string, path: string): ProjectResource[] {
     return [{ path: `${path}/` }];
   }
   if (children.length === 0) return [{ path: `${path}/` }];
-  const shown = children.slice(0, MAX_CHILDREN).map((child) => ({ path: `${path}/${child}` }));
-  return children.length > MAX_CHILDREN ? [...shown, { path: `${path}/`, detail: `and ${children.length - MAX_CHILDREN} more` }] : shown;
+  return children.map((child) => ({ path: `${path}/${child}` }));
 }
 
 /** Folders named `.agents/skills` in the project and its parents, except the user's own (`~/.agents/skills`). */
@@ -123,16 +175,22 @@ function agentsSkillDirs(project: string): string[] {
 /**
  * What the project at `cwd` holds that pi gates behind project trust, as pi's `hasTrustRequiringProjectResources`
  * sees it: entries under `.pi`, and `.agents/skills` in the project or a parent folder. Empty when there is none.
+ *
+ * Everything is listed, whole, most dangerous first: MCP servers (command, arguments, environment) and settings pi
+ * executes or installs from, then extensions, then skills, prompt templates, themes and system prompt files.
+ * Strings are escaped (`escapeProjectText`), so no entry can look like two rows or like the prompt itself.
  */
 export function findProjectResources(cwd: string): ProjectResource[] {
   const project = canonical(cwd);
   const config = join(project, CONFIG_DIR);
   const has = (entry: string) => existsSync(join(config, entry));
+  const settings = has("settings.json") ? settingsResources(join(config, "settings.json"), `${CONFIG_DIR}/settings.json`) : { runs: [], others: [] };
   const resources: ProjectResource[] = [];
 
-  if (has("extensions")) resources.push(...folderResources(join(config, "extensions"), `${CONFIG_DIR}/extensions`));
   if (has("mcp.json")) resources.push(...mcpResources(join(config, "mcp.json"), `${CONFIG_DIR}/mcp.json`));
-  if (has("settings.json")) resources.push(settingsResource(join(config, "settings.json"), `${CONFIG_DIR}/settings.json`));
+  resources.push(...settings.runs);
+  if (has("extensions")) resources.push(...folderResources(join(config, "extensions"), `${CONFIG_DIR}/extensions`));
+  resources.push(...settings.others);
   for (const folder of ["skills", "prompts", "themes"]) {
     if (has(folder)) resources.push(...folderResources(join(config, folder), `${CONFIG_DIR}/${folder}`));
   }
@@ -140,7 +198,7 @@ export function findProjectResources(cwd: string): ProjectResource[] {
     if (has(file)) resources.push({ path: `${CONFIG_DIR}/${file}`, detail: "changes the system prompt" });
   }
   for (const dir of agentsSkillDirs(project)) resources.push(...folderResources(dir, relative(project, dir)));
-  return resources;
+  return resources.map(({ path, detail }) => ({ path: escapeProjectText(path), ...(detail === undefined ? {} : { detail: escapeProjectText(detail) }) }));
 }
 
 export type ResolveProjectTrustOptions = {

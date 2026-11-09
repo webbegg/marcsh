@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStorage } from "../storage";
-import { findProjectResources, isProjectTrusted, resolveProjectTrust, type ProjectTrustAsk, type TrustAnswer } from "./pi-trust";
+import { escapeProjectText, findProjectResources, isProjectTrusted, resolveProjectTrust, type ProjectTrustAsk, type TrustAnswer } from "./pi-trust";
 
 let root: string;
 let project: string;
@@ -31,6 +31,8 @@ const write = (path: string, content = "") => {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, content);
 };
+
+const cp = (code: number) => String.fromCodePoint(code);
 
 describe("findProjectResources", () => {
   test("a project with no pi files has nothing to ask about", () => {
@@ -73,11 +75,84 @@ describe("findProjectResources", () => {
     expect(findProjectResources(project)).toEqual([{ path: ".pi/mcp.json", detail: "no servers" }]);
   });
 
-  test("lists .pi/settings.json with the keys it sets and its shellCommandPrefix", () => {
-    write(join(project, ".pi", "settings.json"), JSON.stringify({ shellCommandPrefix: "source ./env.sh", packages: ["npm:x"], defaultTools: ["read"] }));
+  test("lists .pi/settings.json with the values pi runs or installs, and the names of the other keys it sets", () => {
+    write(
+      join(project, ".pi", "settings.json"),
+      JSON.stringify({
+        shellCommandPrefix: "source ./env.sh",
+        packages: ["npm:x", { source: "git:github.com/a/b", extensions: ["ext/a.ts"], autoload: false }],
+        extensions: ["./local-ext.ts"],
+        npmCommand: ["npx", "--yes"],
+        defaultTools: ["read"],
+        theme: "dark",
+      }),
+    );
 
     expect(findProjectResources(project)).toEqual([
-      { path: ".pi/settings.json", detail: "shellCommandPrefix: source ./env.sh; sets packages, defaultTools" },
+      { path: ".pi/settings.json", detail: "shellCommandPrefix: source ./env.sh" },
+      { path: ".pi/settings.json", detail: "npmCommand: npx --yes" },
+      { path: ".pi/settings.json", detail: "packages: npm:x" },
+      { path: ".pi/settings.json", detail: "packages: git:github.com/a/b (extensions: ext/a.ts; autoload: false)" },
+      { path: ".pi/settings.json", detail: "extensions: ./local-ext.ts" },
+      { path: ".pi/settings.json", detail: "sets defaultTools, theme" },
+    ]);
+  });
+
+  test("shell, editor, update and proxy settings are listed with their values; skills, prompts and themes paths too", () => {
+    write(
+      join(project, ".pi", "settings.json"),
+      JSON.stringify({ shellPath: "/tmp/sh", externalEditor: "evil-editor", selfUpdateCommand: "curl x | sh", httpProxy: "http://p:1", skills: ["../s"], prompts: ["../p"], themes: ["../t"] }),
+    );
+
+    expect(findProjectResources(project).map((r) => r.detail)).toEqual([
+      "shellPath: /tmp/sh",
+      "selfUpdateCommand: curl x | sh",
+      "externalEditor: evil-editor",
+      "httpProxy: http://p:1",
+      "skills: ../s",
+      "prompts: ../p",
+      "themes: ../t",
+    ]);
+  });
+
+  test("an MCP server lists its command with every argument, its working folder, each env entry and each header, whole", () => {
+    const long = `${"a".repeat(150)} ${"b".repeat(150)} tail`;
+    write(
+      join(project, ".pi", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          local: { command: "node", args: ["s.js", long], cwd: "/tmp/x", env: { NODE_OPTIONS: "--require /tmp/evil.js", A: "1" } },
+          remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer ${TOKEN}" } },
+        },
+      }),
+    );
+
+    expect(findProjectResources(project).map((r) => r.detail)).toEqual([
+      `server local: node s.js ${long}`,
+      "server local runs in: /tmp/x",
+      "server local env: NODE_OPTIONS=--require /tmp/evil.js",
+      "server local env: A=1",
+      "server remote: https://example.com/mcp",
+      "server remote header: Authorization: Bearer ${TOKEN}",
+    ]);
+  });
+
+  test("most dangerous first: MCP servers and executable settings, then extensions, then everything else", () => {
+    write(join(project, ".pi", "APPEND_SYSTEM.md"));
+    write(join(project, ".pi", "skills", "s", "SKILL.md"));
+    write(join(project, ".pi", "prompts", "p.md"));
+    write(join(project, ".pi", "extensions", "e.ts"));
+    write(join(project, ".pi", "settings.json"), JSON.stringify({ theme: "dark", shellCommandPrefix: "x" }));
+    write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { m: { command: "c" } } }));
+
+    expect(findProjectResources(project).map((r) => [r.path, r.detail])).toEqual([
+      [".pi/mcp.json", "server m: c"],
+      [".pi/settings.json", "shellCommandPrefix: x"],
+      [".pi/extensions/e.ts", undefined],
+      [".pi/settings.json", "sets theme"],
+      [".pi/skills/s/", undefined],
+      [".pi/prompts/p.md", undefined],
+      [".pi/APPEND_SYSTEM.md", "changes the system prompt"],
     ]);
   });
 
@@ -103,13 +178,60 @@ describe("findProjectResources", () => {
     expect(findProjectResources(project)).toEqual([{ path: ".pi/extensions/" }]);
   });
 
-  test("a long folder lists the first entries and counts the rest", () => {
-    for (let i = 0; i < 25; i++) write(join(project, ".pi", "prompts", `p${String(i).padStart(2, "0")}.md`));
+  test("a long folder lists every entry: nothing is hidden behind a count", () => {
+    for (let i = 0; i < 200; i++) write(join(project, ".pi", "prompts", `p${String(i).padStart(3, "0")}.md`));
 
     const resources = findProjectResources(project);
 
-    expect(resources).toHaveLength(21);
-    expect(resources.at(-1)).toEqual({ path: ".pi/prompts/", detail: "and 5 more" });
+    expect(resources).toHaveLength(200);
+    expect(resources.at(-1)).toEqual({ path: ".pi/prompts/p199.md" });
+    expect(resources.some((r) => r.detail?.includes("more"))).toBe(false);
+  });
+
+  test("a project-supplied string is one escaped line: newlines, controls, bidi and invisible characters show as escapes", () => {
+    const classes: [string, string, string][] = [
+      ["newline", "\n", "\\n"],
+      ["carriage return", "\r", "\\r"],
+      ["tab", "\t", "\\t"],
+      ["escape", "\u001b", "\\u001b"],
+      ["C0 bell", "\u0007", "\\u0007"],
+      ["delete", "\u007f", "\\u007f"],
+      ["C1 CSI", "\u009b", "\\u009b"],
+      ["zero width space", cp(0x200b), "\\u200b"],
+      ["right-to-left mark", cp(0x200f), "\\u200f"],
+      ["right-to-left override", cp(0x202e), "\\u202e"],
+      ["left-to-right embedding", cp(0x202a), "\\u202a"],
+      ["word joiner", cp(0x2060), "\\u2060"],
+      ["unassigned in the invisible block", cp(0x2065), "\\u2065"],
+      ["bidi isolate", cp(0x2069), "\\u2069"],
+      ["byte order mark", cp(0xfeff), "\\ufeff"],
+      ["soft hyphen", cp(0xad), "\\u00ad"],
+      ["line separator", cp(0x2028), "\\u2028"],
+      ["paragraph separator", cp(0x2029), "\\u2029"],
+      ["tag character", "\u{e0041}", "\\u{e0041}"],
+    ];
+    for (const [label, raw, escaped] of classes) {
+      expect([label, escapeProjectText(`a${raw}b`)]).toEqual([label, `a${escaped}b`]);
+    }
+    expect(escapeProjectText("plain é 日本 😀 text/with-dashes_and spaces")).toBe("plain é 日本 😀 text/with-dashes_and spaces");
+    expect(escapeProjectText(escapeProjectText(`a\nb${cp(0x202e)}c`))).toBe(escapeProjectText(`a\nb${cp(0x202e)}c`));
+  });
+
+  test("every place a project string reaches the listing is escaped: file names, MCP command, args, env, settings values", () => {
+    const nasty = `x\nt  press Enter to trust  FAKE${cp(0x202e)}${cp(0x1b)}[2J`;
+    write(join(project, ".pi", "prompts", `${nasty}.md`));
+    write(
+      join(project, ".pi", "mcp.json"),
+      JSON.stringify({ mcpServers: { [`n${nasty}`]: { command: `c${nasty}`, args: [`a${nasty}`], env: { [`K${nasty}`]: `v${nasty}` } } } }),
+    );
+    write(join(project, ".pi", "settings.json"), JSON.stringify({ shellCommandPrefix: `p${nasty}`, packages: [`k${nasty}`] }));
+
+    const resources = findProjectResources(project);
+
+    expect(resources.length).toBeGreaterThanOrEqual(5);
+    for (const { path, detail } of resources) expect(`${path}${detail ?? ""}`).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+    expect(resources.map((r) => r.detail).join("\n")).toContain("env: K" + escapeProjectText(nasty) + "=v" + escapeProjectText(nasty));
+    expect(resources.map((r) => r.path).join("\n")).toContain(`${escapeProjectText(nasty)}.md`);
   });
 
   test(".agents/skills in the project or a parent folder is listed, relative to the project", () => {

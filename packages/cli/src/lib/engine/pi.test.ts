@@ -1930,9 +1930,10 @@ export default function (pi) {
 
     expect(asks).toHaveLength(1);
     expect(asks[0]).toMatchObject({ markerExisted: false, mcpStarts: 0 });
+    // Most dangerous first: MCP servers before extensions.
     expect(asks[0]!.ask.resources).toEqual([
-      { path: ".pi/extensions/marker.ts" },
       { path: ".pi/mcp.json", detail: expect.stringContaining("server fixture: ") },
+      { path: ".pi/extensions/marker.ts" },
     ]);
     expect(offered[0]).toBeDefined();
   });
