@@ -476,18 +476,120 @@ describe("/trust (S18)", () => {
     expect(dialog).toContain("Forget");
   }, 30000);
 
-  test("Trust stores 'trusted' for the next turn and says so", async () => {
+  // Trust is the second row: the row that is selected when the dialog opens is Don't trust.
+  const chooseTrust = async () => {
+    await arrowDown();
+    await press("RETURN");
+    return frameContaining(TITLE);
+  };
+
+  test("Enter on the row selected at open does not trust", async () => {
     await openTrust();
 
     await press("RETURN");
 
+    expect(getStorage().getProjectTrust(cwd)).toBe("untrusted");
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("choosing Trust shows the turn prompt's full listing first; nothing is stored or loaded yet", async () => {
+    await openTrust();
+
+    const prompt = await chooseTrust();
+    expect(prompt).toContain(TITLE);
+    expect(prompt).toContain(".pi/extensions/marker.ts");
+    expect(prompt).toContain("server fixture: fixture-mcp-server --stdio");
+    expect(prompt).toContain("2 items pi would load or run, most dangerous first");
+    expect(prompt).toContain("Trusting lets pi load these files and run their code with your permissions.");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("typeahead cannot trust from the listing: t and Enter right after choosing Trust answer nothing", async () => {
+    await openTrust();
+    await chooseTrust();
+
+    await pressNow("t");
+    await pressNow("RETURN");
+    await settle(100);
+
+    expect(frame()).toContain(TITLE);
+    expect(frame()).toContain("waiting for typing to stop");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+  }, 30000);
+
+  test("t alone does not trust; t then Enter stores 'trusted' for the next turn and says so", async () => {
+    await openTrust();
+    await chooseTrust();
+
+    await press("t");
+    expect(frame()).toContain("press Enter to trust");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    await press("RETURN");
+
     expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
     expect(await frameContaining("now trusted for pi from the next turn")).toContain("now trusted for pi from the next turn");
+    expect(frame()).not.toContain(TITLE);
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("a list longer than the screen must be read to the end before t arms", async () => {
+    for (let i = 0; i < 40; i++) writeFileSync(join(cwd, ".pi", "extensions", `e${String(i).padStart(2, "0")}.ts`), "export default function () {}\n");
+    await openPiSession(undefined, { width: 80, height: 24 });
+    await type("/trust");
+    await press("RETURN");
+    await frameContaining("Project Trust");
+    await chooseTrust();
+    await frameContaining("scroll to the end first");
+
+    await press("t");
+    await press("RETURN");
+    expect(frame()).not.toContain("press Enter to trust");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+
+    for (let i = 0; i < 20; i++) await pressNow("\u001b[6~");
+    await press("t");
+    expect(frame()).toContain("press Enter to trust");
+    await press("RETURN");
+
+    expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
+  }, 30000);
+
+  test("d in the listing stores 'untrusted' at once", async () => {
+    await openTrust();
+    expect(await chooseTrust()).toContain(TITLE);
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+
+    await press("d");
+
+    expect(getStorage().getProjectTrust(cwd)).toBe("untrusted");
+    expect(frame()).not.toContain(TITLE);
+  }, 30000);
+
+  test("Esc in the listing stores nothing and leaves the dialog", async () => {
+    await openTrust();
+    await chooseTrust();
+
+    await press("ESCAPE");
+    await settle(100);
+
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    expect(frame()).not.toContain(TITLE);
+    expect(frame()).not.toContain("Project Trust");
+  }, 30000);
+
+  test("a project with no pi files does not offer Trust, and says there is nothing to trust", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    const dialog = await openTrust();
+
+    expect(dialog).toContain("no pi files found");
+    expect(dialog).toContain("nothing to trust");
+    expect(dialog).toContain("Don't trust");
+    expect(dialog).not.toContain("pi loads this project's files");
   }, 30000);
 
   test("Don't trust stores 'untrusted', and the dialog shows the current decision when it is opened again", async () => {
     await openTrust();
-    await arrowDown();
     await press("RETURN");
     expect(getStorage().getProjectTrust(cwd)).toBe("untrusted");
 

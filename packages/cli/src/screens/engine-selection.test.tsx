@@ -84,7 +84,8 @@ async function open(path: string) {
     { initialEntries: [path] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 30 });
-  // A pi screen first asks which pi model it can use; this fake pi engine has no runtime, so the status line shows the default once that fails.
+  // A pi screen first asks which pi model it can use; this fake pi engine has no runtime, so that fails and the status line says pi is unavailable.
+  // (The turn itself still goes out with the stored or built-in model, which pi then reports on.)
   await settle(120);
 }
 
@@ -138,7 +139,8 @@ describe("each session runs on its own engine (S2)", () => {
 
   test("a pi session sends the pi model ref to the pi engine, never a Claude alias, and labels itself pi", async () => {
     await openSession("pi");
-    expect(frame()).toContain(`${PI_DEFAULT_MODEL} · pi`);
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
     await type("hello");
     await press("RETURN");
@@ -228,7 +230,8 @@ describe("/engine (S2)", () => {
 
   test("the home screen shows the engine a new session will use", async () => {
     await open("/");
-    expect(frame()).toContain(`${PI_DEFAULT_MODEL} · pi`);
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
     rmSync(prefsPath, { force: true });
     writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "claude" }), "utf8");

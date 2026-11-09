@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStorage } from "../storage";
@@ -438,5 +438,95 @@ describe("isProjectTrusted (warm-up: never asks)", () => {
     expect(isProjectTrusted(project, () => {
       throw new Error("must not be opened");
     })).toBe(false);
+  });
+});
+
+// The scan reads files the project controls. A FIFO or a device would block it (the TUI would freeze at launch), so these
+// run the scan in a child process: a regression fails the test by timeout instead of freezing the test run.
+describe("files the project controls cannot hang or exhaust the scan", () => {
+  const MODULE = join(import.meta.dir, "pi-trust.ts");
+  const SCRIPT = `
+    const { findProjectResources, resolveProjectTrust } = await import(process.env.MODULE);
+    const asks = [];
+    const trusted = await resolveProjectTrust({
+      cwd: process.env.PROJECT,
+      records: () => ({ getProjectTrust: () => null, setProjectTrust: () => {} }),
+      ask: async (ask) => { asks.push(ask); return "skip"; },
+      signal: new AbortController().signal,
+    });
+    console.log(JSON.stringify({ resources: findProjectResources(process.env.PROJECT), trusted, asks: asks.length }));
+  `;
+  const scan = () => {
+    const result = Bun.spawnSync([process.execPath, "-e", SCRIPT], {
+      env: { ...process.env, MODULE, PROJECT: project, HOME: home },
+      timeout: 4000,
+    });
+    expect({ exitCode: result.exitCode, signal: result.signalCode ?? null, stderr: result.stderr.toString() }).toEqual({ exitCode: 0, signal: null, stderr: "" });
+    return JSON.parse(result.stdout.toString()) as { resources: { path: string; detail?: string }[]; trusted: boolean; asks: number };
+  };
+  const fifo = (path: string) => {
+    mkdirSync(join(path, ".."), { recursive: true });
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+  };
+  const UNREADABLE = "could not be read";
+
+  test("a FIFO as .pi/mcp.json is listed as unreadable, and the turn still asks", () => {
+    fifo(join(project, ".pi", "mcp.json"));
+
+    const found = scan();
+
+    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.asks).toBe(1);
+    expect(found.trusted).toBe(false);
+  });
+
+  test("a FIFO as .pi/settings.json is listed as unreadable, and the turn still asks", () => {
+    fifo(join(project, ".pi", "settings.json"));
+
+    const found = scan();
+
+    expect(found.resources).toEqual([{ path: ".pi/settings.json", detail: UNREADABLE }]);
+    expect(found.asks).toBe(1);
+  });
+
+  test("a symlink to a device is listed as unreadable (it is not read, so /dev/zero cannot fill memory)", () => {
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    symlinkSync("/dev/zero", join(project, ".pi", "mcp.json"));
+
+    const found = scan();
+
+    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.asks).toBe(1);
+  });
+
+  test("a file over 1 MB is listed as unreadable and still needs the user's decision", () => {
+    write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { big: { command: "sh", args: ["x".repeat(1024 * 1024 + 1)] } } }));
+
+    const found = scan();
+
+    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.asks).toBe(1);
+    expect(found.trusted).toBe(false);
+  });
+
+  test("a directory named like a config file is listed as unreadable", () => {
+    mkdirSync(join(project, ".pi", "settings.json"), { recursive: true });
+
+    expect(scan().resources).toEqual([{ path: ".pi/settings.json", detail: UNREADABLE }]);
+  });
+
+  test("a regular file, or a symlink to one, is still read and listed", () => {
+    write(join(root, "real-mcp.json"), JSON.stringify({ mcpServers: { fixture: { command: "node", args: ["server.js"] } } }));
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    symlinkSync(join(root, "real-mcp.json"), join(project, ".pi", "mcp.json"));
+
+    expect(scan().resources).toEqual([{ path: ".pi/mcp.json", detail: "server fixture: node server.js" }]);
+  });
+
+  test("a large file under the cap is still read", () => {
+    const padding = " ".repeat(900 * 1024);
+    write(join(project, ".pi", "mcp.json"), `${JSON.stringify({ mcpServers: { fixture: { command: "node" } } })}${padding}`);
+
+    expect(scan().resources).toEqual([{ path: ".pi/mcp.json", detail: "server fixture: node" }]);
   });
 });

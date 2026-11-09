@@ -1,17 +1,20 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useDialog } from "../../providers/dialog";
 import { useToast } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
+import { TrustPrompt } from "../trust-prompt";
 import { stripControlChars } from "../ui-prompts";
-import { findProjectResources } from "../../lib/engine/pi-trust";
+import { canonical, findProjectResources, type TrustAnswer } from "../../lib/engine/pi-trust";
 import { getStorage, type ProjectTrust, type Storage } from "../../lib/storage";
+import type { TrustRequest } from "../../hooks/use-chat";
 
 type Choice = { id: ProjectTrust | "forget"; label: string; hint: string };
 
+// Trust is not the first row: the row that is selected when the dialog opens must never be the one that lets code run.
 const CHOICES: Choice[] = [
-  { id: "trusted", label: "Trust", hint: "pi loads this project's files" },
   { id: "untrusted", label: "Don't trust", hint: "pi ignores this project's files" },
+  { id: "trusted", label: "Trust", hint: "pi loads this project's files" },
   { id: "forget", label: "Forget", hint: "ask again at the next pi turn" },
 ];
 
@@ -24,11 +27,16 @@ type Props = {
   store?: Pick<Storage, "getProjectTrust" | "setProjectTrust">;
 };
 
-/** `/trust`: shows this project's decision about its own pi files and changes or forgets it. It takes effect from the next turn. */
+/**
+ * `/trust`: shows this project's decision about its own pi files and changes or forgets it. It takes effect from the next turn.
+ * Don't trust and Forget are one step. Trust is not: it opens the same full-screen listing as the turn's trust prompt
+ * (everything pi would load, read to the end, then `t` and Enter) and stores nothing until that prompt says trust.
+ */
 export const TrustDialogContent = ({ cwd, store }: Props) => {
   const dialog = useDialog();
   const toast = useToast();
   const records = store ?? getStorage();
+  const [review, setReview] = useState<TrustRequest | null>(null);
 
   const current = useMemo(() => {
     try {
@@ -38,25 +46,50 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
     }
   }, [records, cwd]);
   const found = useMemo(() => findProjectResources(cwd).length, [cwd]);
+  // With no pi files there is nothing to trust.
+  const choices = useMemo(() => (found > 0 ? CHOICES : CHOICES.filter((choice) => choice.id !== "trusted")), [found]);
 
-  const handleSelect = useCallback(
-    (choice: Choice) => {
+  const save = useCallback(
+    (decision: ProjectTrust | null) => {
       try {
-        records.setProjectTrust(cwd, choice.id === "forget" ? null : choice.id);
+        records.setProjectTrust(cwd, decision);
       } catch (error) {
         toast.show({ variant: "error", message: `Could not save the decision: ${error instanceof Error ? error.message : String(error)}` });
         dialog.close();
         return;
       }
-      const message =
-        choice.id === "forget"
-          ? "Forgot the decision; pi will ask again at the next turn that needs it"
-          : `This project is now ${DECISION_TEXT[choice.id]} for pi from the next turn`;
+      const message = decision
+        ? `This project is now ${DECISION_TEXT[decision]} for pi from the next turn`
+        : "Forgot the decision; pi will ask again at the next turn that needs it";
       toast.show({ variant: "success", message });
       dialog.close();
     },
     [records, cwd, dialog, toast],
   );
+
+  const handleSelect = useCallback(
+    (choice: Choice) => {
+      if (choice.id === "forget") return save(null);
+      if (choice.id === "untrusted") return save("untrusted");
+
+      // Listed afresh: the folder may have changed since the dialog opened.
+      const resources = findProjectResources(cwd);
+      if (resources.length === 0) {
+        toast.show({ variant: "info", message: "This project has no pi files: nothing to trust" });
+        dialog.close();
+        return;
+      }
+      const respond = (answer: TrustAnswer) => {
+        if (answer === "trust") save("trusted");
+        else if (answer === "distrust") save("untrusted");
+        else dialog.close();
+      };
+      setReview({ kind: "trust", id: crypto.randomUUID(), cwd: canonical(cwd), resources, respond });
+    },
+    [cwd, save, dialog, toast],
+  );
+
+  if (review) return <TrustPrompt request={review} layer="dialog" />;
 
   return (
     <box flexDirection="column" gap={1}>
@@ -64,11 +97,11 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
         <text wrapMode="char">{stripControlChars(cwd)}</text>
         <text attributes={TextAttributes.DIM}>
           {current ? `Now: ${DECISION_TEXT[current]}` : "Now: not decided yet"}
-          {found > 0 ? ` · ${found} pi file${found === 1 ? "" : "s"} found` : " · no pi files found"}
+          {found > 0 ? ` · ${found} pi file${found === 1 ? "" : "s"} found` : " · no pi files found, nothing to trust"}
         </text>
       </box>
       <DialogSearchList
-        items={CHOICES}
+        items={choices}
         onSelect={handleSelect}
         filterFn={(choice, query) => `${choice.label} ${choice.hint}`.toLowerCase().includes(query.toLowerCase())}
         renderItem={(choice, isSelected) => (

@@ -13,9 +13,10 @@ import {
 
 /**
  * What the status line may say about the pi model: `ready` = `piModel` is the one the next turn uses, `none` = no model has
- * credentials (the line says to run /login), `pending` = not checked yet (the line names no model).
+ * credentials (the line says to run /login), `pending` = not checked yet (the line names no model), `unavailable` = the
+ * check failed or took too long, so no model can be named (the line says pi is unavailable).
  */
-export type PiModelStatus = "pending" | "ready" | "none";
+export type PiModelStatus = "pending" | "ready" | "none" | "unavailable";
 
 type PromptConfigContextValue = {
   mode: ModeType;
@@ -35,6 +36,17 @@ type PromptConfigContextValue = {
   /** Checks the pi model against the models that have credentials now, and resolves with the one to use. */
   refreshPiModel: () => Promise<string>;
 };
+
+/** How long the pi model check may take before it counts as failed. Mutable so tests can shorten it. */
+export const piModelCheck = { timeoutMs: 15_000 };
+
+// Fails when `work` takes longer than `ms`; its late result is dropped.
+function withinLimit<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`The pi model check took longer than ${ms} ms`)), ms);
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
 
 const PromptConfigContext = createContext<PromptConfigContextValue | null>(null);
 
@@ -81,15 +93,23 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     persistPiModel(next);
   }, [applyPiModel]);
 
+  // Checks overlap (a screen opening, a turn starting): only the latest one may change what the line says.
+  const latestCheck = useRef(0);
+
   const refreshPiModel = useCallback(async () => {
+    const check = ++latestCheck.current;
     try {
-      const available = await listAvailablePiModels(await getPiRuntime());
+      const available = await withinLimit(
+        (async () => listAvailablePiModels(await getPiRuntime()))(),
+        piModelCheck.timeoutMs,
+      );
       const next = pickPiModel(preferredPiModel.current, available);
-      applyPiModel(next, available.length > 0 ? "ready" : "none");
+      if (check === latestCheck.current) applyPiModel(next, available.length > 0 ? "ready" : "none");
       return next;
     } catch {
-      // No runtime to ask: keep what is in use; a turn then reports what is missing.
-      setPiModelStatus((status) => (status === "pending" ? "ready" : status));
+      // No runtime to ask, or it took too long: the line names no model (the built-in default is only a guess), nothing is
+      // shown as a toast, and a turn still goes out with what is in use so it reports what is missing.
+      if (check === latestCheck.current) setPiModelStatus("unavailable");
       return piModelInUse.current;
     }
   }, [applyPiModel]);

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Storage } from "../storage";
@@ -41,7 +41,8 @@ export type ProjectTrustAsk = {
 
 export type ProjectTrustRecords = Pick<Storage, "getProjectTrust" | "setProjectTrust">;
 
-const canonical = (path: string) => {
+/** The project folder as decisions and prompts name it: symlinks resolved. */
+export const canonical = (path: string) => {
   try {
     return realpathSync(path);
   } catch {
@@ -74,11 +75,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // A byte order mark, which pi's own readers strip.
 const stripBom = (text: string) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
 
+// The most a project's JSON file may hold to be listed; pi's own config files are far smaller.
+const MAX_JSON_BYTES = 1024 * 1024;
+
+/**
+ * The parsed JSON file, or undefined when it cannot be listed: missing, not JSON, over the size cap, or not a regular file.
+ * The project controls the path, so a symlink is followed but the target must be a regular file: a FIFO would block the
+ * read forever and a device like /dev/zero would never end. The check is on the opened file, not the path, so it cannot be swapped in between.
+ */
 function readJson(path: string): unknown {
+  let fd: number | undefined;
   try {
-    return JSON.parse(stripBom(readFileSync(path, "utf8")));
+    // O_NONBLOCK: opening a FIFO must not wait for a writer.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const info = fstatSync(fd);
+    const size = info.size;
+    if (!info.isFile() || size > MAX_JSON_BYTES) return undefined;
+    // One byte more than the size: a file that grew since the check is refused too.
+    const buffer = Buffer.alloc(size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > size) return undefined;
+    return JSON.parse(stripBom(buffer.toString("utf8", 0, length)));
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
