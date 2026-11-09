@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { TextAttributes, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { EmptyBorder } from "./border";
-import { escapeProjectText } from "../lib/engine/pi-trust";
+import { escapeProjectText, unreadableResources } from "../lib/engine/pi-trust";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
@@ -43,6 +43,8 @@ type Props = {
  * holds, then `t` to trust (arms Enter), `d` not to, Esc to leave this one turn untrusted without remembering.
  * Like an approval it ignores keys until the keyboard has been quiet, so typing ahead cannot answer it, and
  * `t` alone trusts nothing: trusting lets the project's code run, so it only works once the whole list has been on screen.
+ * When marcsh could not read an entry, it cannot show what trusting would run: those entries are listed first with the
+ * reason, and only `d` and Esc are offered (`t` does nothing).
  * It owns the whole screen while pending: the title, folder and count are pinned at the top and the key hints at the
  * bottom, and everything the project supplies is listed whole, one escaped line each (newlines, terminal controls and
  * bidi or invisible characters show as escapes), in a list that takes the remaining rows and scrolls
@@ -65,6 +67,8 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   const [endSeen, setEndSeen] = useState(false);
   const endSeenRef = useRef(false);
   const entries = request.resources.length;
+  const unreadable = unreadableResources(request.resources).length;
+  const reviewable = unreadable === 0;
 
   // Too short for the whole layout: only the title, a notice and the answers that need no reading are drawn.
   const folderRows = Math.max(1, Math.ceil(request.cwd.length / Math.max(1, width - SIDE_COLUMNS)));
@@ -105,7 +109,10 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     };
   }, [renderer, measure, place]);
 
-  const rows = request.resources.map((resource) => escapeProjectText(resource.detail ? `${resource.path} — ${resource.detail}` : resource.path));
+  // What could not be read comes first: it is the part the user cannot judge.
+  const rows = [...request.resources.filter((resource) => resource.unreadable), ...request.resources.filter((resource) => !resource.unreadable)].map((resource) =>
+    escapeProjectText(resource.detail ? `${resource.path} — ${resource.detail}` : resource.path),
+  );
   const scrolls = view.viewport > 0 && view.total > view.viewport;
   // Judged from the layout that is on screen: less room than the minimum means the list cannot be reviewed.
   const tooSmall = compact || (view !== UNMEASURED && view.viewport < MIN_LIST_ROWS);
@@ -142,10 +149,11 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
       request.respond("distrust");
     } else if (key.name === "t") {
       key.preventDefault();
-      // Trusting is only offered once the whole list has been on screen, in a terminal tall enough to read it.
+      // Trusting is only offered once the whole list has been on screen, in a terminal tall enough to read it, and never
+      // while an entry could not be read.
       const now = measure();
-      if (endSeenRef.current && !compactRef.current && now.viewport >= MIN_LIST_ROWS) setArmedRequest(request);
-    } else if ((key.name === "return" || key.name === "enter") && armed) {
+      if (reviewable && endSeenRef.current && !compactRef.current && now.viewport >= MIN_LIST_ROWS) setArmedRequest(request);
+    } else if ((key.name === "return" || key.name === "enter") && armed && reviewable) {
       key.preventDefault();
       request.respond("trust");
     } else {
@@ -158,7 +166,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
   ) : (
     <>
-      {tooSmall ? null : endSeen ? (
+      {!reviewable || tooSmall ? null : endSeen ? (
         <>
           <text>t</text>
           <text attributes={TextAttributes.DIM}>{armed ? "press Enter to trust" : "trust (then Enter)"}</text>
@@ -173,6 +181,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     </>
   );
   const smallNotice = "Terminal too small to review the list: make it taller to trust.";
+  const unreadableNotice = `Could not read ${unreadable} of these ${unreadable === 1 ? "file" : "files"} (listed first): trusting is not offered.`;
 
   // A hosted prompt sits where its dialog put it; the zero-size anchor tells how far that is from the screen's corner.
   const withAnchor = (screenBox: ReactNode) =>
@@ -203,7 +212,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
         <text>
           <em fg={colors.info}>Trust this project&apos;s pi files?</em>
         </text>
-        <text attributes={TextAttributes.DIM}>{smallNotice}</text>
+        <text attributes={TextAttributes.DIM}>{reviewable ? smallNotice : unreadableNotice}</text>
         <box flexDirection="row" gap={2}>
           {keyHints}
         </box>
@@ -255,14 +264,16 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
         ))}
       </scrollbox>
       <box flexShrink={0} flexDirection="column">
-        {tooSmall ? (
+        {tooSmall && reviewable ? (
           <text attributes={TextAttributes.DIM}>{smallNotice}</text>
         ) : scrolls ? (
           <text attributes={TextAttributes.DIM}>
             {`rows ${view.top + 1}–${Math.min(view.total, view.top + view.viewport)} of ${view.total} · ↑/↓ PgUp/PgDn`}
           </text>
         ) : null}
-        <text attributes={TextAttributes.DIM}>Trusting lets pi load these files and run their code with your permissions.</text>
+        <text attributes={TextAttributes.DIM}>
+          {reviewable ? "Trusting lets pi load these files and run their code with your permissions." : unreadableNotice}
+        </text>
         <box flexDirection="row" gap={2}>
           {keyHints}
         </box>

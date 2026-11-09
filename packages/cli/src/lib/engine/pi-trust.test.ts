@@ -3,7 +3,15 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStorage } from "../storage";
-import { escapeProjectText, findProjectResources, isProjectTrusted, resolveProjectTrust, type ProjectTrustAsk, type TrustAnswer } from "./pi-trust";
+import {
+  escapeProjectText,
+  findProjectResources,
+  isProjectTrusted,
+  resolveProjectTrust,
+  unreadableResources,
+  type ProjectTrustAsk,
+  type TrustAnswer,
+} from "./pi-trust";
 
 let root: string;
 let project: string;
@@ -67,9 +75,9 @@ describe("findProjectResources", () => {
     ]);
   });
 
-  test("an mcp.json that cannot be read or has no servers is still listed", () => {
+  test("an mcp.json that cannot be read or has no servers is still listed; the unreadable one is marked", () => {
     write(join(project, ".pi", "mcp.json"), "{ not json");
-    expect(findProjectResources(project)).toEqual([{ path: ".pi/mcp.json", detail: "could not be read" }]);
+    expect(findProjectResources(project)).toEqual([{ path: ".pi/mcp.json", detail: "could not be read: not valid JSON", unreadable: true }]);
 
     write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: {} }));
     expect(findProjectResources(project)).toEqual([{ path: ".pi/mcp.json", detail: "no servers" }]);
@@ -422,6 +430,77 @@ describe("resolveProjectTrust", () => {
   });
 });
 
+// A file marcsh cannot read still loads in pi once trusted, so trusting would run what the user was never shown.
+describe("an entry marcsh could not read makes the project untrustable", () => {
+  const unreadableProject = () => write(join(project, ".pi", "mcp.json"), "{ not json");
+
+  test("unreadableResources picks out the marked entries only", () => {
+    unreadableProject();
+    write(join(project, ".pi", "extensions", "foo.ts"));
+
+    expect(unreadableResources(findProjectResources(project))).toEqual([{ path: ".pi/mcp.json", detail: "could not be read: not valid JSON", unreadable: true }]);
+  });
+
+  test("a 'trust' answer is ignored: nothing is trusted or stored", async () => {
+    const { storage, asks, resolve } = setup("trust");
+    unreadableProject();
+
+    expect(await resolve()).toBe(false);
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]!.resources.some((r) => r.unreadable)).toBe(true);
+    expect(storage.getProjectTrust(project)).toBeNull();
+  });
+
+  test("a stored 'trusted' is not honored: the user is asked again", async () => {
+    const { storage, asks, resolve } = setup("skip");
+    storage.setProjectTrust(project, "trusted");
+    unreadableProject();
+
+    expect(await resolve()).toBe(false);
+
+    expect(asks).toHaveLength(1);
+    // Not rewritten by the question either: Esc stores nothing.
+    expect(storage.getProjectTrust(project)).toBe("trusted");
+  });
+
+  test("a stored 'trusted' with nobody to ask is untrusted", async () => {
+    const { storage, resolve } = setup();
+    storage.setProjectTrust(project, "trusted");
+    unreadableProject();
+
+    expect(await resolve()).toBe(false);
+  });
+
+  test("'distrust' is stored over a 'trusted' and holds without asking again", async () => {
+    const { storage, asks, resolve } = setup("distrust");
+    storage.setProjectTrust(project, "trusted");
+    unreadableProject();
+
+    expect(await resolve()).toBe(false);
+    expect(storage.getProjectTrust(project)).toBe("untrusted");
+    expect(await resolve()).toBe(false);
+
+    expect(asks).toHaveLength(1);
+  });
+
+  test("warm-up does not count a stored 'trusted' while an entry is unreadable, and does again once it is readable", () => {
+    const { storage } = setup();
+    storage.setProjectTrust(project, "trusted");
+    unreadableProject();
+    expect(isProjectTrusted(project, () => storage)).toBe(false);
+
+    write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: {} }));
+    expect(isProjectTrusted(project, () => storage)).toBe(true);
+  });
+
+  test("an unreadable extensions folder is marked too", () => {
+    write(join(project, ".pi", "extensions"), "a file, not a folder");
+
+    expect(findProjectResources(project)).toEqual([{ path: ".pi/extensions/", detail: "could not be read: cannot be listed", unreadable: true }]);
+  });
+});
+
 describe("isProjectTrusted (warm-up: never asks)", () => {
   test("only a stored 'trusted' on a project with pi files counts", () => {
     const { storage } = setup();
@@ -462,20 +541,20 @@ describe("files the project controls cannot hang or exhaust the scan", () => {
       timeout: 4000,
     });
     expect({ exitCode: result.exitCode, signal: result.signalCode ?? null, stderr: result.stderr.toString() }).toEqual({ exitCode: 0, signal: null, stderr: "" });
-    return JSON.parse(result.stdout.toString()) as { resources: { path: string; detail?: string }[]; trusted: boolean; asks: number };
+    return JSON.parse(result.stdout.toString()) as { resources: { path: string; detail?: string; unreadable?: true }[]; trusted: boolean; asks: number };
   };
   const fifo = (path: string) => {
     mkdirSync(join(path, ".."), { recursive: true });
     expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
   };
-  const UNREADABLE = "could not be read";
+  const unreadable = (path: string, reason: string) => ({ path, detail: `could not be read: ${reason}`, unreadable: true as const });
 
   test("a FIFO as .pi/mcp.json is listed as unreadable, and the turn still asks", () => {
     fifo(join(project, ".pi", "mcp.json"));
 
     const found = scan();
 
-    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.resources).toEqual([unreadable(".pi/mcp.json", "not a regular file")]);
     expect(found.asks).toBe(1);
     expect(found.trusted).toBe(false);
   });
@@ -485,7 +564,7 @@ describe("files the project controls cannot hang or exhaust the scan", () => {
 
     const found = scan();
 
-    expect(found.resources).toEqual([{ path: ".pi/settings.json", detail: UNREADABLE }]);
+    expect(found.resources).toEqual([unreadable(".pi/settings.json", "not a regular file")]);
     expect(found.asks).toBe(1);
   });
 
@@ -495,16 +574,16 @@ describe("files the project controls cannot hang or exhaust the scan", () => {
 
     const found = scan();
 
-    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.resources).toEqual([unreadable(".pi/mcp.json", "not a regular file")]);
     expect(found.asks).toBe(1);
   });
 
-  test("a file over 1 MB is listed as unreadable and still needs the user's decision", () => {
+  test("a file over 1 MB is listed as unreadable, the user is told, and it can never be trusted (it never runs unseen)", () => {
     write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { big: { command: "sh", args: ["x".repeat(1024 * 1024 + 1)] } } }));
 
     const found = scan();
 
-    expect(found.resources).toEqual([{ path: ".pi/mcp.json", detail: UNREADABLE }]);
+    expect(found.resources).toEqual([unreadable(".pi/mcp.json", "larger than 1 MB")]);
     expect(found.asks).toBe(1);
     expect(found.trusted).toBe(false);
   });
@@ -512,7 +591,7 @@ describe("files the project controls cannot hang or exhaust the scan", () => {
   test("a directory named like a config file is listed as unreadable", () => {
     mkdirSync(join(project, ".pi", "settings.json"), { recursive: true });
 
-    expect(scan().resources).toEqual([{ path: ".pi/settings.json", detail: UNREADABLE }]);
+    expect(scan().resources).toEqual([unreadable(".pi/settings.json", "not a regular file")]);
   });
 
   test("a regular file, or a symlink to one, is still read and listed", () => {

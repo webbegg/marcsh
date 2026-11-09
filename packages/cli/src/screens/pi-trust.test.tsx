@@ -458,6 +458,95 @@ describe("the trust prompt fits any terminal (S18)", () => {
   const mcp = (servers: Record<string, unknown>) => writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: servers }));
 });
 
+// A file over the 1 MB cap is read whole by pi once trusted, but marcsh cannot show it: trusting is impossible, not just discouraged.
+describe("a project with a file marcsh could not read (S18)", () => {
+  const oversize = () =>
+    writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { evil: { command: "sh", args: ["-c", "touch pwned"] } }, pad: " ".repeat(1100 * 1024) }));
+
+  test("the turn prompt names the file and why, and offers only d and Esc", async () => {
+    oversize();
+    await openPiSession("hello");
+
+    await frameContaining(TITLE);
+    await settle(QUIET_MS);
+    const prompt = frame();
+
+    expect(prompt).toContain(".pi/mcp.json — could not be read: larger than 1 MB");
+    expect(prompt).toContain("Could not read 1 of these file (listed first): trusting is not offered.");
+    expect(prompt).toContain("d don't trust");
+    expect(prompt).toContain("Esc not now (this turn only)");
+    expect(prompt).not.toContain("trust (then Enter)");
+    expect(prompt).not.toContain("scroll to the end first");
+    expect(prompt).not.toContain("Trusting lets pi load these files");
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("t does nothing, not even arming Enter: the project never loads and nothing is stored", async () => {
+    oversize();
+    await openPiSession("hello");
+    await frameContaining(TITLE);
+
+    await press("t");
+    expect(frame()).not.toContain("press Enter to trust");
+    await press("RETURN");
+    await settle(300);
+
+    expect(frame()).toContain(TITLE);
+    expect(frame()).not.toContain(REPLY);
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("d stores 'untrusted' and the turn finishes without loading the project", async () => {
+    oversize();
+    await openPiSession("hello");
+    await frameContaining(TITLE);
+
+    await press("d");
+
+    expect(await frameContaining(REPLY)).toContain(REPLY);
+    expect(getStorage().getProjectTrust(cwd)).toBe("untrusted");
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("a stored 'trusted' is not honored: the user is asked again, and Esc runs the turn untrusted", async () => {
+    getStorage().setProjectTrust(cwd, "trusted");
+    oversize();
+    await openPiSession("hello");
+
+    expect(await frameContaining(TITLE)).toContain("larger than 1 MB");
+    expect(existsSync(marker())).toBe(false);
+
+    await press("ESCAPE");
+
+    expect(await frameContaining(REPLY)).toContain(REPLY);
+    expect(existsSync(marker())).toBe(false);
+  }, 30000);
+
+  test("control: a stored 'trusted' on a project whose files are all readable still loads without asking", async () => {
+    getStorage().setProjectTrust(cwd, "trusted");
+    await openPiSession("hello");
+    expect(await frameContaining(REPLY)).toContain(REPLY);
+    expect(existsSync(marker())).toBe(true);
+  }, 30000);
+
+  test("/trust does not offer Trust, says which file and why, and ignores a stored 'trusted'", async () => {
+    getStorage().setProjectTrust(cwd, "trusted");
+    oversize();
+    await openPiSession();
+    await type("/trust");
+    await press("RETURN");
+    const dialog = await frameContaining("Project Trust");
+
+    expect(dialog).toContain("Trust is not offered");
+    expect(dialog).toContain(".pi/mcp.json — could not be read: larger than 1 MB");
+    expect(dialog).toContain("Now: not trusted (the stored decision no longer applies)");
+    expect(dialog).toContain("Don't trust");
+    expect(dialog).toContain("Forget");
+    expect(dialog).not.toContain("pi loads this project's files");
+  }, 30000);
+});
+
 describe("/trust (S18)", () => {
   const openTrust = async () => {
     await openPiSession();

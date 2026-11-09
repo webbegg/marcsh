@@ -27,7 +27,17 @@ export type ProjectResource = {
   path: string;
   /** What it does when loaded, e.g. an MCP server's command. Whole, never shortened. */
   detail?: string;
+  /**
+   * Set when marcsh could not read the entry (over the size cap, not a regular file, not JSON, unreadable): `detail` says why.
+   * pi would still load it once the project is trusted, so marcsh cannot show what trusting would run and never offers it.
+   */
+  unreadable?: true;
 };
+
+/** The entries marcsh could not read; while there is any, trust is not possible for the project. */
+export const unreadableResources = (resources: ProjectResource[]) => resources.filter((resource) => resource.unreadable);
+
+const unreadableEntry = (path: string, reason: string): ProjectResource => ({ path, detail: `could not be read: ${reason}`, unreadable: true });
 
 /** Answer to the prompt: remember it either way, or leave this one turn untrusted without remembering. */
 export type TrustAnswer = "trust" | "distrust" | "skip";
@@ -78,19 +88,24 @@ const stripBom = (text: string) => (text.charCodeAt(0) === 0xfeff ? text.slice(1
 // The most a project's JSON file may hold to be listed; pi's own config files are far smaller.
 const MAX_JSON_BYTES = 1024 * 1024;
 
+type JsonRead = { value: unknown } | { unreadable: string };
+
 /**
- * The parsed JSON file, or undefined when it cannot be listed: missing, not JSON, over the size cap, or not a regular file.
+ * The parsed JSON file, or why it cannot be listed: not JSON, over the size cap, not a regular file, or unreadable.
+ * (A missing file is the caller's check.)
  * The project controls the path, so a symlink is followed but the target must be a regular file: a FIFO would block the
  * read forever and a device like /dev/zero would never end. The check is on the opened file, not the path, so it cannot be swapped in between.
  */
-function readJson(path: string): unknown {
+function readJson(path: string): JsonRead {
   let fd: number | undefined;
+  let text: string;
   try {
     // O_NONBLOCK: opening a FIFO must not wait for a writer.
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     const info = fstatSync(fd);
     const size = info.size;
-    if (!info.isFile() || size > MAX_JSON_BYTES) return undefined;
+    if (!info.isFile()) return { unreadable: "not a regular file" };
+    if (size > MAX_JSON_BYTES) return { unreadable: "larger than 1 MB" };
     // One byte more than the size: a file that grew since the check is refused too.
     const buffer = Buffer.alloc(size + 1);
     let length = 0;
@@ -99,12 +114,17 @@ function readJson(path: string): unknown {
       if (read === 0) break;
       length += read;
     }
-    if (length > size) return undefined;
-    return JSON.parse(stripBom(buffer.toString("utf8", 0, length)));
+    if (length > size) return { unreadable: "changed while being read" };
+    text = buffer.toString("utf8", 0, length);
   } catch {
-    return undefined;
+    return { unreadable: "cannot be opened or read" };
   } finally {
     if (fd !== undefined) closeSync(fd);
+  }
+  try {
+    return { value: JSON.parse(stripBom(text)) };
+  } catch {
+    return { unreadable: "not valid JSON" };
   }
 }
 
@@ -134,9 +154,11 @@ function describeServer(name: string, config: unknown): string[] {
 }
 
 function mcpResources(file: string, path: string): ProjectResource[] {
-  const parsed = readJson(file);
+  const read = readJson(file);
+  if ("unreadable" in read) return [unreadableEntry(path, read.unreadable)];
+  const parsed = read.value;
   const servers = isRecord(parsed) && isRecord(parsed.mcpServers) ? Object.entries(parsed.mcpServers) : [];
-  if (servers.length === 0) return [{ path, detail: parsed === undefined ? "could not be read" : "no servers" }];
+  if (servers.length === 0) return [{ path, detail: "no servers" }];
   return servers.flatMap(([name, config]) => describeServer(name, config).map((detail) => ({ path, detail })));
 }
 
@@ -162,8 +184,10 @@ function describePackage(entry: unknown): string {
 
 /** `.pi/settings.json`: executable settings go first (they run on trust), the rest after the extensions. */
 function settingsResources(file: string, path: string): { runs: ProjectResource[]; others: ProjectResource[] } {
-  const parsed = readJson(file);
-  if (!isRecord(parsed)) return { runs: [], others: [{ path, detail: parsed === undefined ? "could not be read" : undefined }] };
+  const read = readJson(file);
+  if ("unreadable" in read) return { runs: [], others: [unreadableEntry(path, read.unreadable)] };
+  const parsed = read.value;
+  if (!isRecord(parsed)) return { runs: [], others: [{ path }] };
   const rowsFor = (keys: string[]) =>
     keys.filter((key) => key in parsed).flatMap((key) => describeSettingValue(key, parsed[key]).map((value) => ({ path, detail: `${key}: ${value}` })));
   const listed = new Set([...EXECUTABLE_SETTINGS, ...PATH_SETTINGS]);
@@ -181,7 +205,7 @@ function folderResources(dir: string, path: string): ProjectResource[] {
       .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
       .sort();
   } catch {
-    return [{ path: `${path}/` }];
+    return [unreadableEntry(`${path}/`, "cannot be listed")];
   }
   if (children.length === 0) return [{ path: `${path}/` }];
   return children.map((child) => ({ path: `${path}/${child}` }));
@@ -205,6 +229,7 @@ function agentsSkillDirs(project: string): string[] {
  * Everything is listed, whole, most dangerous first: MCP servers (command, arguments, environment) and settings pi
  * executes or installs from, then extensions, then skills, prompt templates, themes and system prompt files.
  * Strings are escaped (`escapeProjectText`), so no entry can look like two rows or like the prompt itself.
+ * An entry marcsh could not read is marked `unreadable` (see `ProjectResource`).
  */
 export function findProjectResources(cwd: string): ProjectResource[] {
   const project = canonical(cwd);
@@ -224,7 +249,11 @@ export function findProjectResources(cwd: string): ProjectResource[] {
     if (has(file)) resources.push({ path: `${CONFIG_DIR}/${file}`, detail: "changes the system prompt" });
   }
   for (const dir of agentsSkillDirs(project)) resources.push(...folderResources(dir, relative(project, dir)));
-  return resources.map(({ path, detail }) => ({ path: escapeProjectText(path), ...(detail === undefined ? {} : { detail: escapeProjectText(detail) }) }));
+  return resources.map(({ path, detail, unreadable }) => ({
+    path: escapeProjectText(path),
+    ...(detail === undefined ? {} : { detail: escapeProjectText(detail) }),
+    ...(unreadable ? { unreadable } : {}),
+  }));
 }
 
 export type ResolveProjectTrustOptions = {
@@ -240,6 +269,9 @@ export type ResolveProjectTrustOptions = {
  * Whether pi may load the project's own files for this turn.
  *
  * - No project files: false, nothing is asked or stored (there is nothing to load).
+ * - An entry marcsh could not read (see `unreadableResources`): never true. Trusting would load what the user cannot be shown,
+ *   and the file may have grown since an earlier "trusted", so that decision is not honored: the user is told again (the
+ *   question offers only "distrust" and "skip"; a "trust" answer is ignored). A stored "untrusted" stays, without asking.
  * - A stored decision: that decision.
  * - Undecided: the user is asked once; "trust" and "distrust" are stored, "skip" (Esc, no host to ask, an aborted turn)
  *   is untrusted for this turn only and stores nothing.
@@ -249,19 +281,20 @@ export type ResolveProjectTrustOptions = {
 export async function resolveProjectTrust({ cwd, records, ask, signal }: ResolveProjectTrustOptions): Promise<boolean> {
   const resources = findProjectResources(cwd);
   if (resources.length === 0) return false;
+  const reviewable = unreadableResources(resources).length === 0;
 
   let store: ProjectTrustRecords;
   try {
     store = records();
     const stored = store.getProjectTrust(cwd);
-    if (stored) return stored === "trusted";
+    if (stored === "untrusted" || (stored && reviewable)) return stored === "trusted";
   } catch {
     return false;
   }
 
   if (!ask || signal.aborted) return false;
   const answer = await ask({ cwd: canonical(cwd), resources }, signal);
-  if (signal.aborted || answer === "skip") return false;
+  if (signal.aborted || answer === "skip" || (answer === "trust" && !reviewable)) return false;
   try {
     store.setProjectTrust(cwd, answer === "trust" ? "trusted" : "untrusted");
   } catch {
@@ -270,9 +303,10 @@ export async function resolveProjectTrust({ cwd, records, ask, signal }: Resolve
   return answer === "trust";
 }
 
-/** Whether pi may load the project's own files without asking anyone (a stored "trusted"), as warm-up needs. */
+/** Whether pi may load the project's own files without asking anyone (a stored "trusted" and nothing unreadable), as warm-up needs. */
 export function isProjectTrusted(cwd: string, records: () => ProjectTrustRecords): boolean {
-  if (findProjectResources(cwd).length === 0) return false;
+  const resources = findProjectResources(cwd);
+  if (resources.length === 0 || unreadableResources(resources).length > 0) return false;
   try {
     return records().getProjectTrust(cwd) === "trusted";
   } catch {
