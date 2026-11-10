@@ -1,6 +1,7 @@
-import { SUPPORTED_CHAT_MODELS } from "../../lib/models";
+import { PI_DEFAULT_MODEL, SUPPORTED_CHAT_MODELS } from "../../lib/models";
 import { 
   AgentsDialogContent,
+  EngineDialogContent,
   ModelsDialogContent,
   SessionsDialogContent,
   ThemeDialogContent,
@@ -32,12 +33,36 @@ export const COMMANDS: Command[] = [
     description: "Select AI model for generation",
     value: "/models",
     action: (ctx) => {
+      // The picker lists Claude aliases, which a pi session cannot use.
+      if (ctx.engine === "pi") {
+        ctx.toast.show({
+          variant: "info",
+          message: `pi sessions use ${PI_DEFAULT_MODEL} for now`,
+        });
+        return;
+      }
       ctx.dialog.open({
         title: "Select Model",
         children: (
           <ModelsDialogContent
             models={SUPPORTED_CHAT_MODELS.map((model) => model.id)}
             onSelectModel={ctx.setModel}
+          />
+        ),
+      })
+    },
+  },
+  {
+    name: "engine",
+    description: "Choose the engine for new sessions",
+    value: "/engine",
+    action: (ctx) => {
+      ctx.dialog.open({
+        title: "Select Engine",
+        children: (
+          <EngineDialogContent
+            currentEngine={ctx.defaultEngine}
+            onSelectEngine={ctx.setDefaultEngine}
           />
         ),
       })

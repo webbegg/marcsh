@@ -16,6 +16,8 @@ import { useChat } from "../hooks/use-chat";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
 import { getStorage, type StoredSession } from "../lib/storage";
+import { getEngine, unknownEngine } from "../lib/engine";
+import { modelForEngine } from "../lib/models";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 
 const sessionLocationSchema = z.object({
@@ -62,7 +64,12 @@ function SessionChat({
 }) {
   const { mode, model } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
-  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session);
+  // A session keeps the engine it was created with; one this build does not know only reports that.
+  const engine = useMemo(
+    () => getEngine(session.engine) ?? unknownEngine(session.engine),
+    [session.engine],
+  );
+  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session, engine);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -92,14 +99,15 @@ function SessionChat({
     void submit({
       userText: initialPrompt.message,
       mode: initialPrompt.mode,
-      model: initialPrompt.model,
+      model: modelForEngine(session.engine, initialPrompt.model),
     });
-  }, [initialPrompt, submit]);
+  }, [initialPrompt, submit, session.engine]);
 
   return (
     <SessionShell
       cwd={session.cwd}
-      onSubmit={(text) => submit({ userText: text, mode, model })}
+      engine={session.engine}
+      onSubmit={(text) => submit({ userText: text, mode, model: modelForEngine(session.engine, model) })}
       inputDisabled={busy}
       loading={busy}
       interruptible={busy}

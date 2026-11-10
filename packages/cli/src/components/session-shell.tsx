@@ -12,6 +12,8 @@ type Props = {
   interruptible?: boolean;
   /** Directory that `@` mentions resolve against; defaults to the process's. */
   cwd?: string;
+  /** The engine the session runs on, shown next to the model; defaults to the one new sessions start on. */
+  engine?: string;
 };
 
 export function SessionShell({
@@ -21,6 +23,7 @@ export function SessionShell({
   loading = false,
   interruptible = false,
   cwd,
+  engine,
 }: Props) {
   const { mode } = usePromptConfig();
 
@@ -38,7 +41,7 @@ export function SessionShell({
         <box>{children}</box>
       </scrollbox>
       <box flexShrink={0}>
-        <InputBar onSubmit={onSubmit} disabled={inputDisabled} cwd={cwd} />
+        <InputBar onSubmit={onSubmit} disabled={inputDisabled} cwd={cwd} engine={engine} />
       </box>
       <box
         flexShrink={0}

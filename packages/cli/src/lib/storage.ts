@@ -21,6 +21,13 @@ export type StoredSession = SessionSummary & {
   messages: ChatMessage[];
 };
 
+/** An "always allow" decision. `command` is set for `bash` (that exact command); other tools are allowed by name. */
+export type PermissionRule = {
+  cwd: string;
+  toolName: string;
+  command?: string;
+};
+
 export type Storage = {
   listSessions(): SessionSummary[];
   getSession(id: string): StoredSession | null;
@@ -29,6 +36,8 @@ export type Storage = {
   /** Last known Claude Code commands and skills, kept so the `/` menu has them after a restart. */
   getClaudeCommands(): ClaudeCommand[];
   saveClaudeCommands(commands: ClaudeCommand[]): void;
+  addPermissionRule(rule: PermissionRule): void;
+  hasPermissionRule(rule: PermissionRule): boolean;
 };
 
 type SessionRow = {
@@ -98,6 +107,16 @@ export function openStorage(path = defaultDbPath()): Storage {
   }
 
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  // `command` is empty for rules on a whole tool; a bash rule always has a non-empty command.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS permission_rules (
+      cwd TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      command TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (cwd, tool_name, command)
+    )
+  `);
 
   const selectSession = db.query<SessionRow, { id: string }>("SELECT * FROM sessions WHERE id = $id");
 
@@ -179,6 +198,21 @@ export function openStorage(path = defaultDbPath()): Storage {
         `INSERT INTO meta (key, value) VALUES ($key, $value)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       ).run({ key: CLAUDE_COMMANDS_KEY, value: JSON.stringify(normalizeClaudeCommands(commands)) });
+    },
+
+    addPermissionRule({ cwd, toolName, command = "" }) {
+      db.query(
+        `INSERT OR IGNORE INTO permission_rules (cwd, tool_name, command, created_at)
+         VALUES ($cwd, $toolName, $command, $now)`,
+      ).run({ cwd, toolName, command, now: Date.now() });
+    },
+
+    hasPermissionRule({ cwd, toolName, command = "" }) {
+      return (
+        db
+          .query("SELECT 1 FROM permission_rules WHERE cwd = $cwd AND tool_name = $toolName AND command = $command")
+          .get({ cwd, toolName, command }) !== null
+      );
     },
   };
 }
