@@ -53,7 +53,7 @@ test("a build turn resumed after a plan turn still has bash, edit and write", as
   const plan = await run(engine, { mode: Mode.PLAN, resumeRef: build.ref }, "allow");
   await run(engine, { resumeRef: plan.ref ?? build.ref }, "allow");
 
-  expect(offered[1]).toEqual(["find", "grep", "ls", "read"]);
+  expect(offered[1]).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
   expect(offered[2]).toEqual(offered[0]);
   expect(existsSync(marker)).toBe(true);
 });
@@ -78,7 +78,7 @@ export default function (pi) {
 
     const { asks } = await run(engine, { mode: Mode.PLAN }, "allow");
 
-    expect(offered[0]).toEqual(["find", "grep", "ls"]);
+    expect(offered[0]).toEqual(["AskUserQuestion", "find", "grep", "ls"]);
     expect(asks).toEqual([]);
     expect(existsSync(marker)).toBe(false);
   });
