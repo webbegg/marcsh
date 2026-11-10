@@ -24,6 +24,7 @@ import { Mode } from "../lib/modes";
 import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
+import { quitApp } from "../lib/quit";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -404,7 +405,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     if (command.action) {
       command.action({
-        exit: () => renderer.destroy(),
+        exit: () => void quitApp(renderer),
         dialog,
         toast,
         engine: engineId,
