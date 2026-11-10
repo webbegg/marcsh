@@ -128,3 +128,112 @@ describe("project trust (S18)", () => {
     expect(again.getProjectTrust("/work/b")).toBe("trusted");
   });
 });
+
+const REVIEW = [
+  { path: ".pi/extensions/foo.ts", shown: "a".repeat(64), content: "b".repeat(64) },
+  { path: ".pi/mcp.json", shown: "c".repeat(64), content: "d".repeat(64) },
+];
+
+const columns = (path: string) => {
+  const db = new Database(path);
+  const names = db.query<{ name: string }, []>("PRAGMA table_info(project_trust)").all().map((c) => c.name);
+  db.close();
+  return names;
+};
+
+describe("the review kept with a trusted project (S1)", () => {
+  test("a trusted project reads back the review it was trusted with", () => {
+    const storage = openStorage(":memory:");
+
+    storage.setProjectTrust("/work/a", "trusted", REVIEW);
+
+    expect(storage.getProjectTrust("/work/a")).toBe("trusted");
+    expect(storage.getProjectReview("/work/a")).toEqual(REVIEW);
+  });
+
+  test("a project without a decision, or trusted without a review, has no review", () => {
+    const storage = openStorage(":memory:");
+    storage.setProjectTrust("/work/a", "trusted");
+
+    expect(storage.getProjectReview("/work/a")).toBeNull();
+    expect(storage.getProjectReview("/work/none")).toBeNull();
+  });
+
+  test("untrusting or forgetting drops the review; trusting again replaces it", () => {
+    const storage = openStorage(":memory:");
+    storage.setProjectTrust("/work/a", "trusted", REVIEW);
+    storage.setProjectTrust("/work/a", "untrusted", REVIEW);
+    expect(storage.getProjectReview("/work/a")).toBeNull();
+
+    storage.setProjectTrust("/work/a", "trusted", REVIEW);
+    storage.setProjectTrust("/work/a", "trusted", REVIEW.slice(0, 1));
+    expect(storage.getProjectReview("/work/a")).toEqual(REVIEW.slice(0, 1));
+
+    storage.setProjectTrust("/work/a", null);
+    expect(storage.getProjectReview("/work/a")).toBeNull();
+  });
+
+  test("the review is kept per project", () => {
+    const storage = openStorage(":memory:");
+    storage.setProjectTrust("/work/a", "trusted", REVIEW);
+    storage.setProjectTrust("/work/b", "trusted", REVIEW.slice(1));
+
+    expect(storage.getProjectReview("/work/a")).toEqual(REVIEW);
+    expect(storage.getProjectReview("/work/b")).toEqual(REVIEW.slice(1));
+  });
+
+  test("only paths and hashes reach the database", () => {
+    const path = join(tempDir(), "marcsh.db");
+    openStorage(path).setProjectTrust("/work/a", "trusted", [{ path: ".pi/mcp.json", shown: "s", content: "c", secret: "TOKEN=abc" } as never]);
+
+    const db = new Database(path);
+    const row = db.query<{ reviewed: string }, []>("SELECT reviewed FROM project_trust").get()!;
+    db.close();
+
+    expect(JSON.parse(row.reviewed)).toEqual([{ path: ".pi/mcp.json", shown: "s", content: "c" }]);
+  });
+
+  test("a review that was damaged on disk reads as no review", () => {
+    const path = join(tempDir(), "marcsh.db");
+    openStorage(path).setProjectTrust("/work/a", "trusted", REVIEW);
+    const db = new Database(path);
+    db.run("UPDATE project_trust SET reviewed = '{not json'");
+    db.close();
+    const storage = openStorage(path);
+    expect(storage.getProjectReview("/work/a")).toBeNull();
+
+    const damaged = new Database(path);
+    damaged.run("UPDATE project_trust SET reviewed = '[{\"path\":1}]'");
+    damaged.close();
+    expect(openStorage(path).getProjectReview("/work/a")).toBeNull();
+  });
+
+  test("a database from before reviews gains the column, and its trusted row has no review", () => {
+    const path = join(tempDir(), "marcsh.db");
+    const old = new Database(path, { create: true });
+    old.run(`CREATE TABLE project_trust (
+      path TEXT PRIMARY KEY,
+      decision TEXT NOT NULL CHECK (decision IN ('trusted', 'untrusted')),
+      decided_at INTEGER NOT NULL
+    )`);
+    old.run("INSERT INTO project_trust (path, decision, decided_at) VALUES ('/work/old', 'trusted', 1)");
+    old.close();
+    expect(columns(path)).not.toContain("reviewed");
+
+    const storage = openStorage(path);
+
+    expect(columns(path)).toContain("reviewed");
+    expect(storage.getProjectTrust("/work/old")).toBe("trusted");
+    expect(storage.getProjectReview("/work/old")).toBeNull();
+    storage.setProjectTrust("/work/old", "trusted", REVIEW);
+    expect(openStorage(path).getProjectReview("/work/old")).toEqual(REVIEW);
+  });
+
+  test("opening a database that already has the column again changes nothing", () => {
+    const path = join(tempDir(), "marcsh.db");
+    openStorage(path).setProjectTrust("/work/a", "trusted", REVIEW);
+
+    expect(openStorage(path).getProjectReview("/work/a")).toEqual(REVIEW);
+    expect(columns(path).filter((name) => name === "reviewed")).toHaveLength(1);
+  });
+});

@@ -18,7 +18,8 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
-import type { ProjectTrustAsk, TrustAnswer } from "./pi-trust";
+import { reviewProject, type ProjectTrustAsk, type TrustAnswer } from "./pi-trust";
+import { trustEveryProject } from "./test-trust";
 import type { Engine, EngineEvent, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string;
@@ -36,9 +37,6 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// The tests of a project's own pi files predate project trust (S18): unless a test says otherwise, every project is trusted and they load as before.
-const trustEverything: NonNullable<PiEngineOptions["projectTrust"]> = { getProjectTrust: () => "trusted", setProjectTrust: () => {} };
-
 async function setup(responses: FauxResponseStep[], permissionRules: Storage = openStorage(":memory:"), engineOptions: PiEngineOptions = {}) {
   const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const modelRuntime = await ModelRuntime.create({
@@ -49,7 +47,7 @@ async function setup(responses: FauxResponseStep[], permissionRules: Storage = o
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
 
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust: trustEverything, ...engineOptions });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust: trustEveryProject, ...engineOptions });
   return { engine, faux, model: "faux/faux-1", permissionRules };
 }
 
@@ -2009,7 +2007,7 @@ export default function (pi) {
 
   test("a stored decision is not asked again: trusted loads without asking", async () => {
     const records = openStorage(":memory:");
-    records.setProjectTrust(cwd, "trusted");
+    records.setProjectTrust(cwd, "trusted", reviewProject(cwd).record);
     const { offered, step } = recordingOffer();
     const { engine, model } = await setup([step], undefined, { projectTrust: records });
     const { asks, host } = trusting("distrust");
@@ -2190,7 +2188,7 @@ export default function (pi) {
 
     test("for a trusted project it loads the extension as before and lists its command", async () => {
       const records = openStorage(":memory:");
-      records.setProjectTrust(cwd, "trusted");
+      records.setProjectTrust(cwd, "trusted", reviewProject(cwd).record);
       const { engine } = await setup([], undefined, { projectTrust: records });
 
       const saved = await warm(engine);
@@ -2205,7 +2203,7 @@ export default function (pi) {
     const childTools = async (decision: "trusted" | "untrusted") => {
       writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
       const records = openStorage(":memory:");
-      records.setProjectTrust(cwd, decision);
+      records.setProjectTrust(cwd, decision, decision === "trusted" ? reviewProject(cwd).record : undefined);
       let tools: string[] = [];
       const kid: FauxResponseStep = (context) => {
         tools = offeredTools(context.messages).sort();
