@@ -181,7 +181,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     </>
   );
   const smallNotice = "Terminal too small to review the list: make it taller to trust.";
-  const unreadableNotice = `Could not read ${unreadable} of these ${unreadable === 1 ? "file" : "files"} (listed first): trusting is not offered.`;
+  const unreadableNotice = `Could not read ${unreadable} of these files (listed first): trusting is not offered.`;
 
   // A hosted prompt sits where its dialog put it; the zero-size anchor tells how far that is from the screen's corner.
   const withAnchor = (screenBox: ReactNode) =>

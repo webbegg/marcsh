@@ -472,7 +472,7 @@ describe("a project with a file marcsh could not read (S18)", () => {
     const prompt = frame();
 
     expect(prompt).toContain(".pi/mcp.json — could not be read: larger than 1 MB");
-    expect(prompt).toContain("Could not read 1 of these file (listed first): trusting is not offered.");
+    expect(prompt).toContain("Could not read 1 of these files (listed first): trusting is not offered.");
     expect(prompt).toContain("d don't trust");
     expect(prompt).toContain("Esc not now (this turn only)");
     expect(prompt).not.toContain("trust (then Enter)");
