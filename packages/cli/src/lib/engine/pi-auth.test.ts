@@ -426,6 +426,8 @@ describe("pi engine wiring", () => {
 
 // S5: with the default agent dir, credentials land in ~/.marcsh/agent/auth.json (0600) and ~/.pi is never touched.
 // Bun caches os.homedir() at startup, so the default path is checked in a child process with its own HOME.
+// The test preload's MARCSH_AGENT_DIR must not reach it, or it would not test the default.
+const { MARCSH_AGENT_DIR: _agentDirOverride, ...parentEnv } = process.env;
 const child = `
 import { createPiEngine } from "./pi.ts";
 import { listLoginProviders, runLogin } from "./pi-auth.ts";
@@ -450,7 +452,7 @@ describe("default agent dir (S5)", () => {
     mkdirSync(join(home, ".pi", "agent"), { recursive: true });
     const proc = Bun.spawn([process.execPath, "-e", child], {
       cwd: import.meta.dir,
-      env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
+      env: { ...parentEnv, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
       stdout: "pipe",
       stderr: "pipe",
     });

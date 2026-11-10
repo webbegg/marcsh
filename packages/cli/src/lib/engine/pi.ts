@@ -14,11 +14,15 @@ import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnaske
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
+import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
-/** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
+/**
+ * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
+ * `MARCSH_AGENT_DIR` moves it (tests point it at a temp dir so they never touch the real login).
+ */
 export function defaultPiAgentDir(): string {
-  return join(homedir(), ".marcsh", "agent");
+  return process.env.MARCSH_AGENT_DIR?.trim() || join(homedir(), ".marcsh", "agent");
 }
 
 /**
@@ -56,6 +60,8 @@ export type PiEngineOptions = {
   modelRuntime?: ModelRuntime;
   /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
   permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  /** Where each project's trust decision is kept (see `pi-trust.ts`). Default: marcsh's SQLite, opened only for a project that has pi files. */
+  projectTrust?: ProjectTrustRecords;
   /** The branch/ship guard for pi's `bash` tool. Default: the decision Claude's PreToolUse hook makes (tests inject others). */
   guard?: Guard;
   /** The marcsh plugin whose `feature` command and `workflow` skill pi loads in place. Default: the bundled one; null for none. */
@@ -102,11 +108,15 @@ function restoredPlanTools(session: AgentSession): boolean {
  * from a throwaway in-memory session (it applies the `defaultTools` setting and pi's default list), the
  * extension and custom ones are the registered tools that pi activates on registration.
  */
-async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, models, model }: { cwd: string; agentDir: string; models: ModelRuntime; model: NonNullable<ReturnType<ModelRuntime["getModel"]>> }): Promise<string[]> {
+async function newSessionTools(
+  pi: Pi,
+  session: AgentSession,
+  { cwd, agentDir, models, model, projectTrusted }: { cwd: string; agentDir: string; models: ModelRuntime; model: NonNullable<ReturnType<ModelRuntime["getModel"]>>; projectTrusted: boolean },
+): Promise<string[]> {
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd,
     agentDir,
-    settingsManager: pi.SettingsManager.create(cwd, agentDir),
+    settingsManager: pi.SettingsManager.create(cwd, agentDir, { projectTrusted }),
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -114,7 +124,7 @@ async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, m
     noContextFiles: true,
   });
   await resourceLoader.reload();
-  const freshSettings = pi.SettingsManager.create(cwd, agentDir);
+  const freshSettings = pi.SettingsManager.create(cwd, agentDir, { projectTrusted });
   const { session: fresh } = await pi.createAgentSession({
     cwd,
     agentDir,
@@ -128,7 +138,7 @@ async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, m
   const builtin = fresh.getActiveToolNames();
   await disposePiSession(fresh);
   // Opt-in extension tools (`defaultActive: false`) are on when the user's `defaultTools` names them.
-  const namedByUser = new Set(pi.SettingsManager.create(cwd, agentDir).getDefaultTools() ?? []);
+  const namedByUser = new Set(pi.SettingsManager.create(cwd, agentDir, { projectTrusted }).getDefaultTools() ?? []);
   const registered = session
     .getAllTools()
     .filter((tool) => !tool.sourceInfo.path.startsWith(BUILTIN_PREFIX))
@@ -155,6 +165,10 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * it runs (see `pi-permissions.ts`), and a `bash` command the branch/ship guard flags is blocked or always asked
  * (see `pi-guard.ts`). In plan mode the session only has the read-only tools, `AskUserQuestion` and `Task`.
  * `Task` runs a child session in this process (see `pi-subagent.ts`) whose tool calls ask the same way.
+ *
+ * A project's own pi files (extensions, MCP servers, settings...) load only when the project is trusted (see `pi-trust.ts`):
+ * the first turn in an undecided project asks the host before pi loads anything of it, and a project that is not trusted
+ * gets pi's untrusted behavior. Warm-up never asks and never loads the project's files unless it is already trusted.
  */
 export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
@@ -169,6 +183,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   process.env[AGENT_DIR_ENV] = agentDir;
   // Before pi writes anything there: its settings (the device id), logins, models and sessions.
   const prepareAgentDir = () => secureDefaultAgentDir(agentDir);
+  const trustRecords = (): ProjectTrustRecords => options.projectTrust ?? getStorage();
 
   let runtime: Promise<ModelRuntime> | undefined;
   const runtimeFor = (pi: Pi) => {
@@ -215,12 +230,21 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (!resolved) return fail(`Unknown pi model "${model}". Use provider/model-id.`);
       if (aborted) return;
 
+      // Before pi reads anything of the project: its settings, extensions, MCP servers and the rest stay unloaded until this is decided.
+      const projectTrusted = await resolveProjectTrust({
+        cwd,
+        records: trustRecords,
+        ask: host.askProjectTrust && ((ask, askSignal) => host.askProjectTrust!(ask, askSignal)),
+        signal: turnEnded.signal,
+      });
+      if (aborted) return;
+
       const sessionManager = resumeRef
         ? pi.SessionManager.open(resumeRef, options.sessionDir, cwd)
         : options.sessionDir
           ? pi.SessionManager.create(cwd, options.sessionDir)
           : undefined;
-      const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+      const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted });
       const approval = {
         cwd,
         host,
@@ -250,6 +274,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
                 agentDir,
                 models,
                 model: resolved,
+                projectTrusted,
                 extensions: [createApprovalExtension(approval)],
                 ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : buildToolsOption(settingsManager)),
               }),
@@ -274,7 +299,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name));
       // pi gives a resumed session the tools of its last turn: after a plan turn, a build turn sets them again.
       else if (resumeRef && restoredPlanTools(session)) {
-        session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved }));
+        session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved, projectTrusted }));
       }
       if (aborted) return;
 
@@ -344,7 +369,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const pi = await loadPi();
         const models = await runtimeFor(pi);
         const commandLister = createCommandLister();
-        const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+        // Never asks: a project that is not already trusted keeps its own files unloaded, so warm-up cannot run its code.
+        const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: isProjectTrusted(cwd, trustRecords) });
         const resourceLoader = new pi.DefaultResourceLoader({
           cwd,
           agentDir,
@@ -379,7 +405,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       process.env[AGENT_DIR_ENV] = agentDir;
       prepareAgentDir();
       const pi = await loadPi();
-      return pi.SettingsManager.create(process.cwd(), agentDir).getOrCreateDeviceId();
+      // The device id is a global setting: no project is involved, so none of its files are read.
+      return pi.SettingsManager.create(process.cwd(), agentDir, { projectTrusted: false }).getOrCreateDeviceId();
     },
   };
 }

@@ -3,6 +3,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// The test preload's MARCSH_AGENT_DIR must not reach children that check the default ~/.marcsh/agent under their own HOME.
+const { MARCSH_AGENT_DIR: _agentDirOverride, ...parentEnv } = process.env;
+
 // Bun caches os.homedir() at startup, so the default agentDir is checked in a child process with its own HOME.
 const child = `
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -74,7 +77,7 @@ test("the default pi engine keeps sessions and extensions in ~/.marcsh/agent and
 
   const proc = Bun.spawn([process.execPath, "-e", child], {
     cwd: import.meta.dir,
-    env: { ...process.env, HOME: home, PROBE_CWD: cwd },
+    env: { ...parentEnv, HOME: home, PROBE_CWD: cwd },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -109,7 +112,7 @@ test("pi's tools directory and getAgentDir() resolve under ~/.marcsh/agent, not 
 
   const proc = Bun.spawn([process.execPath, "-e", findChild], {
     cwd: import.meta.dir,
-    env: { ...process.env, HOME: home, PROBE_CWD: cwd, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
+    env: { ...parentEnv, HOME: home, PROBE_CWD: cwd, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
     stdout: "pipe",
     stderr: "pipe",
   });

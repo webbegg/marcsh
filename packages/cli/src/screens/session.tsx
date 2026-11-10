@@ -11,6 +11,7 @@ import {
 } from "../components/messages";
 import { PermissionPrompt } from "../components/permission-prompt";
 import { QuestionPrompt } from "../components/question-prompt";
+import { TrustPrompt } from "../components/trust-prompt";
 import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
@@ -132,8 +133,8 @@ function SessionChat({
 
   // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
-    // Esc inside a question's free-text field only closes the field.
-    if (key.name === "escape" && isTopLayer("base") && busy && !textEntryRef.current) {
+    // Esc inside a question's free-text field only closes the field; on the project trust question it only means "not now", and the turn goes on untrusted.
+    if (key.name === "escape" && isTopLayer("base") && busy && !textEntryRef.current && pendingRequest?.kind !== "trust") {
       key.preventDefault();
       interrupt();
     }
@@ -146,27 +147,31 @@ function SessionChat({
   }, [initialPrompt, send]);
 
   return (
-    <SessionShell
-      cwd={session.cwd}
-      engine={session.engine}
-      onSubmit={(text) => send(text, mode, model)}
-      inputDisabled={busy || choosingModel}
-      loading={busy}
-      interruptible={busy}
-    >
-      {messages.map((msg) => (
-        <ChatMessage key={msg.id} msg={msg} />
-      ))}
-      {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
-      {pendingRequest?.kind === "question" && (
-        <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
-      )}
-      {pendingRequest?.kind === "select" && <SelectPrompt key={pendingRequest.id} request={pendingRequest} />}
-      {pendingRequest?.kind === "confirm" && <ConfirmPrompt key={pendingRequest.id} request={pendingRequest} />}
-      {pendingRequest?.kind === "input" && <InputPrompt key={pendingRequest.id} request={pendingRequest} />}
-      {pendingRequest?.kind === "editor" && <EditorPrompt key={pendingRequest.id} request={pendingRequest} />}
-      {error && <ErrorMessage message={error} />}
-    </SessionShell>
+    <>
+      <SessionShell
+        cwd={session.cwd}
+        engine={session.engine}
+        onSubmit={(text) => send(text, mode, model)}
+        inputDisabled={busy || choosingModel}
+        loading={busy}
+        interruptible={busy}
+      >
+        {messages.map((msg) => (
+          <ChatMessage key={msg.id} msg={msg} />
+        ))}
+        {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
+        {pendingRequest?.kind === "question" && (
+          <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
+        )}
+        {pendingRequest?.kind === "select" && <SelectPrompt key={pendingRequest.id} request={pendingRequest} />}
+        {pendingRequest?.kind === "confirm" && <ConfirmPrompt key={pendingRequest.id} request={pendingRequest} />}
+        {pendingRequest?.kind === "input" && <InputPrompt key={pendingRequest.id} request={pendingRequest} />}
+        {pendingRequest?.kind === "editor" && <EditorPrompt key={pendingRequest.id} request={pendingRequest} />}
+        {error && <ErrorMessage message={error} />}
+      </SessionShell>
+      {/* The trust question owns the whole screen while pending, so its title and key hints never scroll away. */}
+      {pendingRequest?.kind === "trust" && <TrustPrompt key={pendingRequest.id} request={pendingRequest} />}
+    </>
   );
 }
 

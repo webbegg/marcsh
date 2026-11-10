@@ -63,10 +63,21 @@ export function CommandMenu({
       renderer.root.off("layout-changed", measure);
     };
   }, [renderer, measure]);
+  // A resize can reach this effect before the layout does, and no later layout event is guaranteed: measure once
+  // the root has the terminal's height (bounded, ~0.5 s), so the menu never keeps a size computed for the old screen.
   useEffect(() => {
-    const timer = setTimeout(measure, 0);
+    let timer: ReturnType<typeof setTimeout>;
+    let tries = 0;
+    const measureWhenLaidOut = () => {
+      if (renderer.root.height !== terminalHeight && tries++ < 30) {
+        timer = setTimeout(measureWhenLaidOut, 16);
+        return;
+      }
+      measure();
+    };
+    timer = setTimeout(measureWhenLaidOut, 0);
     return () => clearTimeout(timer);
-  }, [measure, terminalHeight, filtered.length]);
+  }, [measure, renderer, terminalHeight, filtered.length]);
   const visibleHeight = Math.min(filtered.length, menuRowLimit(measuredRows ?? terminalHeight - ROWS_BELOW_MENU));
 
   if (filtered.length === 0) {

@@ -12,6 +12,9 @@ import { createPiEngine } from "./pi";
 import type { AskQuestion } from "../ask-user-question";
 import type { PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
+// These tests install project extensions; project trust (S18) is not what they check, so every project is trusted.
+const TRUSTED = { getProjectTrust: () => "trusted" as const, setProjectTrust: () => {} };
+
 Object.assign(process.env, { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" });
 let dir = "", agentDir = "", cwd = "";
 beforeEach(() => {
@@ -35,7 +38,7 @@ async function run(steps: FauxResponseStep[], o: Opts = {}) {
   modelRuntime.registerNativeProvider(faux.provider);
   const seen: any[] = [];
   faux.setResponses([...steps, (ctx: any) => { seen.push(ctx.messages); return done(); }]);
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: o.rules ?? openStorage(":memory:"), ...(o.guard ? { guard: o.guard } : {}) });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: o.rules ?? openStorage(":memory:"), projectTrust: TRUSTED, ...(o.guard ? { guard: o.guard } : {}) });
   const asks: PermissionAsk[] = [];
   const asked: AskQuestion[][] = [];
   const events: any[] = [];
@@ -154,7 +157,7 @@ describe("S9 marcsh's own tool", () => {
     const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
     modelRuntime.registerNativeProvider(faux.provider);
     faux.setResponses([call("AskUserQuestion", { questions: [COLOR] }), done()]);
-    const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:") });
+    const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: TRUSTED });
     let opened!: () => void;
     const open = new Promise<void>((r) => (opened = r));
     let sig: AbortSignal | undefined;

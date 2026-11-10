@@ -2,6 +2,7 @@ import type { AskQuestion } from "../ask-user-question";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
 import type { ModeType } from "../modes";
+import type { ProjectTrustAsk, TrustAnswer } from "./pi-trust";
 
 export type PermissionDecision = "allow" | "always" | "deny";
 
@@ -58,6 +59,11 @@ export type TurnHost = {
   input?(title: string, placeholder: string | undefined, signal: AbortSignal): Promise<string | undefined>;
   /** Resolves with the edited text, or undefined when cancelled. */
   editor?(title: string, prefill: string | undefined, signal: AbortSignal): Promise<string | undefined>;
+  /**
+   * Before pi loads a project's own files, once per undecided project: resolves with the user's answer ("skip" =
+   * untrusted for this turn only). Not an extension dialog; a host without it answers "skip".
+   */
+  askProjectTrust?(ask: ProjectTrustAsk, signal: AbortSignal): Promise<TrustAnswer>;
   /** A short message for the user that needs no answer. */
   notify?(message: string, level: NoticeLevel): void;
 };

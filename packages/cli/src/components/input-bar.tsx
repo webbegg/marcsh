@@ -408,6 +408,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         dialog,
         toast,
         engine: engineId,
+        cwd,
         defaultEngine,
         setDefaultEngine: switchDefaultEngine,
         piModel,
@@ -421,7 +422,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {

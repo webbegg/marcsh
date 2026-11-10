@@ -84,7 +84,8 @@ async function open(path: string) {
     { initialEntries: [path] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 30 });
-  // A pi screen first asks which pi model it can use; this fake pi engine has no runtime, so the status line shows the default once that fails.
+  // A pi screen first asks which pi model it can use; this fake pi engine has no runtime, so that fails and the status line says pi is unavailable.
+  // (The turn itself still goes out with the stored or built-in model, which pi then reports on.)
   await settle(120);
 }
 
@@ -138,7 +139,8 @@ describe("each session runs on its own engine (S2)", () => {
 
   test("a pi session sends the pi model ref to the pi engine, never a Claude alias, and labels itself pi", async () => {
     await openSession("pi");
-    expect(frame()).toContain(`${PI_DEFAULT_MODEL} · pi`);
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
     await type("hello");
     await press("RETURN");
@@ -228,19 +230,33 @@ describe("/engine (S2)", () => {
 
   test("the home screen shows the engine a new session will use", async () => {
     await open("/");
-    expect(frame()).toContain("Build › opus");
-    expect(frame()).not.toContain("· claude");
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
     rmSync(prefsPath, { force: true });
-    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi" }), "utf8");
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "claude" }), "utf8");
     await act(async () => screen!.renderer.destroy());
     await open("/");
-    expect(frame()).toContain(`${PI_DEFAULT_MODEL} · pi`);
+    expect(frame()).toContain("Build › opus");
+    expect(frame()).not.toContain("· claude");
   });
 });
 
 describe("new sessions take the default engine (S2)", () => {
-  test("with no preference a new session is a Claude session", async () => {
+  test("with no preference a new session is a pi session (S19)", async () => {
+    await open("/");
+
+    await type("first default chat");
+    await press("RETURN");
+    await settle(150);
+
+    expect(sessionByTitle("first default chat")?.engine).toBe("pi");
+    expect(piRequests.map((r) => [r.prompt, r.model])).toEqual([["first default chat", PI_DEFAULT_MODEL]]);
+    expect(claudeCalls).toEqual([]);
+  });
+
+  test("with Claude stored as the default a new session is a Claude session", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "claude" }), "utf8");
     await open("/");
 
     await type("first claude chat");
@@ -250,6 +266,18 @@ describe("new sessions take the default engine (S2)", () => {
     expect(sessionByTitle("first claude chat")?.engine).toBe("claude");
     expect(claudeCalls.map((c) => c.options.model)).toEqual(["opus"]);
     expect(piRequests).toEqual([]);
+  });
+
+  test("an unknown stored default falls back to pi", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "gpt" }), "utf8");
+    await open("/");
+
+    await type("first fallback chat");
+    await press("RETURN");
+    await settle(150);
+
+    expect(sessionByTitle("first fallback chat")?.engine).toBe("pi");
+    expect(claudeCalls).toEqual([]);
   });
 
   test("with pi as the default a new session is a pi session and its first turn gets the pi model", async () => {

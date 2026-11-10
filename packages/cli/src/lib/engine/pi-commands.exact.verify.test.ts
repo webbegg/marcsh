@@ -23,7 +23,8 @@ async function send(prompt: string) {
   modelRuntime.registerNativeProvider(faux.provider);
   let seen = [] as string[]; let calls = 0;
   faux.setResponses([(c: any) => ((calls++, seen = userTexts(c.messages)), fauxAssistantMessage([fauxText("ok")]))]);
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:") });
+  // Project trust (S18) is not what this checks: the project's own files are trusted.
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} } });
   const errs: any[] = [];
   const turn = engine.startTurn({ prompt, cwd, mode: Mode.BUILD, model: "faux/faux-1", signal: new AbortController().signal }, { emit(e: any) { if (e.type === "error") errs.push(e); }, askPermission: async () => "deny", askQuestions: async () => null });
   await turn.done;

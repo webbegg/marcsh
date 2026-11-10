@@ -31,6 +31,9 @@ await createPiEngine({ modelRuntime }).startTurn(
 console.log(JSON.stringify({ agentDir: pi.getAgentDir(), errors }));
 `;
 
+// The test preload's MARCSH_AGENT_DIR must not reach the child, which checks the default ~/.marcsh/agent.
+const { MARCSH_AGENT_DIR: _agentDirOverride, ...parentEnv } = process.env;
+
 test("with every app module loaded first, fd/rg and getAgentDir() resolve under ~/.marcsh/agent", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-agent-dir-app-"));
   const home = join(root, "home");
@@ -49,7 +52,7 @@ test("with every app module loaded first, fd/rg and getAgentDir() resolve under 
 
   const proc = Bun.spawn([process.execPath, "-e", child], {
     cwd: import.meta.dir,
-    env: { ...process.env, HOME: home, TMPDIR: root, PROBE_CWD: join(home, "project"), PI_CODING_AGENT_DIR: decoy },
+    env: { ...parentEnv, HOME: home, TMPDIR: root, PROBE_CWD: join(home, "project"), PI_CODING_AGENT_DIR: decoy },
     stdout: "pipe",
     stderr: "pipe",
   });

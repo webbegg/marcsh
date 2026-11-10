@@ -149,6 +149,8 @@ export type ChildSessionOptions = {
   agentDir: string;
   models: ModelRuntime;
   model: NonNullable<ReturnType<ModelRuntime["getModel"]>>;
+  /** Whether the project's own settings and files load: the parent turn's trust (S18). Default: untrusted. */
+  projectTrusted?: boolean;
   /** The inline extensions the child loads: marcsh's approval extension, bound to the parent turn's host. No others load. */
   extensions: InlineExtension[];
   /** Restricts the child's active tools by name (plan mode), or `+name` entries added to the defaults; default: pi's defaults. */
@@ -172,7 +174,7 @@ function assistantText(message: { content?: unknown }): string {
  */
 export async function runChildSession(pi: PiModule, options: ChildSessionOptions): Promise<ChildRun> {
   const { cwd, agentDir, signal } = options;
-  const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+  const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: options.projectTrusted ?? false });
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd,
     agentDir,

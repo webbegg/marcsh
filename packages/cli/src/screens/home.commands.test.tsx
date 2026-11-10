@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -21,6 +22,7 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Home } = await import("./home");
 const { getStorage } = await import("../lib/storage");
+const { preferencesPath, setDefaultEngine } = await import("../lib/preferences");
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
@@ -40,7 +42,11 @@ async function openHome() {
   await settle();
 }
 
+// These tests are about Claude's command cache, so the default engine is Claude explicitly (pi is the default).
+beforeEach(() => setDefaultEngine("claude"));
+
 afterEach(async () => {
+  rmSync(preferencesPath(), { force: true });
   getStorage().saveClaudeCommands([]);
   queryCalls = 0;
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());

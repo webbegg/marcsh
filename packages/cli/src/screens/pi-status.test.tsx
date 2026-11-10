@@ -20,6 +20,7 @@ const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { PI_DEFAULT_MODEL } = await import("../lib/models");
+const { piModelCheck } = await import("../providers/prompt-config");
 type Engine = import("../lib/engine/types").Engine;
 type TurnRequest = import("../lib/engine/types").TurnRequest;
 
@@ -46,6 +47,8 @@ let isolated: typeof runtime;
 let piRequests: TurnRequest[] = [];
 // Holds back the runtime until released, to look at the status line while the model check is still running.
 let runtimeGate: Promise<void> = Promise.resolve();
+// When set, asking for the runtime fails with it.
+let runtimeError: Error | null = null;
 
 async function createRuntime(loggedIn: string[]) {
   credentials = new InMemoryCredentialStore();
@@ -77,6 +80,7 @@ const fakePi: Engine & { getRuntime: () => Promise<typeof runtime>; getDeviceId:
   warmUpCommands: async () => {},
   getRuntime: async () => {
     await runtimeGate;
+    if (runtimeError) throw runtimeError;
     return isolated;
   },
   getDeviceId: async () => "device-1",
@@ -116,6 +120,8 @@ async function run(command: string) {
   await settle(120);
 }
 
+const DEFAULT_CHECK_TIMEOUT_MS = piModelCheck.timeoutMs;
+
 beforeAll(() => engines.set("pi", fakePi));
 afterAll(() => {
   engines.set("pi", undefined);
@@ -127,6 +133,8 @@ beforeEach(() => createRuntime(["fake-a", "fake-b"]));
 afterEach(async () => {
   piRequests = [];
   runtimeGate = Promise.resolve();
+  runtimeError = null;
+  piModelCheck.timeoutMs = DEFAULT_CHECK_TIMEOUT_MS;
   rmSync(prefsPath, { force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
@@ -233,6 +241,53 @@ describe("the status line on pi (S17)", () => {
 
     expect(frame()).toContain("run /login");
     expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+  });
+
+  test("a failed model check says pi is unavailable instead of naming the built-in default", async () => {
+    runtimeError = new Error("cannot load pi");
+
+    await openSession("pi");
+
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+    expect(frame()).not.toContain("run /login");
+  });
+
+  test("a failed check does not show the built-in default on the home screen either, with or without a stored model", async () => {
+    runtimeError = new Error("cannot load pi");
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi" }), "utf8");
+    await open("/");
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+
+    await act(async () => screen!.renderer.destroy());
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi", piModel: "fake-b/b-1" }), "utf8");
+    await open("/");
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+  });
+
+  test("a check that hangs becomes the same failure after its time limit, and the next check recovers", async () => {
+    piModelCheck.timeoutMs = 200;
+    let release: () => void = () => {};
+    runtimeGate = new Promise<void>((resolve) => (release = resolve));
+
+    await openSession("pi");
+    expect(frame()).not.toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+
+    await settle(400);
+    expect(frame()).toContain("pi unavailable");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
+
+    // The runtime comes back: the next turn checks again and the line names the model it uses.
+    release();
+    await type("hello");
+    await press("RETURN");
+    await settle(150);
+    expect(piRequests.map((r) => r.model)).toEqual(["fake-a/a-1"]);
+    expect(frame()).toContain("fake-a/a-1 · pi");
+    expect(frame()).not.toContain("pi unavailable");
   });
 
   test("a Claude session is unchanged", async () => {
