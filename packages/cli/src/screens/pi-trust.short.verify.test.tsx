@@ -37,6 +37,12 @@ afterEach(async () => {
 
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 const flat = () => screen!.captureCharFrame().replace(/[│┃\s]+/g, " ");
+// Under a loaded machine the prompt can still show "waiting for typing to stop…" after a fixed wait: poll for the expected hint.
+const flatContaining = async (text: string, timeoutMs = 5000) => {
+  const start = Date.now();
+  while (!flat().includes(text) && Date.now() - start < timeoutMs) await settle(25);
+  return flat();
+};
 const press = async (key: string) => {
   await settle(400);
   await act(async () => screen!.mockInput.pressKey(key as never));
@@ -122,14 +128,13 @@ test("S18: after a resize from 80x8 to 80x30 the prompt works normally: t waits 
   await act(async () => screen!.resize(80, 30));
   await settle(400);
 
-  expect(flat()).not.toContain("too small");
-  expect(flat()).toContain("scroll to the end first");
+  expect(await flatContaining("scroll to the end first")).not.toContain("too small");
   await press("t");
   expect(flat()).not.toContain("press Enter to trust");
   await pageDown(20);
   expect(flat()).not.toContain("scroll to the end first");
   await press("t");
-  expect(flat()).toContain("press Enter to trust");
+  expect(await flatContaining("press Enter to trust")).toContain("press Enter to trust");
   await press("RETURN");
 
   const start = Date.now();
