@@ -1,7 +1,11 @@
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act } from "react";
 
 process.env.MARCSH_DB_PATH = ":memory:";
+// Never the real ~/.marcsh/preferences.json: a missing file reads as no preferences, and writes land in tmp.
+process.env.MARCSH_PREFERENCES_PATH = join(tmpdir(), `marcsh-screen-prefs-${process.pid}`, "preferences.json");
 
 let calls: { prompt: string; options: any }[] = [];
 
@@ -22,6 +26,11 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { engines } = await import("../lib/engine");
+
+// pi is the default engine and its status line asks the pi runtime: a stand-in without one keeps the real pi engine from loading.
+beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} }));
+afterAll(() => engines.set("pi", undefined));
 const { marcshPluginPath } = await import("../lib/plugin");
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;

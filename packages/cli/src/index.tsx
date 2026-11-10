@@ -5,8 +5,9 @@ import { RootLayout } from "./layouts/root-layout";
 import { Home } from "./screens/home";
 import { NewSession } from "./screens/new-session";
 import { Session } from "./screens/session";
-import { warmUpClaudeCommands } from "./lib/command-warmup";
-import { getStorage } from "./lib/storage";
+import { warmUpEngineCommands } from "./lib/engine";
+import { getDefaultEngine } from "./lib/preferences";
+import { installQuitSignals } from "./lib/quit";
 
 const router = createMemoryRouter([
   {
@@ -30,8 +31,9 @@ const renderer = await createCliRenderer({
 });
 createRoot(renderer).render(<App />);
 
-// Fills the `/` menu's Claude Code command list without waiting for a chat turn; never delays or breaks the first render.
-void warmUpClaudeCommands({
-  cwd: process.cwd(),
-  save: (commands) => getStorage().saveClaudeCommands(commands),
-});
+// SIGINT, SIGTERM and SIGHUP (a closed terminal) quit the same way as Ctrl+C: running turns are stopped first (exit codes 130, 143, 129).
+installQuitSignals(renderer);
+
+// Fills the `/` menu's command list of the default engine without waiting for a chat turn; never delays or breaks the
+// first render. Only that engine: a Claude-only run never loads pi (pi is warmed when a pi session opens or becomes the default).
+void warmUpEngineCommands(getDefaultEngine());

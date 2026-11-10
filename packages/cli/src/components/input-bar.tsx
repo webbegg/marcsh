@@ -17,10 +17,14 @@ import { COMMANDS } from "./command-menu/commands";
 import { useCommandMenu } from "./command-menu/use-command-menu";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
+import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
+import { warmUpEngineCommands } from "../lib/engine";
+import { quitApp } from "../lib/quit";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -262,6 +266,8 @@ type Props = {
   disabled?: boolean;
   /** Directory that `@` mentions resolve against. */
   cwd?: string;
+  /** The engine the prompt runs on; defaults to the one new sessions start on. */
+  engine?: string;
 };
 
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
@@ -271,8 +277,9 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Props) {
-  const { mode, toggleMode, setMode, setModel } = usePromptConfig();
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
+  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
   const activeMentionRef = useRef<MentionMatch | null>(null);
@@ -281,12 +288,22 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
   const renderer = useRenderer();
   const navigate = useNavigate();
   const dialog = useDialog();
+  const toast = useToast();
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+
+  // The `/` menu of a new default engine should not be empty: pi's commands are listed ahead of its first session.
+  const switchDefaultEngine = useCallback(
+    (next: EngineId) => {
+      setDefaultEngine(next);
+      if (next === "pi") void warmUpEngineCommands("pi", { cwd });
+    },
+    [setDefaultEngine, cwd],
+  );
 
   const {
     showCommandMenu,
@@ -296,7 +313,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
     handleContentChange,
     resolveCommand,
     setSelectedIndex,
-  } = useCommandMenu();
+  } = useCommandMenu(engineId);
 
   const showMentionMenu = activeMention !== null;
 
@@ -388,8 +405,16 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
 
     if (command.action) {
       command.action({
-        exit: () => renderer.destroy(),
+        exit: () => void quitApp(renderer),
         dialog,
+        toast,
+        engine: engineId,
+        cwd,
+        defaultEngine,
+        setDefaultEngine: switchDefaultEngine,
+        piModel,
+        setPiModel,
+        refreshPiModel,
         navigate,
         mode,
         setMode,
@@ -398,7 +423,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
@@ -619,7 +644,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd() }: Pr
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar />
+          <StatusBar engine={engineId} />
         </box>
       </box>
     </box>

@@ -6,6 +6,7 @@ import { SessionShell } from "../components/session-shell";
 import { UserMessage } from "../components/messages";
 import { useToast } from "../providers/toast";
 import { getStorage } from "../lib/storage";
+import { usePromptConfig } from "../providers/prompt-config";
 
 const newSessionStateSchema = z.object({
   message: z.string(),
@@ -17,6 +18,7 @@ export function NewSession() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
+  const { defaultEngine } = usePromptConfig();
   const hasStartedRef = useRef(false);
 
   const state = useMemo(() => {
@@ -41,6 +43,7 @@ export function NewSession() {
       const session = getStorage().createSession({
         title: state.message.slice(0, 100),
         cwd: process.cwd(),
+        engine: defaultEngine,
       });
       navigate(
         `/sessions/${session.id}`,
@@ -53,7 +56,7 @@ export function NewSession() {
       });
       navigate("/", { replace: true });
     }
-  }, [state, navigate, toast]);
+  }, [state, navigate, toast, defaultEngine]);
 
   if (!state) return null;
 

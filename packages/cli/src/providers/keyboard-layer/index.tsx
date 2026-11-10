@@ -6,6 +6,7 @@ import React, {
   useRef
 } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
+import { quitApp } from "../../lib/quit";
 
 type Responder = () => boolean;
 
@@ -76,8 +77,8 @@ export function KeyboardLayerProvider({ children }: { children: React.ReactNode 
       }
     };
 
-    // No responder handled it — exit
-    renderer.destroy();
+    // No responder handled it — quit (stops running turns first)
+    void quitApp(renderer);
   });
 
   return (

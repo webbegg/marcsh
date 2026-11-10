@@ -1,41 +1,17 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { createContext, useContext, useState, useCallback } from "react";
 import type { ReactNode } from "react";
 import type { ThemeColors, Theme } from "../../theme";
 import { DEFAULT_THEME, THEMES } from "../../theme";
-
-const CONFIG_DIR = join(homedir(), ".marcsh");
-const THEME_PREFERENCES_PATH = join(CONFIG_DIR, "preferences.json");
-
-type ThemePreferences = {
-  themeName: string;
-};
+import { readPreferences, updatePreferences } from "../../lib/preferences";
 
 function getInitialTheme(): Theme {
-  try {
-    const preferences = JSON.parse(
-      readFileSync(THEME_PREFERENCES_PATH, "utf8"),
-    ) as Partial<ThemePreferences>;
-    const savedTheme = THEMES.find((theme) => theme.name === preferences.themeName);
-    return savedTheme ?? DEFAULT_THEME;
-  } catch {
-    return DEFAULT_THEME;
-  }
+  const savedTheme = THEMES.find((theme) => theme.name === readPreferences().themeName);
+  return savedTheme ?? DEFAULT_THEME;
 };
 
+// Merged into the shared preferences file, so changing the theme keeps the other settings.
 function persistTheme(theme: Theme) {
-  try {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(
-      THEME_PREFERENCES_PATH,
-      JSON.stringify({ themeName: theme.name } satisfies ThemePreferences, null, 2),
-      "utf8",
-    );
-  } catch {
-    // Ignore preference write failures so theme switching still works for this session.
-  }
+  updatePreferences({ themeName: theme.name });
 };
 
 type ThemeContextValue = {

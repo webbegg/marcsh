@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": "bun run --watch src/index.tsx",
-    "build": "bun build src/index.tsx --outdir dist --target bun"
+    "build": "bun build src/index.tsx --outdir dist --target bun",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -19,6 +20,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.319",
+    "@earendil-works/pi-agent-core": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@opentui/core": "^0.1.97",
     "@opentui/react": "^0.1.97",
     "date-fns": "^4.1.0",

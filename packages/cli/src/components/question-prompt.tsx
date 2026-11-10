@@ -6,7 +6,7 @@ import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
 import type { QuestionRequest } from "../hooks/use-chat";
-import { buildAnswer } from "../lib/sdk-messages";
+import { buildAnswer } from "../lib/ask-user-question";
 
 type Props = {
   request: QuestionRequest;

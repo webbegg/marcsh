@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,14 +18,15 @@ afterEach(() => {
 });
 
 describe("storage", () => {
-  test("creates a session with no messages and no Claude session yet", () => {
+  test("creates a Claude session with no messages and no engine session yet", () => {
     const storage = openStorage(":memory:");
 
     const session = storage.createSession({ title: "First", cwd: "/work" });
 
     expect(session.title).toBe("First");
     expect(session.cwd).toBe("/work");
-    expect(session.claudeSessionId).toBeNull();
+    expect(session.engine).toBe("claude");
+    expect(session.engineSessionRef).toBeNull();
     expect(session.messages).toEqual([]);
     expect(storage.getSession(session.id)).toEqual(session);
   });
@@ -35,7 +37,16 @@ describe("storage", () => {
     expect(storage.getSession("missing")).toBeNull();
   });
 
-  test("saves messages and the Claude session id", () => {
+  test("creates a session owned by the given engine", () => {
+    const storage = openStorage(":memory:");
+
+    const session = storage.createSession({ title: "Pi", cwd: "/work", engine: "pi" });
+
+    expect(session.engine).toBe("pi");
+    expect(storage.getSession(session.id)?.engine).toBe("pi");
+  });
+
+  test("saves messages and the engine session reference", () => {
     const storage = openStorage(":memory:");
     const session = storage.createSession({ title: "Chat", cwd: "/work" });
 
@@ -44,18 +55,132 @@ describe("storage", () => {
 
     const saved = storage.getSession(session.id);
     expect(saved?.messages).toEqual([userMessage]);
-    expect(saved?.claudeSessionId).toBe("claude-123");
+    expect(saved?.engineSessionRef).toBe("claude-123");
     expect(saved?.updatedAt).toEqual(new Date("2030-01-01T00:00:00Z"));
   });
 
-  test("keeps the stored Claude session id when none is given", () => {
+  test("keeps the stored engine session reference when none is given", () => {
     const storage = openStorage(":memory:");
     const session = storage.createSession({ title: "Chat", cwd: "/work" });
     storage.saveMessages(session.id, [], "claude-123");
 
     storage.saveMessages(session.id, [userMessage]);
 
-    expect(storage.getSession(session.id)?.claudeSessionId).toBe("claude-123");
+    expect(storage.getSession(session.id)?.engineSessionRef).toBe("claude-123");
+  });
+
+  describe("databases created before engines", () => {
+    function oldDatabase() {
+      const path = `${process.env.TMPDIR ?? "/tmp"}/marcsh-old-${crypto.randomUUID()}.db`;
+      const db = new Database(path, { create: true, strict: true });
+      db.run(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          claude_session_id TEXT,
+          messages TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      db.query(
+        `INSERT INTO sessions (id, title, cwd, claude_session_id, messages, created_at, updated_at)
+         VALUES ('old', 'Old chat', '/work', 'claude-old', $messages, 1, 2),
+                ('fresh', 'Never ran', '/work', NULL, '[]', 3, 4)`,
+      ).run({ messages: JSON.stringify([userMessage]) });
+      db.close();
+      return {
+        path,
+        claudeSessionId: (id: string) => {
+          const raw = new Database(path, { strict: true });
+          try {
+            return raw.query<{ claude_session_id: string | null }, { id: string }>("SELECT claude_session_id FROM sessions WHERE id = $id").get({ id })
+              ?.claude_session_id;
+          } finally {
+            raw.close();
+          }
+        },
+        cleanup: () => {
+          for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+        },
+      };
+    }
+
+    test("existing sessions belong to Claude and resume with their stored Claude session id", () => {
+      const old = oldDatabase();
+      try {
+        const storage = openStorage(old.path);
+
+        const session = storage.getSession("old");
+        expect(session?.engine).toBe("claude");
+        expect(session?.engineSessionRef).toBe("claude-old");
+        expect(session?.messages).toEqual([userMessage]);
+        expect(session?.title).toBe("Old chat");
+        expect(storage.getSession("fresh")?.engineSessionRef).toBeNull();
+        expect(storage.listSessions().map((s) => s.id)).toEqual(["fresh", "old"]);
+      } finally {
+        old.cleanup();
+      }
+    });
+
+    test("opening the database again keeps everything", () => {
+      const old = oldDatabase();
+      try {
+        openStorage(old.path).saveMessages("fresh", [], "claude-new");
+
+        const reopened = openStorage(old.path);
+        expect(reopened.getSession("old")?.engineSessionRef).toBe("claude-old");
+        expect(reopened.getSession("fresh")?.engineSessionRef).toBe("claude-new");
+      } finally {
+        old.cleanup();
+      }
+    });
+
+    test("Claude sessions still write the old column, so the previous marcsh can resume them after a rollback", () => {
+      const old = oldDatabase();
+      try {
+        const storage = openStorage(old.path);
+
+        storage.saveMessages("old", [userMessage], "claude-next");
+        storage.saveMessages("fresh", [userMessage], "claude-first");
+
+        expect(old.claudeSessionId("old")).toBe("claude-next");
+        expect(old.claudeSessionId("fresh")).toBe("claude-first");
+      } finally {
+        old.cleanup();
+      }
+    });
+
+    test("a Claude session continued by the previous marcsh after a rollback resumes from where it left off", () => {
+      const old = oldDatabase();
+      try {
+        openStorage(old.path).saveMessages("old", [userMessage], "claude-branch");
+        // The previous marcsh only knows the old column.
+        const previous = new Database(old.path, { strict: true });
+        previous.run("UPDATE sessions SET claude_session_id = 'claude-previous' WHERE id = 'old'");
+        previous.close();
+
+        expect(openStorage(old.path).getSession("old")?.engineSessionRef).toBe("claude-previous");
+      } finally {
+        old.cleanup();
+      }
+    });
+
+    test("other engines never write the Claude session id", () => {
+      const old = oldDatabase();
+      try {
+        const storage = openStorage(old.path);
+        const pi = storage.createSession({ title: "Pi", cwd: "/work", engine: "pi" });
+
+        storage.saveMessages(pi.id, [userMessage], "/sessions/pi.jsonl");
+
+        expect(storage.getSession(pi.id)?.engineSessionRef).toBe("/sessions/pi.jsonl");
+        expect(old.claudeSessionId(pi.id)).toBeNull();
+      } finally {
+        old.cleanup();
+      }
+    });
   });
 
   test("lists sessions most recently updated first, without messages", () => {
