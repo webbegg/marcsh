@@ -11,7 +11,9 @@ import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
+import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPiUiContext } from "./pi-ui";
+import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
 
 /** marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install. */
@@ -107,7 +109,7 @@ async function newSessionTools(pi: Pi, session: AgentSession, { cwd, agentDir, m
     resourceLoader,
   });
   const builtin = fresh.getActiveToolNames();
-  fresh.dispose();
+  await disposePiSession(fresh);
   // Opt-in extension tools (`defaultActive: false`) are on when the user's `defaultTools` names them.
   const namedByUser = new Set(pi.SettingsManager.create(cwd, agentDir).getDefaultTools() ?? []);
   const registered = session
@@ -132,9 +134,10 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * The pi engine. Each turn opens its own pi session (new, or the file named by `resumeRef`), prompts it
  * once, and disposes it when pi has settled.
  *
- * Every tool except pi's read-only ones and marcsh's `AskUserQuestion` asks through the host before it runs
- * (see `pi-permissions.ts`), and a `bash` command the branch/ship guard flags is blocked or always asked
- * (see `pi-guard.ts`). In plan mode the session only has the read-only tools and `AskUserQuestion`.
+ * Every tool except pi's read-only ones and marcsh's `AskUserQuestion` and `Task` asks through the host before
+ * it runs (see `pi-permissions.ts`), and a `bash` command the branch/ship guard flags is blocked or always asked
+ * (see `pi-guard.ts`). In plan mode the session only has the read-only tools, `AskUserQuestion` and `Task`.
+ * `Task` runs a child session in this process (see `pi-subagent.ts`) whose tool calls ask the same way.
  */
 export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const agentDir = options.agentDir ?? defaultPiAgentDir();
@@ -201,21 +204,39 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ? pi.SessionManager.create(cwd, options.sessionDir)
           : undefined;
       const settingsManager = pi.SettingsManager.create(cwd, agentDir);
+      const approval = {
+        cwd,
+        host,
+        rules: options.permissionRules ?? getStorage(),
+        signal: turnEnded.signal,
+        planMode: mode === Mode.PLAN,
+        guard: options.guard,
+      };
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
         agentDir,
         settingsManager,
         ...pluginResources,
         extensionFactories: [
-          createApprovalExtension({
-            cwd,
-            host,
-            rules: options.permissionRules ?? getStorage(),
-            signal: turnEnded.signal,
-            planMode: mode === Mode.PLAN,
-            guard: options.guard,
-          }),
+          // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
+          createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
+          createApprovalExtension(approval),
           createAskUserExtension({ host, signal: turnEnded.signal }),
+          // A child session has the parent turn's host, rules, guard and mode, so it asks the same way; in plan mode it only reads.
+          createSubagentExtension({
+            host,
+            signal: turnEnded.signal,
+            runChild: (request) =>
+              runChildSession(pi, {
+                ...request,
+                cwd,
+                agentDir,
+                models,
+                model: resolved,
+                extensions: [createApprovalExtension(approval)],
+                ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : {}),
+              }),
+          }),
         ],
       });
       await resourceLoader.reload();
@@ -229,8 +250,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         sessionManager,
         settingsManager,
         resourceLoader,
-        // Plan mode: only the read-only tools and the question tool exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL] } : {}),
+        // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL] } : {}),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name));
@@ -288,7 +309,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       .finally(() => {
         signal.removeEventListener("abort", interrupt);
         turnEnded.abort();
-        session?.dispose();
+        // Tells the extensions the session is over (MCP closes its servers then) before pi's dispose drops them.
+        return disposePiSession(session);
       });
 
     return { done, interrupt };
@@ -311,7 +333,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           agentDir,
           settingsManager,
           ...pluginResources,
-          extensionFactories: [commandLister.extension],
+          extensionFactories: [commandLister.extension, createMarcshMcpExtension(pi.createMcpExtension, agentDir)],
         });
         await resourceLoader.reload();
         const { session } = await pi.createAgentSession({
@@ -325,7 +347,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         try {
           save(toMenuCommands(normalizePiCommands(commandLister.list(), pluginPath)));
         } finally {
-          session.dispose();
+          await disposePiSession(session);
         }
       } catch {
         // Best effort: the menu keeps the last list it had.

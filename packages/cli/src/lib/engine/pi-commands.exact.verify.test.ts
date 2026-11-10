@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -10,7 +10,11 @@ import { createPiEngine } from "./pi";
 
 let dir: string, agentDir: string, cwd: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "marcsh-pi-plugin-exact-")); agentDir = join(dir, "agent"); cwd = join(dir, "project"); mkdirSync(cwd, { recursive: true }); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); rmSync(join(homedir(), ".agents"), { recursive: true, force: true }); });
+afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+// Bun caches os.homedir(), so this is usually the user's real HOME: the `~/.agents` clash case only runs when HOME is
+// a temp dir and has no `.agents` yet, and only then is the directory it created removed again.
+const homeAgents = join(homedir(), ".agents");
+const canUseHomeAgents = homedir().startsWith(tmpdir()) && !existsSync(homeAgents);
 const userTexts = (messages: Message[]) => messages.flatMap((m: any) => (m.role === "user" ? [typeof m.content === "string" ? m.content : m.content.map((b: any) => b.text ?? "").join("")] : []));
 
 async function send(prompt: string) {
@@ -54,7 +58,7 @@ test("reference vs clash, exact equality", async () => {
       expect(m.seen![0]).toBe(ref[`${mine}|${a}`]!);
     }
   }
-  for (const where of ["agentDir", "home .agents", "project .pi", "project .agents"]) {
+  for (const where of ["agentDir", ...(canUseHomeAgents ? ["home .agents"] : []), "project .pi", "project .agents"]) {
     const { skillRoot, promptRoot } = clash(where);
     for (const a of ARGS) {
       for (const mine of ["/marcsh:workflow", "/marcsh:feature"]) {
@@ -75,13 +79,19 @@ test("reference vs clash, exact equality", async () => {
       console.log(where, "user /feature ->", JSON.stringify(u.seen![0]));
       expect(u.seen![0]).toBe("USER TEMPLATE hello hello world");
     }
-    rmSync(join(agentDir), { recursive: true, force: true }); rmSync(join(cwd, ".pi"), { recursive: true, force: true }); rmSync(join(cwd, ".agents"), { recursive: true, force: true }); rmSync(join(homedir(), ".agents"), { recursive: true, force: true });
+    rmSync(join(agentDir), { recursive: true, force: true }); rmSync(join(cwd, ".pi"), { recursive: true, force: true }); rmSync(join(cwd, ".agents"), { recursive: true, force: true });
+    if (where === "home .agents") rmSync(homeAgents, { recursive: true, force: true });
   }
 }, 600000);
 
-test.skip("other forms (printout only)", async () => {
-  for (const p of ["/marcsh:nope x", "/marcsh:", "/marcsh:workflow\targs", "/marcsh:feature\nmulti", " /marcsh:feature x", "please /marcsh:feature x", "/marcsh:Feature x"]) {
+test("other forms: unknown, bare, mid-text, leading space and wrong case go to pi as typed; whitespace separators expand", async () => {
+  for (const p of ["/marcsh:nope x", "/marcsh:", " /marcsh:feature x", "please /marcsh:feature x", "/marcsh:Feature x"]) {
     const r = await send(p);
-    console.log("FORM", JSON.stringify(p), "->", JSON.stringify(r.seen?.[0]?.slice(0, 90)), r.errs.length ? JSON.stringify(r.errs) : "");
+    expect(r.seen).toEqual([p]);
+  }
+  for (const p of ["/marcsh:workflow\targs", "/marcsh:feature\nmulti"]) {
+    const r = await send(p);
+    expect(r.seen!.length).toBe(1);
+    expect(r.seen![0]!.startsWith("/marcsh:")).toBe(false);
   }
 }, 120000);

@@ -410,7 +410,7 @@ describe("pi engine permissions (S8)", () => {
 
     const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
 
-    expect(offered?.sort()).toEqual(["AskUserQuestion", "find", "grep", "ls", "read"]);
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
     expect(asks).toEqual([]);
     expect(existsSync(made())).toBe(false);
     expect(toolParts(reply)[0]?.state).toBe("error");
@@ -426,7 +426,7 @@ describe("pi engine permissions (S8)", () => {
 
     await runTurn(engine, model, { mode: Mode.BUILD });
 
-    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "AskUserQuestion"]));
+    expect(offered).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "AskUserQuestion", "Task"]));
   });
 
   test("aborting the turn while an approval is pending leaves the call unexecuted", async () => {
@@ -511,8 +511,8 @@ describe("pi engine plan and build turns on one session (S8)", () => {
     }
   }
 
-  const PLAN = ["AskUserQuestion", "find", "grep", "ls", "read"];
-  const BUILD = ["AskUserQuestion", "bash", "edit", "read", "write"];
+  const PLAN = ["AskUserQuestion", "Task", "find", "grep", "ls", "read"];
+  const BUILD = ["AskUserQuestion", "Task", "bash", "edit", "read", "write"];
 
   test("plan, build, plan, build: each turn offers its mode's tools", async () => {
     const { offered, steps } = recording(5);
@@ -546,7 +546,7 @@ export default function (pi) {
 
     await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
 
-    expect(offered).toEqual([["AskUserQuestion", "bash", "ext_tool", "read"], PLAN, ["AskUserQuestion", "bash", "ext_tool", "read"]]);
+    expect(offered).toEqual([["AskUserQuestion", "Task", "bash", "ext_tool", "read"], PLAN, ["AskUserQuestion", "Task", "bash", "ext_tool", "read"]]);
   });
 });
 
@@ -1354,4 +1354,447 @@ describe("pi commands (S11)", () => {
     expect(existsSync(join(agentDir, "prompts"))).toBe(false);
     expect(existsSync(join(agentDir, "skills"))).toBe(false);
   });
+});
+
+describe("pi engine subagents (S13)", () => {
+  const taskCall = (description: string, prompt: string, id = "task-1") =>
+    fauxAssistantMessage([fauxToolCall("Task", { description, prompt }, { id })], { stopReason: "toolUse" });
+  const taskParts = (reply: ChatMessage) => reply.parts.flatMap((p) => (p.type === "task" ? [p] : []));
+  const userTexts = (messages: Message[]) =>
+    messages.flatMap((m) => (m.role === "user" ? [typeof m.content === "string" ? m.content : m.content.map((b) => ("text" in b ? b.text : "")).join("")] : []));
+  const made = () => join(cwd, "made.txt");
+
+  // A child step that records what its session was offered and sent, then answers with `text`.
+  function child(text = "child answer") {
+    const seen: { tools: string[]; user: string[]; model: string }[] = [];
+    const step: FauxResponseStep = (context, _options, _state, model) => {
+      seen.push({ tools: offeredTools(context.messages).sort(), user: userTexts(context.messages), model: model.id });
+      return fauxAssistantMessage([fauxText(text)]);
+    };
+    return { seen, step };
+  }
+
+  test("Task runs a child session in the same project and returns its final text as the tool result, with no approval", async () => {
+    const kid = child("The answer is 42.");
+    const { seen, step } = reading();
+    const { engine, model } = await setup([taskCall("Find the answer", "What is 6 times 7?"), kid.step, step]);
+    const { asks, host } = answering("deny");
+
+    const { reply, errors } = await runTurn(engine, model, {}, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(kid.seen).toHaveLength(1);
+    expect(kid.seen[0]?.user).toEqual(["What is 6 times 7?"]);
+    expect(seen[0]).toEqual(["The answer is 42."]);
+    expect(toolParts(reply).map((t) => [t.toolCallId, t.toolName, t.state])).toEqual([["task-1", "Task", "done"]]);
+  });
+
+  test("the child uses the parent turn's model", async () => {
+    const kid = child();
+    const { engine, model } = await setup([taskCall("Check model", "go"), kid.step, fauxAssistantMessage([fauxText("ok")])]);
+
+    await runTurn(engine, model);
+
+    expect(kid.seen[0]?.model).toBe("faux-1");
+  });
+
+  test("the child has pi's default tools but no Task, no AskUserQuestion and none of the user's extension tools", async () => {
+    writeExtension("ext-tool", `pi.registerTool({ name: "ext_tool", label: "x", description: "x", parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "x" }] }; } });`);
+    let parentTools: string[] = [];
+    const first: FauxResponseStep = (context) => {
+      parentTools = offeredTools(context.messages).sort();
+      return taskCall("Look around", "go");
+    };
+    const kid = child();
+    const { engine, model } = await setup([first, kid.step, fauxAssistantMessage([fauxText("ok")])]);
+
+    await runTurn(engine, model);
+
+    expect(parentTools).toEqual(["AskUserQuestion", "Task", "bash", "edit", "ext_tool", "read", "write"]);
+    expect(kid.seen[0]?.tools).toEqual(["bash", "edit", "read", "write"]);
+  });
+
+  test("the parent reply gets a task line: running with the description first, then completed with the summary and usage", async () => {
+    writeFileSync(join(cwd, "notes.txt"), "contents");
+    const kid = child("Found the notes.");
+    const reads = fauxAssistantMessage([fauxToolCall("read", { path: join(cwd, "notes.txt") }, { id: "child-read" })], { stopReason: "toolUse" });
+    const { engine, model } = await setup([taskCall("Read the notes", "go"), reads, kid.step, fauxAssistantMessage([fauxText("ok")])]);
+
+    const running = start(engine, model);
+    await running.turn.done;
+
+    let reply = emptyReply();
+    const snapshots: ChatMessage[] = [];
+    for (const event of running.events) {
+      if (event.type !== "reply") continue;
+      reply = event.update(reply);
+      snapshots.push(reply);
+    }
+    const lines = snapshots.flatMap((snapshot) => taskParts(snapshot)).map((task) => [task.status, task.description, task.lastToolName, task.toolUses]);
+    expect(lines[0]).toEqual(["running", "Read the notes", undefined, undefined]);
+    expect(lines).toContainEqual(["running", "Read the notes", "read", 1]);
+    const [task] = taskParts(reply);
+    expect(taskParts(reply)).toHaveLength(1);
+    expect(task).toMatchObject({ type: "task", taskId: "task-1", description: "Read the notes", status: "completed", summary: "Found the notes.", toolUses: 1, lastToolName: "read" });
+    expect(task?.totalTokens).toBeGreaterThan(0);
+  });
+
+  test("the child's own tool calls never appear in the parent reply", async () => {
+    writeFileSync(join(cwd, "notes.txt"), "contents");
+    const reads = fauxAssistantMessage([fauxToolCall("read", { path: join(cwd, "notes.txt") }, { id: "child-read" })], { stopReason: "toolUse" });
+    const { engine, model } = await setup([taskCall("Read the notes", "go"), reads, fauxAssistantMessage([fauxText("child done")]), fauxAssistantMessage([fauxText("parent done")])]);
+
+    const { reply } = await runTurn(engine, model);
+
+    expect(toolParts(reply).map((t) => t.toolCallId)).toEqual(["task-1"]);
+    expect(reply.parts.some((p) => p.type === "text" && p.text === "child done")).toBe(false);
+    expect(reply.parts.at(-1)).toEqual({ type: "text", text: "parent done" });
+  });
+
+  test("the child leaves no session file of its own", async () => {
+    const { engine, model } = await setup([taskCall("Quick", "go"), fauxAssistantMessage([fauxText("child")]), fauxAssistantMessage([fauxText("parent")])]);
+
+    await runTurn(engine, model);
+
+    const files = [...new Bun.Glob("**/*.jsonl").scanSync(agentDir)];
+    expect(files).toHaveLength(1);
+  });
+
+  describe("approvals from the child", () => {
+    test("a child's bash call asks the user through the turn's host, and a denial stops it", async () => {
+      const { seen, step } = reading();
+      const { engine, model } = await setup([taskCall("Make a file", "go"), bashCall(`echo hi > ${made()}`, "child-bash"), fauxAssistantMessage([fauxText("gave up")]), step]);
+      const { asks, host } = answering("deny");
+
+      const { reply, errors } = await runTurn(engine, model, {}, host);
+
+      expect(errors).toEqual([]);
+      expect(asks).toEqual([{ toolName: "bash", input: { command: `echo hi > ${made()}` } }]);
+      expect(existsSync(made())).toBe(false);
+      expect(taskParts(reply)[0]?.status).toBe("completed");
+      expect(seen[0]).toEqual(["gave up"]);
+    });
+
+    test("allow runs the child's command", async () => {
+      const { engine, model } = await setup([taskCall("Make a file", "go"), bashCall(`echo hi > ${made()}`, "child-bash"), fauxAssistantMessage([fauxText("made it")]), fauxAssistantMessage([fauxText("ok")])]);
+      const { asks, host } = answering("allow");
+
+      await runTurn(engine, model, {}, host);
+
+      expect(asks).toHaveLength(1);
+      expect(existsSync(made())).toBe(true);
+    });
+
+    test("always from the child stores the same rule the parent would, so the next child does not ask again", async () => {
+      const command = `echo hi > ${made()}`;
+      const { engine, model, permissionRules } = await setup([
+        taskCall("Make a file", "go"),
+        bashCall(command, "child-bash"),
+        fauxAssistantMessage([fauxText("made it")]),
+        taskCall("Make it again", "go", "task-2"),
+        bashCall(command, "child-bash-2"),
+        fauxAssistantMessage([fauxText("made it again")]),
+        fauxAssistantMessage([fauxText("ok")]),
+      ]);
+      const { asks, host } = answering("always");
+
+      await runTurn(engine, model, {}, host);
+
+      expect(permissionRules.hasPermissionRule({ cwd, toolName: "bash", command })).toBe(true);
+      expect(asks).toHaveLength(1);
+    });
+
+    test("the branch/ship guard applies: a command it denies is blocked with its reason and never asked", async () => {
+      const guard = (command: string) => (command.includes("forbidden") ? { decision: "deny" as const, reason: "guard says no" } : null);
+      const { seen, step } = reading();
+      const sawResult: string[][] = [];
+      const afterBlocked: FauxResponseStep = (context) => {
+        sawResult.push(toolResultTexts(context.messages));
+        return fauxAssistantMessage([fauxText("blocked")]);
+      };
+      const { engine, model } = await setup([taskCall("Try it", "go"), bashCall(`touch ${made()}; forbidden`, "child-bash"), afterBlocked, step], undefined, { guard });
+      const { asks, host } = answering("allow");
+
+      await runTurn(engine, model, {}, host);
+
+      expect(asks).toEqual([]);
+      expect(existsSync(made())).toBe(false);
+      expect(sawResult[0]?.[0]).toContain("guard says no");
+      expect(seen[0]).toEqual(["blocked"]);
+    });
+
+    test("a child's ask is declined, and its command never runs, when the turn is interrupted while the prompt is open", async () => {
+      let asked: () => void = () => {};
+      const pending = new Promise<void>((resolve) => (asked = resolve));
+      const { engine, model } = await setup([taskCall("Make a file", "go"), bashCall(`echo hi > ${made()}`, "child-bash"), fauxAssistantMessage([fauxText("ok")])]);
+      const running = start(engine, model, {}, {
+        askPermission: (_ask, signal) =>
+          new Promise<PermissionDecision>((resolve) => {
+            asked();
+            signal.addEventListener("abort", () => resolve("deny"), { once: true });
+          }),
+      });
+
+      await pending;
+      running.controller.abort();
+      await running.turn.done;
+
+      expect(existsSync(made())).toBe(false);
+      expect(summarize(running.events).errors).toEqual([]);
+    });
+  });
+
+  describe("plan mode", () => {
+    test("the parent offers Task with the read-only tools, runs it without asking, and the child only gets the read-only tools", async () => {
+      let parentTools: string[] = [];
+      const first: FauxResponseStep = (context) => {
+        parentTools = offeredTools(context.messages).sort();
+        return taskCall("Survey the code", "go");
+      };
+      const kid = child("surveyed");
+      const { seen, step } = reading();
+      const { engine, model } = await setup([first, kid.step, step]);
+      const { asks, host } = answering("allow");
+
+      const { reply, errors } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+      expect(errors).toEqual([]);
+      expect(parentTools).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
+      expect(kid.seen[0]?.tools).toEqual(["find", "grep", "ls", "read"]);
+      expect(asks).toEqual([]);
+      expect(seen[0]).toEqual(["surveyed"]);
+      expect(taskParts(reply)[0]?.status).toBe("completed");
+    });
+
+    test("a plan-mode child cannot run bash: the call fails without asking", async () => {
+      const { engine, model } = await setup([taskCall("Sneak", "go"), bashCall(`echo hi > ${made()}`, "child-bash"), fauxAssistantMessage([fauxText("could not")]), fauxAssistantMessage([fauxText("ok")])]);
+      const { asks, host } = answering("allow");
+
+      await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+      expect(asks).toEqual([]);
+      expect(existsSync(made())).toBe(false);
+    });
+  });
+
+  describe("an extension tool named Task", () => {
+    const marker = () => join(cwd, "ext-task-ran.txt");
+    const shadow = () =>
+      writeExtension(
+        "task",
+        `pi.registerTool({ name: "Task", label: "t", description: "an extension's own tool", parameters: Type.Object({}), async execute() { require("node:fs").writeFileSync(${JSON.stringify(marker())}, "ran"); return { content: [{ type: "text", text: "ext ran" }] }; } });`,
+      );
+
+    test("is not marcsh's: it asks in build mode, and a denial keeps it from running", async () => {
+      shadow();
+      const { engine, model } = await setup([fauxAssistantMessage([fauxToolCall("Task", {}, { id: "t" })], { stopReason: "toolUse" }), fauxAssistantMessage([fauxText("ok")])]);
+      const { asks, host } = answering("deny");
+
+      const { reply } = await runTurn(engine, model, {}, host);
+
+      expect(asks.map((a) => a.toolName)).toEqual(["Task"]);
+      expect(existsSync(marker())).toBe(false);
+      expect(taskParts(reply)).toEqual([]);
+      expect(toolParts(reply)[0]?.errorText).toContain("The user denied this tool call.");
+    });
+
+    test("is blocked in plan mode without asking, even with a stored rule", async () => {
+      shadow();
+      const { engine, model, permissionRules } = await setup([fauxAssistantMessage([fauxToolCall("Task", {}, { id: "t" })], { stopReason: "toolUse" }), fauxAssistantMessage([fauxText("ok")])]);
+      permissionRules.addPermissionRule({ cwd, toolName: "Task" });
+      const { asks, host } = answering("allow");
+
+      const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+      expect(asks).toEqual([]);
+      expect(existsSync(marker())).toBe(false);
+      expect(toolParts(reply)[0]?.state).toBe("error");
+    });
+  });
+
+  test("a child error is a tool error in the parent and fails the task line, without failing the turn", async () => {
+    const { seen, step } = reading();
+    const failing = fauxAssistantMessage([], { stopReason: "error", errorMessage: "child exploded" });
+    const { engine, model } = await setup([taskCall("Doomed", "go"), failing, step]);
+
+    const { reply, errors } = await runTurn(engine, model);
+
+    expect(errors).toEqual([]);
+    const [tool] = toolParts(reply);
+    expect(tool?.state).toBe("error");
+    expect(tool?.errorText).toContain("child exploded");
+    expect(taskParts(reply)[0]).toMatchObject({ status: "failed", error: expect.stringContaining("child exploded") });
+    expect(seen[0]?.[0]).toContain("child exploded");
+  });
+
+  test("a secret in a child's error is redacted", async () => {
+    const failing = fauxAssistantMessage([], { stopReason: "error", errorMessage: "401 Authorization: Bearer sk-ant-api03-SECRETSECRETSECRET1234" });
+    const { engine, model } = await setup([taskCall("Doomed", "go"), failing, fauxAssistantMessage([fauxText("ok")])]);
+
+    const { reply } = await runTurn(engine, model);
+
+    expect(JSON.stringify(reply)).not.toContain("SECRETSECRET");
+    expect(taskParts(reply)[0]?.status).toBe("failed");
+  });
+
+  test("interrupting the turn aborts the child, ends the turn quietly, and leaves the task stopped", async () => {
+    const hanging = hangingResponse();
+    const { engine, model } = await setup([taskCall("Slow work", "go"), hanging.step]);
+
+    const running = start(engine, model);
+    await hanging.started;
+    running.turn.interrupt();
+    await running.turn.done;
+
+    const { reply, errors } = summarize(running.events);
+    expect(errors).toEqual([]);
+    expect(taskParts(reply)).toHaveLength(1);
+    expect(taskParts(reply)[0]).toMatchObject({ description: "Slow work", status: "stopped" });
+  });
+
+  test("aborting the request signal aborts the child too", async () => {
+    const hanging = hangingResponse();
+    const { engine, model } = await setup([taskCall("Slow work", "go"), hanging.step]);
+
+    const running = start(engine, model);
+    await hanging.started;
+    running.controller.abort();
+    await running.turn.done;
+
+    expect(summarize(running.events).errors).toEqual([]);
+    expect(taskParts(summarize(running.events).reply)[0]?.status).toBe("stopped");
+  });
+
+  test("parallel Task calls in one message each run a child and get their own task line", async () => {
+    const answerWithPrompt: FauxResponseStep = (context) => fauxAssistantMessage([fauxText(`done: ${userTexts(context.messages)[0]}`)]);
+    const both = fauxAssistantMessage(
+      [fauxToolCall("Task", { description: "First job", prompt: "one" }, { id: "task-a" }), fauxToolCall("Task", { description: "Second job", prompt: "two" }, { id: "task-b" })],
+      { stopReason: "toolUse" },
+    );
+    const { seen, step } = reading();
+    const { engine, model } = await setup([both, answerWithPrompt, answerWithPrompt, step]);
+
+    const { reply, errors } = await runTurn(engine, model);
+
+    expect(errors).toEqual([]);
+    expect(taskParts(reply).map((t) => [t.taskId, t.description, t.status, t.summary])).toEqual([
+      ["task-a", "First job", "completed", "done: one"],
+      ["task-b", "Second job", "completed", "done: two"],
+    ]);
+    expect(seen[0]?.sort()).toEqual(["done: one", "done: two"]);
+    expect(toolParts(reply).map((t) => t.toolCallId)).toEqual(["task-a", "task-b"]);
+  });
+
+  test("a prompt that starts with a slash is the child's text, not a command", async () => {
+    const kid = child();
+    const { engine, model } = await setup([taskCall("Odd prompt", "/skill:nothing hello"), kid.step, fauxAssistantMessage([fauxText("ok")])]);
+
+    await runTurn(engine, model);
+
+    expect(kid.seen[0]?.user).toEqual(["/skill:nothing hello"]);
+  });
+});
+
+describe("pi user extensions (S14)", () => {
+  const marker = () => join(cwd, "fixture-ran.txt");
+  const locations = [
+    ["the marcsh agent dir (<agentDir>/extensions)", () => join(agentDir, "extensions")],
+    ["the project (<project>/.pi/extensions)", () => join(cwd, ".pi", "extensions")],
+  ] as const;
+  const fixtureCall = fauxAssistantMessage([fauxToolCall("fixture_tool", { text: "hi" }, { id: "fx-1" })], { stopReason: "toolUse" });
+
+  for (const [label, where] of locations) {
+    describe(`an extension in ${label}`, () => {
+      beforeEach(() => {
+        mkdirSync(where(), { recursive: true });
+        writeFileSync(
+          join(where(), "fixture.ts"),
+          `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "fixture_tool", label: "fixture", description: "A fixture tool", parameters: Type.Object({ text: Type.String() }),
+    async execute(_id, params) { require("node:fs").writeFileSync(${JSON.stringify(marker())}, params.text); return { content: [{ type: "text", text: "fixture ran: " + params.text }] }; } });
+  pi.registerCommand("fixture-cmd", { description: "A fixture command", handler: async () => {} });
+}
+`,
+        );
+      });
+
+      test("loads and offers its tool to the model", async () => {
+        let offered: string[] = [];
+        const step: FauxResponseStep = (context) => {
+          offered = offeredTools(context.messages);
+          return fauxAssistantMessage([fauxText("ok")]);
+        };
+        const { engine, model } = await setup([step]);
+
+        const { errors } = await runTurn(engine, model);
+
+        expect(errors).toEqual([]);
+        expect(offered).toContain("fixture_tool");
+      });
+
+      test("its tool goes through marcsh's approval: it asks with the tool and input, and runs on allow", async () => {
+        const { seen, step } = reading();
+        const { engine, model } = await setup([fixtureCall, step]);
+        const { asks, host } = answering("allow");
+
+        const { reply } = await runTurn(engine, model, {}, host);
+
+        expect(asks).toEqual([{ toolName: "fixture_tool", input: { text: "hi" } }]);
+        expect(readFileSync(marker(), "utf8")).toBe("hi");
+        expect(toolParts(reply).map((t) => [t.toolName, t.state])).toEqual([["fixture_tool", "done"]]);
+        expect(seen[0]).toEqual(["fixture ran: hi"]);
+      });
+
+      test("its tool is blocked on deny, and the model is told", async () => {
+        const { seen, step } = reading();
+        const { engine, model } = await setup([fixtureCall, step]);
+        const { asks, host } = answering("deny");
+
+        const { reply } = await runTurn(engine, model, {}, host);
+
+        expect(asks).toHaveLength(1);
+        expect(existsSync(marker())).toBe(false);
+        expect(toolParts(reply)[0]?.state).toBe("error");
+        expect(seen[0]?.[0]).toContain("The user denied this tool call.");
+      });
+
+      test("its tool is neither offered nor callable in plan mode, and never asks", async () => {
+        let offered: string[] = [];
+        const step: FauxResponseStep = (context) => {
+          offered = offeredTools(context.messages);
+          return fixtureCall;
+        };
+        const { engine, model } = await setup([step, fauxAssistantMessage([fauxText("ok")])]);
+        const { asks, host } = answering("allow");
+
+        const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
+
+        expect(offered).not.toContain("fixture_tool");
+        expect(asks).toEqual([]);
+        expect(existsSync(marker())).toBe(false);
+        expect(toolParts(reply)[0]?.state).toBe("error");
+      });
+
+      test("its command appears in the / menu list as an extension command", async () => {
+        const { engine } = await setup([]);
+        const saved: Parameters<Parameters<Engine["warmUpCommands"]>[0]["save"]>[0][] = [];
+
+        await engine.warmUpCommands({ cwd, save: (commands) => saved.push(commands) });
+
+        expect(saved).toHaveLength(1);
+        expect(saved[0]!.find((command) => command.name === "fixture-cmd")).toMatchObject({ source: "extension", description: "A fixture command" });
+      });
+
+      test("its command runs when typed, with no model call", async () => {
+        const { engine, faux, model } = await setup([fauxAssistantMessage([fauxText("unused")])]);
+
+        const { errors } = await runTurn(engine, model, { prompt: "/fixture-cmd" });
+
+        expect(errors).toEqual([]);
+        expect(faux.state.callCount).toBe(0);
+      });
+    });
+  }
 });
