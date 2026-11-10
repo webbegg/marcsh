@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -285,7 +285,9 @@ describe("typing during a pi turn (S4)", () => {
     expect(frame()).not.toContain("zzz");
     expect(frame()).toContain("Allow");
 
-    // The prompt answers to its own keys, then the input is back with the draft intact.
+    // It opened while the user was composing, so it is locked until ↓; then it answers to its own keys, and the input is back with the draft intact.
+    expect(frame()).toContain("press ↓ to answer");
+    await act(async () => screen!.mockInput.pressArrow("down"));
     await settle(400);
     await press("y");
     const done = await frameContaining("all done");
@@ -326,4 +328,44 @@ describe("an engine without steer keeps today's behavior (S4)", () => {
     release.resolve();
     await settle(100);
   }, 30000);
+});
+
+// B2: pi's session shutdown (an extension or MCP server closing) runs after the answer, while the turn still counts as running.
+describe("after pi has settled (S4)", () => {
+  test("the turn stops advertising steering, a draft stays in the input, and it can be sent once the turn ends", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "slow-shutdown.ts"),
+      `export default function (pi: any) { pi.on("session_shutdown", async () => { await new Promise((r) => setTimeout(r, 1500)); }); }\n`,
+    );
+    const first = gated(() => [fauxText("first answer")]);
+    const { faux } = await openPiSession([first.step, fauxAssistantMessage([fauxText("second answer")])]);
+    await first.started;
+
+    await type("late words");
+    expect(frame()).toContain("enter steers");
+    first.release();
+
+    // The answer is in and pi is shutting down: no steering is offered, and Enter does not send the draft anywhere.
+    const closing = await frameContaining("turn ending");
+    expect(closing).toContain("first answer");
+    expect(closing).not.toContain("enter steers");
+    expect(closing).toContain("late words");
+    await enter();
+    await enter({ meta: true });
+    expect(frame()).toContain("late words");
+    expect(frame()).not.toContain("pending");
+    expect(frame()).not.toContain("queued");
+    expect(faux.state.callCount).toBe(1);
+
+    // Once the turn is over the draft is sent as the next prompt.
+    await frameWithout("turn ending", 15000);
+    expect(frame()).toContain("late words");
+    expect(frame()).not.toContain("enter steers");
+    await enter();
+    const done = await frameContaining("second answer");
+    expect(done).toContain("second answer");
+    expect(faux.state.callCount).toBe(2);
+    expect(occurrences(done, "late words")).toBe(1);
+  }, 40000);
 });

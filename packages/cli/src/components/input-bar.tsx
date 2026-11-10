@@ -25,6 +25,7 @@ import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
+import { clearKeyActivity, noteKeyActivity, setDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -271,15 +272,23 @@ type Props = {
 };
 
 /**
- * Typing during a turn. `active` while the running turn takes input (a pi session): Enter then steers it (the screen's
- * `onSubmit`), and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
- * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead.
+ * Typing during a turn. `active` while the running turn takes input (a pi session): Enter then steers it through `steer`,
+ * and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
+ * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead. Each returns false when the turn did not
+ * take the text (it is over, or was interrupted): the text then stays in the input. `closed` once the turn has settled and
+ * is only winding down: the input is off and says so.
  */
-export type TurnInput = { active: boolean; queue: (text: string) => void };
+export type TurnInput = { active: boolean; closed?: boolean; steer: (text: string) => boolean; queue: (text: string) => boolean };
 
-export const TurnInputContext = createContext<TurnInput>({ active: false, queue: () => {} });
+export const TurnInputContext = createContext<TurnInput>({ active: false, steer: () => false, queue: () => false });
 
 const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
+
+function turnHint(turnInput: TurnInput, disabled: boolean): string | undefined {
+  if (turnInput.active && !disabled) return "enter steers · alt+enter queues";
+  if (turnInput.closed) return "turn ending · no more steers";
+  return undefined;
+}
 
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
@@ -370,9 +379,20 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     const text = textarea.plainText;
 
+    setDraft(renderer, text.length > 0);
     handleContentChange(textarea.plainText);
     syncMentionMenu(text, textarea.cursorOffset);
-  }, [handleContentChange, syncMentionMenu]);
+  }, [handleContentChange, syncMentionMenu, renderer]);
+
+  // A prompt that opens while the user is composing here opens locked (see prompt-lock); a new bar starts with nothing typed.
+  useEffect(() => {
+    setDraft(renderer, false);
+    clearKeyActivity(renderer);
+    return () => {
+      setDraft(renderer, false);
+      clearKeyActivity(renderer);
+    };
+  }, [renderer]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
   useEffect(() => {
@@ -457,8 +477,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     // While a turn takes input, `/queue <text>` queues like Alt+Enter does.
     const queuedByCommand = turnInput.active ? QUEUE_COMMAND.exec(text) : null;
     if (queuedByCommand) {
-      turnInput.queue(queuedByCommand[1]!.trim());
-      textarea.setText("");
+      if (turnInput.queue(queuedByCommand[1]!.trim())) {
+        clearKeyActivity(renderer);
+        textarea.setText("");
+      }
       return;
     }
 
@@ -469,10 +491,12 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return;
     }
 
-    if (queue && turnInput.active) turnInput.queue(text);
-    else onSubmit(text);
+    // A turn that is over takes nothing: the text stays in the input, to be sent once the turn ends.
+    if (turnInput.active && !(queue ? turnInput.queue(text) : turnInput.steer(text))) return;
+    if (!turnInput.active) onSubmit(text);
+    clearKeyActivity(renderer);
     textarea.setText("");
-  }, [disabled, onSubmit, handleCommand, turnInput])
+  }, [disabled, onSubmit, handleCommand, turnInput, renderer])
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
@@ -536,6 +560,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   useKeyboard((key) => {
     if (disabled) return;
     if (!isTopLayer("base")) return;
+    // Keys typed here mean the user is composing; Enter sends, and Esc and Tab are not typing.
+    const sends = (key.name === "return" || key.name === "enter") && !key.shift;
+    if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
       toggleMode();
@@ -668,7 +695,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} hint={turnInput.active && !disabled ? "enter steers · alt+enter queues" : undefined} />
+          <StatusBar engine={engineId} hint={turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>

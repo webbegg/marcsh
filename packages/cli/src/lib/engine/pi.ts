@@ -15,7 +15,7 @@ import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from 
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
-import type { Engine, EngineEvent, EngineTurn, TurnHost, TurnRequest } from "./types";
+import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -268,6 +268,14 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     // Typed before the prompt reached pi: held until it did, in the order typed.
     let promptSent = false;
     const early: Array<{ kind: "steer" | "followUp"; text: string }> = [];
+    // Set once pi has settled (its prompt resolved and nothing is queued): the session shutdown that follows can take seconds,
+    // and a steer or follow-up accepted then would be shown as pending and never sent.
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      host.emit({ type: "input-closed" });
+    };
 
     const interrupt = () => {
       aborted = true;
@@ -288,6 +296,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
 
     const queueInput = async (kind: "steer" | "followUp", text: string) => {
       if (aborted) return;
+      if (settled) throw new TurnClosedError();
       if (!session || !promptSent) {
         early.push({ kind, text });
         return;
@@ -295,6 +304,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       await (kind === "steer" ? session.steer(text) : session.followUp(text));
       // An interrupt that came while pi was taking the text cleared the queues before it was in them.
       if (aborted) session.clearQueue();
+      // pi settled while it was taking the text: nothing is left to send it.
+      else if (settled) {
+        session.clearQueue();
+        throw new TurnClosedError();
+      }
     };
 
     const run = async () => {
@@ -426,7 +440,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         }
         await sending;
         await session.waitForIdle();
-        // A message typed as the run was ending was queued too late for pi to pick it up: it runs as a turn of its own.
+        // A message typed as the run was ending was queued too late for pi to pick it up: it runs as a turn of its own
+        // (a follow-up still unsent when pi goes idle is sent the same way, not lost).
         while (!aborted && session.pendingMessageCount > 0) {
           const { steering, followUp } = session.clearQueue();
           for (const text of [...steering, ...followUp]) {
@@ -436,6 +451,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           }
         }
       } finally {
+        settle();
         feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });
       }
@@ -448,6 +464,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       .catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         signal.removeEventListener("abort", interrupt);
+        settle();
         turnEnded.abort();
         feed.close();
         // Tells the extensions the session is over (MCP closes its servers then) before pi's dispose drops them.

@@ -9,7 +9,7 @@ import { Mode } from "../modes";
 import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
 import { trustEveryProject } from "./test-trust";
-import type { EngineEvent, TurnHost } from "./types";
+import { TurnClosedError, type EngineEvent, type TurnHost } from "./types";
 
 let dir: string;
 let agentDir: string;
@@ -237,5 +237,52 @@ describe("a pi turn takes steers and follow-ups (S4)", () => {
     expect(delivered(running.events)).toEqual([]);
     expect(second.contexts).toEqual([]);
     expect(faux.state.callCount).toBeLessThanOrEqual(1);
+  }, 20000);
+
+  // B2: pi's session shutdown can take seconds after the answer; a text accepted then would be shown as pending and never sent.
+  test("once pi has settled, the host is told the turn takes no more input, and steers and follow-ups are refused", async () => {
+    const first = recording("first answer");
+    const second = recording("never asked");
+    const { engine, faux, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await running.turn.done;
+    await sleep(50);
+
+    expect(running.events.filter((e) => e.type === "input-closed")).toHaveLength(1);
+    await expect(running.turn.steer!("too late")).rejects.toBeInstanceOf(TurnClosedError);
+    await expect(running.turn.followUp!("too late")).rejects.toBeInstanceOf(TurnClosedError);
+    await sleep(50);
+    expect(faux.state.callCount).toBe(1);
+    expect(second.contexts).toEqual([]);
+    expect(delivered(running.events)).toEqual([]);
+  }, 20000);
+
+  test("input closes before the answer is final, so no steer is taken between the last reply and the end", async () => {
+    const first = recording("first answer");
+    const { engine, model } = await setup([first.step]);
+
+    const running = begin(engine, model);
+    await running.turn.done;
+
+    const closedAt = running.events.findIndex((e) => e.type === "input-closed");
+    const finalReplyAt = running.events.findLastIndex((e) => e.type === "reply");
+    expect(closedAt).toBeGreaterThanOrEqual(0);
+    expect(closedAt).toBeLessThan(finalReplyAt);
+  }, 20000);
+
+  test("a follow-up still unsent when pi goes idle is sent as the next prompt, not lost", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await first.started;
+    await running.turn.followUp!("after the answer");
+    first.release();
+    await running.turn.done;
+
+    expect(second.contexts[0]).toEqual(["hello", "after the answer"]);
+    expect(delivered(running.events)).toEqual([{ kind: "followUp", text: "after the answer" }]);
   }, 20000);
 });

@@ -7,6 +7,7 @@ import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
 import type { QuestionRequest } from "../hooks/use-chat";
 import { buildAnswer } from "../lib/ask-user-question";
+import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
 
 type Props = {
   request: QuestionRequest;
@@ -18,6 +19,7 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const inputRef = useRef<InputRenderable>(null);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -49,6 +51,16 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
 
   useKeyboard((key) => {
     const chord = key.ctrl || key.meta || key.option || key.super || key.hyper;
+
+    // Opened while the user was composing: nothing answers it until ↓, then the rules below apply from a fresh quiet window.
+    if (lock.isLocked()) {
+      if (key.name === "down" && isTopLayer("base") && !chord) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
+      return;
+    }
 
     if (typing) {
       if (!isTopLayer("base") || chord) return;
@@ -130,7 +142,9 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
           ))}
           <text>o Other (type an answer)</text>
           <text attributes={TextAttributes.DIM}>
-            {!quiet
+            {lock.locked
+              ? `${LOCKED_LINE} · Esc declines`
+              : !quiet
               ? "waiting for typing to stop…"
               : question.multiSelect
                 ? "numbers toggle · Enter confirms · Esc declines"

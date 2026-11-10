@@ -84,7 +84,7 @@ function SessionChat({
     }),
     [toast],
   );
-  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, error, pendingRequest } = useChat(session, engine, chatOptions);
+  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest } = useChat(session, engine, chatOptions);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -124,7 +124,11 @@ function SessionChat({
 
   // A turn that takes input (pi) keeps the input on; an approval, question or dialog still takes every key, so the input is off while one is open.
   const typingDuringTurn = busy && canSteer;
-  const turnInput = useMemo(() => ({ active: typingDuringTurn && !pendingRequest, queue: followUp }), [typingDuringTurn, pendingRequest, followUp]);
+  // Once the engine has settled the turn takes no more text (`inputClosed`): the input is off, a draft stays in it, and it can be sent when the turn ends.
+  const turnInput = useMemo(
+    () => ({ active: typingDuringTurn && !pendingRequest, closed: busy && inputClosed, steer, queue: followUp }),
+    [typingDuringTurn, pendingRequest, busy, inputClosed, steer, followUp],
+  );
 
   // Show the pi model in use (the saved one may need a fallback) before the first prompt.
   useEffect(() => {
