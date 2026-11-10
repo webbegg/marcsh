@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -251,6 +251,37 @@ describe("createPiEngine", () => {
     const { errors } = await runTurn(engine, model);
 
     expect(errors).toEqual(["provider exploded"]);
+  });
+
+  test("redacts keys and bearer tokens a provider error echoes", async () => {
+    const { engine, model } = await setup([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "401 invalid x-api-key sk-ant-api03-AbCdEf0123456789 (Authorization: Bearer tok.en-123_456)",
+      }),
+    ]);
+
+    const { errors } = await runTurn(engine, model);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("401 invalid x-api-key");
+    expect(errors[0]).not.toContain("sk-ant");
+    expect(errors[0]).not.toContain("tok.en");
+  });
+
+  test("redacts a secret a failed tool prints before it reaches the reply", async () => {
+    const { engine, model } = await setup([
+      bashCall("echo key sk-ant-api03-AbCdEf0123456789 >&2; exit 1"),
+      fauxAssistantMessage([fauxText("done")]),
+    ]);
+    const { host } = answering("allow");
+
+    const { reply } = await runTurn(engine, model, {}, host);
+
+    const [part] = toolParts(reply);
+    expect(part).toMatchObject({ state: "error" });
+    expect(part?.errorText).toContain("key");
+    expect(part?.errorText).not.toContain("sk-ant");
   });
 
   test("reports an unknown model and ends the turn", async () => {
@@ -519,5 +550,68 @@ export default function (pi) {
     await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
 
     expect(offered).toEqual([["bash", "ext_tool", "read"], PLAN, ["bash", "ext_tool", "read"]]);
+  });
+});
+
+// Bun caches os.homedir() at startup, so the default agentDir is checked in a child process with its own HOME.
+const touchAgentDir = `
+import { createPiEngine } from "./pi.ts";
+const engine = createPiEngine(process.env.PROBE_AGENT_DIR ? { agentDir: process.env.PROBE_AGENT_DIR } : {});
+await engine.getDeviceId();
+await engine.getRuntime();
+console.log("ok");
+`;
+
+async function runChild(env: Record<string, string>) {
+  const proc = Bun.spawn([process.execPath, "-e", touchAgentDir], {
+    cwd: import.meta.dir,
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  expect({ code, err }).toEqual({ code: 0, err: "" });
+  expect(out.trim()).toBe("ok");
+}
+
+const modeOf = (path: string) => statSync(path).mode & 0o777;
+
+describe("the agent directory's permissions (S5)", () => {
+  test("~/.marcsh/agent is created owner-only before pi writes its settings there", async () => {
+    const home = join(dir, "home");
+    mkdirSync(home);
+
+    await runChild({ HOME: home });
+
+    expect(modeOf(join(home, ".marcsh", "agent"))).toBe(0o700);
+    expect(existsSync(join(home, ".marcsh", "agent", "settings.json"))).toBe(true);
+  });
+
+  test("an existing ~/.marcsh/agent made with looser permissions is tightened to owner-only", async () => {
+    const home = join(dir, "home");
+    const marcsh = join(home, ".marcsh");
+    mkdirSync(join(marcsh, "agent"), { recursive: true });
+    chmodSync(marcsh, 0o755);
+    chmodSync(join(marcsh, "agent"), 0o755);
+
+    await runChild({ HOME: home });
+
+    expect(modeOf(join(marcsh, "agent"))).toBe(0o700);
+  });
+
+  test("a custom agentDir and its parent keep their permissions", async () => {
+    const home = join(dir, "home");
+    const shared = join(dir, "shared");
+    const custom = join(shared, "agent");
+    mkdirSync(home);
+    mkdirSync(custom, { recursive: true });
+    chmodSync(shared, 0o755);
+    chmodSync(custom, 0o755);
+
+    await runChild({ HOME: home, PROBE_AGENT_DIR: custom });
+
+    expect(modeOf(shared)).toBe(0o755);
+    expect(modeOf(custom)).toBe(0o755);
+    expect(existsSync(join(home, ".marcsh"))).toBe(false);
   });
 });

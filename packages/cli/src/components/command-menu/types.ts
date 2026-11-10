@@ -12,6 +12,11 @@ export type CommandContext = {
   engine: string;
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
+  /** The model pi turns use ("provider/id"). */
+  piModel: string;
+  setPiModel: (model: string) => void;
+  /** Re-checks the pi model against the models that have credentials now (after a login or logout). */
+  refreshPiModel: () => Promise<string>;
   navigate: (path: string) => void;
   mode: ModeType;
   setMode: (mode: ModeType) => void;

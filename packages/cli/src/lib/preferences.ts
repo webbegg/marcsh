@@ -7,6 +7,8 @@ export type Preferences = {
   themeName?: string;
   /** The engine new sessions start on. */
   defaultEngine?: string;
+  /** The pi model ("provider/id") new pi turns use. */
+  piModel?: string;
 };
 
 export function preferencesPath() {
@@ -39,4 +41,14 @@ export function getDefaultEngine(path = preferencesPath()): EngineId {
 
 export function setDefaultEngine(engine: EngineId, path = preferencesPath()) {
   updatePreferences({ defaultEngine: engine }, path);
+}
+
+/** The stored pi model, or undefined when none is stored or the value is not a "provider/id" ref. */
+export function getPiModel(path = preferencesPath()): string | undefined {
+  const { piModel } = readPreferences(path);
+  return typeof piModel === "string" && /^[^/\s]+\/\S+$/.test(piModel) ? piModel : undefined;
+}
+
+export function setPiModel(model: string, path = preferencesPath()) {
+  updatePreferences({ piModel: model }, path);
 }

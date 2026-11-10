@@ -1,9 +1,15 @@
-import { createContext, useContext, useState, useCallback } from "react";
+import { createContext, useContext, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import { Mode, type ModeType } from "../../lib/modes";
-import { DEFAULT_CHAT_MODEL_ID, type SupportedChatModelId } from "../../lib/models";
-import type { EngineId } from "../../lib/engine";
-import { getDefaultEngine, setDefaultEngine as persistDefaultEngine } from "../../lib/preferences";
+import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
+import { getPiRuntime, type EngineId } from "../../lib/engine";
+import { listAvailablePiModels, pickPiModel } from "../../lib/engine/pi-models";
+import {
+  getDefaultEngine,
+  getPiModel,
+  setDefaultEngine as persistDefaultEngine,
+  setPiModel as persistPiModel,
+} from "../../lib/preferences";
 
 type PromptConfigContextValue = {
   mode: ModeType;
@@ -14,6 +20,12 @@ type PromptConfigContextValue = {
   /** The engine new sessions start on; an open session keeps the one it was created with. */
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
+  /** The model pi turns use ("provider/id"): the chosen one while it is available, else a fallback. */
+  piModel: string;
+  /** Picks the pi model for the following turns and for new pi sessions (kept in the preferences). */
+  setPiModel: (model: string) => void;
+  /** Checks the pi model against the models that have credentials now, and resolves with the one to use. */
+  refreshPiModel: () => Promise<string>;
 };
 
 const PromptConfigContext = createContext<PromptConfigContextValue | null>(null);
@@ -41,6 +53,35 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     persistDefaultEngine(engine);
   }, []);
 
+  // What the user chose stays apart from what is in use: a model that is unavailable for a while
+  // (logged out) is replaced for the turns, and comes back when its provider has credentials again.
+  const preferredPiModel = useRef(getPiModel() ?? PI_DEFAULT_MODEL);
+  const piModelInUse = useRef(preferredPiModel.current);
+  const [piModel, setPiModelState] = useState(preferredPiModel.current);
+
+  const applyPiModel = useCallback((next: string) => {
+    piModelInUse.current = next;
+    setPiModelState(next);
+  }, []);
+
+  const setPiModel = useCallback((next: string) => {
+    preferredPiModel.current = next;
+    applyPiModel(next);
+    persistPiModel(next);
+  }, [applyPiModel]);
+
+  const refreshPiModel = useCallback(async () => {
+    try {
+      const available = await listAvailablePiModels(await getPiRuntime());
+      const next = pickPiModel(preferredPiModel.current, available);
+      applyPiModel(next);
+      return next;
+    } catch {
+      // No runtime to ask: keep what is in use; a turn then reports what is missing.
+      return piModelInUse.current;
+    }
+  }, [applyPiModel]);
+
   const toggleMode = useCallback(() => {
     setMode((m) => (m === Mode.BUILD ? Mode.PLAN : Mode.BUILD));
   }, []);
@@ -55,6 +96,9 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
         setModel,
         defaultEngine,
         setDefaultEngine,
+        piModel,
+        setPiModel,
+        refreshPiModel,
     }}>
       {children}
     </PromptConfigContext.Provider>

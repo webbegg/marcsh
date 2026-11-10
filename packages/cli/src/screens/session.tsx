@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard } from "@opentui/react";
@@ -62,7 +62,7 @@ function SessionChat({
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string };
 }) {
-  const { mode, model } = usePromptConfig();
+  const { mode, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
   // A session keeps the engine it was created with; one this build does not know only reports that.
   const engine = useMemo(
@@ -76,13 +76,41 @@ function SessionChat({
     textEntryRef.current = active;
   }, []);
   const busy = status === "submitted" || status === "streaming";
+  const mountedRef = useRef(true);
+  // A pi turn waits for the model check (a login or logout can change which models exist) before it starts.
+  const [choosingModel, setChoosingModel] = useState(false);
 
   // Stop the pending reply when the user leaves this session.
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       abort();
     };
   }, [abort]);
+
+  // Starts a turn on the model this session's engine uses: a pi session sends the pi model that has credentials now.
+  const send = useCallback(
+    (userText: string, turnMode: ModeType, claudeModel: string) => {
+      if (session.engine !== "pi") {
+        void submit({ userText, mode: turnMode, model: modelForEngine(session.engine, claudeModel) });
+        return;
+      }
+      setChoosingModel(true);
+      void refreshPiModel()
+        .then((piModel) => {
+          if (mountedRef.current) void submit({ userText, mode: turnMode, model: piModel });
+        })
+        .finally(() => {
+          if (mountedRef.current) setChoosingModel(false);
+        });
+    },
+    [session.engine, submit, refreshPiModel],
+  );
+
+  // Show the pi model in use (the saved one may need a fallback) before the first prompt.
+  useEffect(() => {
+    if (session.engine === "pi") void refreshPiModel();
+  }, [session.engine, refreshPiModel]);
 
   // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
@@ -96,19 +124,15 @@ function SessionChat({
   useEffect(() => {
     if (!initialPrompt || hasSubmittedInitialPromptRef.current) return;
     hasSubmittedInitialPromptRef.current = true;
-    void submit({
-      userText: initialPrompt.message,
-      mode: initialPrompt.mode,
-      model: modelForEngine(session.engine, initialPrompt.model),
-    });
-  }, [initialPrompt, submit, session.engine]);
+    send(initialPrompt.message, initialPrompt.mode, initialPrompt.model);
+  }, [initialPrompt, send]);
 
   return (
     <SessionShell
       cwd={session.cwd}
       engine={session.engine}
-      onSubmit={(text) => submit({ userText: text, mode, model: modelForEngine(session.engine, model) })}
-      inputDisabled={busy}
+      onSubmit={(text) => send(text, mode, model)}
+      inputDisabled={busy || choosingModel}
       loading={busy}
       interruptible={busy}
     >

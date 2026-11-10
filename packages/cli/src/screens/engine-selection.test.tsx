@@ -157,7 +157,6 @@ describe("each session runs on its own engine (S2)", () => {
     const text = frame();
     expect(text).not.toContain("Select Model");
     expect(text).not.toContain("sonnet");
-    expect(text).toContain(`pi sessions use ${PI_DEFAULT_MODEL}`);
   });
 
   test("/models on a Claude session still opens the picker", async () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getDefaultEngine, preferencesPath, readPreferences, setDefaultEngine, updatePreferences } from "./preferences";
+import { getDefaultEngine, getPiModel, preferencesPath, readPreferences, setDefaultEngine, setPiModel, updatePreferences } from "./preferences";
 
 let dir: string;
 let path: string;
@@ -66,6 +66,30 @@ describe("default engine preference", () => {
     // The parent of the file is a regular file, so the directory cannot be created.
     writeFileSync(join(dir, "blocker"), "x", "utf8");
     expect(() => setDefaultEngine("pi", join(dir, "blocker", "preferences.json"))).not.toThrow();
+  });
+});
+
+describe("pi model preference", () => {
+  test("is unset when there is no preferences file", () => {
+    expect(getPiModel(path)).toBeUndefined();
+  });
+
+  test("a choice is persisted as piModel and read back, next to the other preferences", () => {
+    writeRaw(JSON.stringify({ themeName: "nord", defaultEngine: "pi" }));
+
+    setPiModel("openai/gpt-5", path);
+
+    expect(getPiModel(path)).toBe("openai/gpt-5");
+    expect(readPreferences(path)).toEqual({ themeName: "nord", defaultEngine: "pi", piModel: "openai/gpt-5" });
+  });
+
+  test("a stored value that is not a provider/id ref is ignored", () => {
+    for (const bad of [7, "", "opus", "/x", "x/", null]) {
+      writeRaw(JSON.stringify({ piModel: bad }));
+      expect(getPiModel(path)).toBeUndefined();
+    }
+    writeRaw("{not json");
+    expect(getPiModel(path)).toBeUndefined();
   });
 });
 

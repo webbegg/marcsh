@@ -10,7 +10,7 @@ type Props = {
 };
 
 export function StatusBar({ engine }: Props) {
-  const { mode, model, defaultEngine } = usePromptConfig();
+  const { mode, model, piModel, defaultEngine } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
 
@@ -24,7 +24,7 @@ export function StatusBar({ engine }: Props) {
       <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
         ›
       </text>
-      <text>{modelForEngine(engineId, model)}</text>
+      <text>{modelForEngine(engineId, model, piModel)}</text>
       {/* Claude sessions look as they always did; only another engine is named. */}
       {engineId === "claude" ? null : (
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
