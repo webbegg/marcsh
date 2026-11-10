@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
+import { escapeTranscriptText } from "../../lib/display-text";
 
 type Props = {
   message: string;
@@ -28,7 +29,7 @@ export function ErrorMessage({ message }: Props) {
           backgroundColor={colors.surface}
           width="100%"
         >
-          <text attributes={TextAttributes.DIM}>{message}</text>
+          <text attributes={TextAttributes.DIM}>{escapeTranscriptText(message)}</text>
         </box>
       </box>
     </box>

@@ -99,10 +99,10 @@ describe("PermissionPrompt escapes what the engine supplies", () => {
     expect(titled).not.toMatch(RAW_UNSAFE);
   });
 
-  test("keeps real lines of a command as separate lines, each continuation behind a dim gutter", async () => {
+  test("keeps real lines of a command as separate lines, each behind a dim gutter", async () => {
     const frame = await show({ input: { command: "echo one\necho two\necho three" } });
     const rows = rowsOf(frame);
-    expect(rows).toContain("echo one");
+    expect(rows).toContain(`${GUTTER} echo one`);
     expect(rows).toContain(`${GUTTER} echo two`);
     expect(rows).toContain(`${GUTTER} echo three`);
     expect(frame).not.toContain("\\n");
@@ -117,7 +117,7 @@ describe("PermissionPrompt escapes what the engine supplies", () => {
 
   test("a fake hint line behind a CRLF stays behind the gutter", async () => {
     const frame = await show({ input: { command: `ls\r\n${FAKE_HINT}` } });
-    expect(rowsOf(frame)).toContain("ls\\r");
+    expect(rowsOf(frame)).toContain(`${GUTTER} ls\\r`);
     expect(rowsOf(frame)).toContain(`${GUTTER} ${FAKE_HINT}`);
     expect(hintRows(frame)).toHaveLength(1);
   });
@@ -145,10 +145,9 @@ describe("PermissionPrompt escapes what the engine supplies", () => {
     expect(frame).not.toMatch(RAW_UNSAFE);
   });
 
-  test("a plain command renders as before, and the hint row and keys are unchanged", async () => {
+  test("a plain command sits behind the gutter, and the hint row and keys are unchanged", async () => {
     const frame = await show({ input: { command: "echo hi" } });
-    expect(rowsOf(frame)).toContain("echo hi");
-    expect(frame).not.toContain(GUTTER);
+    expect(rowsOf(frame)).toContain(`${GUTTER} echo hi`);
     expect(hintRows(frame)).toEqual(["y  allow once  a  always allow  n  deny"]);
 
     await act(async () => screen!.mockInput.pressKey("y" as never));
