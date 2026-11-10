@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Mode } from "../modes";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
@@ -15,7 +15,7 @@ import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from 
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
-import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
+import type { Engine, EngineEvent, EngineTurn, TurnHost, TurnRequest } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -151,6 +151,61 @@ async function newSessionTools(
   return [...new Set([...builtin, ...registered])];
 }
 
+function userText(message: { content?: unknown }): string {
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return message.content.map((block: { type?: string; text?: unknown }) => (block.type === "text" && typeof block.text === "string" ? block.text : "")).join("");
+}
+
+/** The items of `before` that `after` no longer holds (one for one, so equal texts are told apart by count). */
+function taken(before: readonly string[], after: readonly string[]): string[] {
+  const left = [...after];
+  return before.filter((text) => {
+    const at = left.indexOf(text);
+    if (at === -1) return true;
+    left.splice(at, 1);
+    return false;
+  });
+}
+
+/**
+ * pi lists the messages it has queued (`queue_update`) and drops one from that list just before the user message it
+ * sends starts. The tracker tells the host what is still waiting and, when such a message starts, which kind it was.
+ * The first user message of a turn is the prompt, which was never queued, so it matches nothing.
+ */
+export function createQueueTracker() {
+  let steering: readonly string[] = [];
+  let followUp: readonly string[] = [];
+  const sent: Array<{ kind: "steer" | "followUp"; text: string }> = [];
+
+  return {
+    /** Feeds one session event; returns what the host should hear about the queues, if anything. */
+    observe(event: AgentSessionEvent): EngineEvent | null {
+      if (event.type === "queue_update") {
+        sent.push(
+          ...taken(steering, event.steering).map((text) => ({ kind: "steer" as const, text })),
+          ...taken(followUp, event.followUp).map((text) => ({ kind: "followUp" as const, text })),
+        );
+        steering = event.steering;
+        followUp = event.followUp;
+        return { type: "queue", steering: [...steering], followUp: [...followUp] };
+      }
+      if (event.type === "message_start" && event.message.role === "user") {
+        const text = userText(event.message);
+        const at = sent.findIndex((item) => item.text === text);
+        if (at === -1) return null;
+        const [item] = sent.splice(at, 1);
+        return { type: "delivered", text, kind: item!.kind };
+      }
+      return null;
+    },
+    /** Forgets what was sent but not yet started (the queues were cleared). */
+    reset() {
+      sent.length = 0;
+    },
+  };
+}
+
 function parseModel(ref: string): { provider: string; id: string } | null {
   const slash = ref.indexOf("/");
   if (slash <= 0 || slash === ref.length - 1) return null;
@@ -209,11 +264,19 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     const turnEnded = new AbortController();
     // Streamed text reaches the host at most ~30 times a second; the feed is closed (queue sent, timer gone) when the turn ends.
     const feed = createReplyFeed((event) => host.emit(event));
+    const queue = createQueueTracker();
+    // Typed before the prompt reached pi: held until it did, in the order typed.
+    let promptSent = false;
+    const early: Array<{ kind: "steer" | "followUp"; text: string }> = [];
 
     const interrupt = () => {
       aborted = true;
       turnEnded.abort();
       feed.flush();
+      // Messages pi has not sent are discarded, never run after the response is stopped.
+      early.length = 0;
+      session?.clearQueue();
+      queue.reset();
       void session?.abort();
     };
     signal.addEventListener("abort", interrupt, { once: true });
@@ -221,6 +284,17 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     // Provider errors can echo the key or token that was sent, so nothing reaches the UI unredacted.
     const fail = (message: string) => {
       if (!aborted) host.emit({ type: "error", message: redactSecrets(friendlyPiError(message)) });
+    };
+
+    const queueInput = async (kind: "steer" | "followUp", text: string) => {
+      if (aborted) return;
+      if (!session || !promptSent) {
+        early.push({ kind, text });
+        return;
+      }
+      await (kind === "steer" ? session.steer(text) : session.followUp(text));
+      // An interrupt that came while pi was taking the text cleared the queues before it was in them.
+      if (aborted) session.clearQueue();
     };
 
     const run = async () => {
@@ -332,6 +406,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
         if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event));
         else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event));
+        const queued = queue.observe(event);
+        if (queued) {
+          // What was streamed so far belongs to the reply before the message that was just sent.
+          if (queued.type === "delivered") feed.flush();
+          host.emit(queued);
+        }
       });
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
 
@@ -339,8 +419,22 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
         const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
-        await session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        const sending = session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        promptSent = true;
+        for (const { kind, text } of early.splice(0)) {
+          queueInput(kind, text).catch((error: unknown) => host.notify?.(redactSecrets(friendlyPiError(error instanceof Error ? error.message : String(error))), "warning"));
+        }
+        await sending;
         await session.waitForIdle();
+        // A message typed as the run was ending was queued too late for pi to pick it up: it runs as a turn of its own.
+        while (!aborted && session.pendingMessageCount > 0) {
+          const { steering, followUp } = session.clearQueue();
+          for (const text of [...steering, ...followUp]) {
+            if (aborted) break;
+            await session.prompt(text, { expandPromptTemplates: false });
+            await session.waitForIdle();
+          }
+        }
       } finally {
         feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });
@@ -360,7 +454,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         return disposePiSession(session);
       });
 
-    return { done, interrupt };
+    return {
+      done,
+      interrupt,
+      steer: (text) => queueInput("steer", text),
+      followUp: (text) => queueInput("followUp", text),
+    };
   }
 
   return {

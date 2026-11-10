@@ -7,9 +7,11 @@ import { modelForEngine } from "../lib/models";
 type Props = {
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
   engine?: string;
+  /** What the keys do right now, when that is not the usual (typing during a turn). */
+  hint?: string;
 };
 
-export function StatusBar({ engine }: Props) {
+export function StatusBar({ engine, hint }: Props) {
   const { mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
@@ -37,6 +39,11 @@ export function StatusBar({ engine }: Props) {
           · {engineId}
         </text>
       )}
+      {hint ? (
+        <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
+          · {hint}
+        </text>
+      ) : null}
     </box>
   );
 };

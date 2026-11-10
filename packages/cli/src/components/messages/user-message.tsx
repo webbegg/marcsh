@@ -1,3 +1,4 @@
+import { TextAttributes } from "@opentui/core";
 import { Mode, type ModeType } from "../../lib/modes";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
@@ -5,9 +6,13 @@ import { useTheme } from "../../providers/theme";
 type Props = {
   message: string;
   mode: ModeType;
+  /** A small note under the text (for a message typed during a turn). */
+  marker?: string;
+  /** Not sent yet: shown dim. */
+  pending?: boolean;
 };
 
-export function UserMessage({ message, mode }: Props) {
+export function UserMessage({ message, mode, marker, pending = false }: Props) {
   const { colors } = useTheme();
 
   return (
@@ -28,7 +33,8 @@ export function UserMessage({ message, mode }: Props) {
           backgroundColor={colors.surface}
           width="100%"
         >
-          <text>{message}</text>
+          <text attributes={pending ? TextAttributes.DIM : undefined}>{message}</text>
+          {marker ? <text attributes={TextAttributes.DIM}>{marker}</text> : null}
         </box>
       </box>
     </box>

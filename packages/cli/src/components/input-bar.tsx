@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { useRef, useState, useCallback, useEffect, type RefObject } from "react";
+import { createContext, useContext, useRef, useState, useCallback, useEffect, type RefObject } from "react";
 
 import { TextAttributes } from "@opentui/core";
 
@@ -270,6 +270,17 @@ type Props = {
   engine?: string;
 };
 
+/**
+ * Typing during a turn. `active` while the running turn takes input (a pi session): Enter then steers it (the screen's
+ * `onSubmit`), and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
+ * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead.
+ */
+export type TurnInput = { active: boolean; queue: (text: string) => void };
+
+export const TurnInputContext = createContext<TurnInput>({ active: false, queue: () => {} });
+
+const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
+
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "enter", action: "submit" },
@@ -291,6 +302,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const toast = useToast();
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
+  const turnInput = useContext(TurnInputContext);
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -433,7 +445,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     [resolveCommand, handleCommand],
   );
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback((queue = false) => {
     if (disabled) return;
 
     const textarea = textareaRef.current;
@@ -442,6 +454,14 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = textarea.plainText.trim();
     if (text.length === 0) return;
 
+    // While a turn takes input, `/queue <text>` queues like Alt+Enter does.
+    const queuedByCommand = turnInput.active ? QUEUE_COMMAND.exec(text) : null;
+    if (queuedByCommand) {
+      turnInput.queue(queuedByCommand[1]!.trim());
+      textarea.setText("");
+      return;
+    }
+
     // marcsh's own commands win; any other /name (with or without arguments) goes to Claude Code verbatim
     const ownNames = COMMANDS.map((command) => command.name);
     if (slashInputKind(text, ownNames) === "marcsh") {
@@ -449,9 +469,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return;
     }
 
-    onSubmit(text);
+    if (queue && turnInput.active) turnInput.queue(text);
+    else onSubmit(text);
     textarea.setText("");
-  }, [disabled, onSubmit, handleCommand])
+  }, [disabled, onSubmit, handleCommand, turnInput])
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
@@ -518,6 +539,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (key.name === "tab") {
       key.preventDefault();
       toggleMode();
+    } else if (turnInput.active && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
+      key.preventDefault();
+      handleSubmit(true);
     }
   });
 
@@ -644,7 +668,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} />
+          <StatusBar engine={engineId} hint={turnInput.active && !disabled ? "enter steers · alt+enter queues" : undefined} />
         </box>
       </box>
     </box>

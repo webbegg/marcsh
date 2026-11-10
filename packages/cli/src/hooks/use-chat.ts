@@ -92,11 +92,18 @@ function decline(request: PendingRequest) {
 
 export type SubmitParams = { userText: string; mode: ModeType; model: string };
 
+/** What the user typed during the turn that the engine has not sent yet. */
+export type QueuedInput = { steering: string[]; followUp: string[] };
+
+const NOTHING_QUEUED: QueuedInput = { steering: [], followUp: [] };
+
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
   const [permissionQueue, setPermissionQueue] = useState<PendingRequest[]>([]);
+  const [queued, setQueued] = useState<QueuedInput>(NOTHING_QUEUED);
+  const [canSteer, setCanSteer] = useState(false);
 
   const messagesRef = useRef(messages);
   const statusRef = useRef<ChatStatus>("ready");
@@ -125,7 +132,9 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       setError(null);
       interruptedRef.current = false;
 
-      const replyId = crypto.randomUUID();
+      // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
+      let replyId = crypto.randomUUID();
+      const replyIds = [replyId];
       const metadata = { mode, model };
       updateMessages((prev) => [
         ...prev,
@@ -133,8 +142,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         { id: replyId, role: "assistant", parts: [], metadata },
       ]);
 
-      const applyToReply = (update: (reply: ChatMessage) => ChatMessage) =>
-        updateMessages((prev) => prev.map((m) => (m.id === replyId ? update(m) : m)));
+      const applyToReply = (update: (reply: ChatMessage) => ChatMessage, id = replyId) =>
+        updateMessages((prev) => prev.map((m) => (m.id === id ? update(m) : m)));
 
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
@@ -181,6 +190,28 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
           case "error":
             if (!interruptedRef.current) setError(event.message);
             break;
+          case "queue":
+            if (!interruptedRef.current) setQueued({ steering: event.steering, followUp: event.followUp });
+            break;
+          case "delivered": {
+            const closed = replyId;
+            replyId = crypto.randomUUID();
+            replyIds.push(replyId);
+            const next = replyId;
+            updateStatus("streaming");
+            updateMessages((prev) => [
+              // A reply that said nothing before the message came leaves no empty bot row behind.
+              ...prev.filter((m) => !(m.id === closed && m.parts.length === 0)),
+              {
+                id: crypto.randomUUID(),
+                role: "user",
+                parts: [{ type: "text", text: event.text }],
+                metadata: event.kind === "steer" ? { ...metadata, steered: true } : metadata,
+              },
+              { id: next, role: "assistant", parts: [], metadata },
+            ]);
+            break;
+          }
         }
       };
 
@@ -239,6 +270,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
           host,
         );
         turnRef.current = turn;
+        setCanSteer(typeof turn.steer === "function" && typeof turn.followUp === "function");
         await turn.done;
       } catch (err) {
         if (!abortController.signal.aborted && !interruptedRef.current) {
@@ -247,10 +279,12 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       } finally {
         turnRef.current = null;
         abortControllerRef.current = null;
+        setCanSteer(false);
+        setQueued(NOTHING_QUEUED);
         // Requests the engine is still waiting on (it can end the turn without aborting) are declined, not just dropped.
         for (const request of [...pendingRequestsRef.current]) decline(request);
         setPermissionQueue([]);
-        applyToReply(finishReply);
+        for (const id of replyIds) applyToReply(finishReply, id);
         updateStatus("ready");
 
         try {
@@ -267,8 +301,21 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
 
   const interrupt = useCallback(() => {
     interruptedRef.current = true;
+    // The engine discards what it has not sent; the turn takes no more input while it winds down.
+    setCanSteer(false);
+    setQueued(NOTHING_QUEUED);
     turnRef.current?.interrupt();
   }, []);
+
+  // Typing during a turn: only an engine whose turn takes it (and only until it is interrupted) gets the text.
+  const sendToTurn = useCallback((kind: "steer" | "followUp", text: string) => {
+    const turn = turnRef.current;
+    const send = kind === "steer" ? turn?.steer : turn?.followUp;
+    if (!turn || !send || interruptedRef.current) return;
+    send.call(turn, text).catch((err: unknown) => notifyRef.current?.(err instanceof Error ? err.message : String(err), "warning"));
+  }, []);
+  const steer = useCallback((text: string) => sendToTurn("steer", text), [sendToTurn]);
+  const followUp = useCallback((text: string) => sendToTurn("followUp", text), [sendToTurn]);
 
   const abort = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -281,6 +328,10 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     submit,
     interrupt,
     abort,
+    steer,
+    followUp,
+    queued,
+    canSteer,
     pendingRequest: permissionQueue[0] ?? null,
   };
 }
