@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { openStorage } from "../storage";
 import {
   diffReview,
@@ -180,6 +181,217 @@ describe("the review record (S1)", () => {
       expect(reviewProject(project).resources).toEqual([{ path: ".pi/extensions/locked.ts", detail: "could not be read: cannot be opened or read", unreadable: true }]);
     } finally {
       chmodSync(join(project, ".pi", "extensions", "locked.ts"), 0o600);
+    }
+  });
+});
+
+const settings = (value: unknown) => write(join(project, ".pi", "settings.json"), JSON.stringify(value));
+const listed = () => reviewProject(project).resources.filter((resource) => resource.path !== ".pi/settings.json");
+
+describe("files that .pi/settings.json makes pi load (S1)", () => {
+  test("an extensions path is read from the .pi folder, so ../tools/ext.ts is the project's tools folder: listed, and a change is a different record", () => {
+    write(join(project, "tools", "ext.ts"), "v1");
+    settings({ extensions: ["../tools/ext.ts"] });
+    const before = record();
+
+    expect(listed()).toEqual([{ path: "tools/ext.ts", detail: "named by .pi/settings.json (extensions: ../tools/ext.ts)" }]);
+    expect(before.map((entry) => entry.path)).toEqual([".pi/settings.json", "tools/ext.ts"]);
+
+    write(join(project, "tools", "ext.ts"), "v2");
+    expect(sameReview(before, record())).toBe(false);
+  });
+
+  test("a target outside the project folder is listed with its resolved path; ~ is the user's home", () => {
+    write(join(root, "work", "outside", "ext.ts"), "v1");
+    write(join(home, "home-ext.ts"), "v1");
+    settings({ extensions: ["../../outside/ext.ts", "~/home-ext.ts", ` ${join(home, "home-ext.ts")} `] });
+    const before = record();
+
+    expect(listed().map((resource) => resource.path)).toEqual([join(root, "work", "outside", "ext.ts"), join(home, "home-ext.ts")]);
+
+    write(join(root, "work", "outside", "ext.ts"), "v2");
+    expect(sameReview(before, record())).toBe(false);
+  });
+
+  for (const key of ["skills", "prompts", "themes"]) {
+    test(`a ${key} path outside .pi: its folder is listed, and a changed or added file is a different record`, () => {
+      write(join(project, "shared", "a", "one.md"), "v1");
+      settings({ [key]: ["../shared"] });
+      const before = record();
+
+      expect(listed()).toEqual([{ path: "shared/a/", detail: `named by .pi/settings.json (${key}: ../shared)` }]);
+
+      write(join(project, "shared", "a", "one.md"), "v2");
+      const edited = record();
+      expect(sameReview(before, edited)).toBe(false);
+      write(join(project, "shared", "b", "two.md"), "v1");
+      expect(sameReview(edited, record())).toBe(false);
+    });
+  }
+
+  test("the old skills format ({ customDirectories }) is read as pi reads it", () => {
+    write(join(project, "old", "s", "SKILL.md"), "v1");
+    settings({ skills: { customDirectories: ["../old"] } });
+
+    expect(listed().map((resource) => resource.path)).toEqual(["old/s/"]);
+  });
+
+  test("pattern entries (!, +, -, * and ?) are filters, not paths; a missing path is not listed until it exists", () => {
+    write(join(project, "tools", "ext.ts"), "v1");
+    settings({ extensions: ["-../tools/ext.ts", "+../tools/ext.ts", "!../tools/ext.ts", "../tools/*.ts", "../tools/e?t.ts", "../missing.ts", 7, null] });
+    const before = record();
+
+    expect(listed()).toEqual([]);
+
+    write(join(project, "missing.ts"), "v1");
+    expect(listed().map((resource) => resource.path)).toEqual(["missing.ts"]);
+    expect(diffReview(before, record()).status.get("missing.ts")).toBe("added");
+  });
+
+  test("a local package is its folder, resolved from .pi: its files are listed and a change deep inside is a different record", () => {
+    write(join(project, "localpkg", "package.json"), JSON.stringify({ name: "localpkg", pi: { extensions: ["./extensions"] } }));
+    write(join(project, "localpkg", "extensions", "e.ts"), "v1");
+    settings({ packages: ["../localpkg", { source: "../localpkg", skills: [] }] });
+    const before = record();
+
+    expect(listed().map((resource) => resource.path)).toEqual(["localpkg/extensions/", "localpkg/package.json"]);
+    expect(listed()[0]?.detail).toBe("named by .pi/settings.json (packages: ../localpkg)");
+
+    write(join(project, "localpkg", "extensions", "e.ts"), "v2");
+    expect(sameReview(before, record())).toBe(false);
+  });
+
+  test("a package.json that points outside its package: the target is part of the review", () => {
+    write(join(project, "localpkg", "package.json"), JSON.stringify({ name: "p", pi: { extensions: ["../shared/ext.ts", "../globbed/*.ts", "!../shared/ext.ts"] } }));
+    write(join(project, "shared", "ext.ts"), "v1");
+    write(join(project, "globbed", "g.ts"), "v1");
+    settings({ packages: ["../localpkg"] });
+    const before = record();
+
+    expect(listed().map((resource) => resource.path)).toEqual(["localpkg/package.json", "shared/ext.ts", "globbed/g.ts"]);
+    expect(listed()[1]?.detail).toBe("named by localpkg/package.json");
+
+    write(join(project, "shared", "ext.ts"), "v2");
+    const edited = record();
+    expect(sameReview(before, edited)).toBe(false);
+    write(join(project, "globbed", "new.ts"), "v1");
+    expect(sameReview(edited, record())).toBe(false);
+  });
+
+  test("an extension folder under .pi/extensions whose package.json points outside it: the target is part of the review", () => {
+    write(join(project, ".pi", "extensions", "pkg", "package.json"), JSON.stringify({ pi: { extensions: ["../../../tools/e.ts"] } }));
+    write(join(project, "tools", "e.ts"), "v1");
+    const before = record();
+
+    expect(reviewProject(project).resources.map((resource) => resource.path)).toEqual([".pi/extensions/pkg/", "tools/e.ts"]);
+
+    write(join(project, "tools", "e.ts"), "v2");
+    expect(sameReview(before, record())).toBe(false);
+  });
+
+  test("an npm package pi installed into the project is listed, in the place pi installs it; one that is not installed is covered by the settings entry", () => {
+    settings({ packages: ["npm:@scope/x@1.2.3", "npm:y"] });
+    expect(listed()).toEqual([]);
+    write(join(project, ".pi", "npm", "node_modules", "unrelated", "index.ts"), "v1");
+    expect(listed()).toEqual([]);
+    const before = record();
+
+    write(join(project, ".pi", "npm", "node_modules", "@scope", "x", "index.ts"), "v1");
+    write(join(project, ".pi", "npm", "node_modules", "y", "package.json"), "{}");
+    const installed = record();
+
+    expect(listed()).toEqual([
+      { path: ".pi/npm/node_modules/@scope/x/index.ts", detail: "named by .pi/settings.json (packages: npm:@scope/x@1.2.3)" },
+      { path: ".pi/npm/node_modules/y/package.json", detail: "named by .pi/settings.json (packages: npm:y)" },
+    ]);
+    expect(diffReview(before, installed).status.get(".pi/npm/node_modules/@scope/x/index.ts")).toBe("added");
+
+    write(join(project, ".pi", "npm", "node_modules", "@scope", "x", "index.ts"), "v2");
+    expect(sameReview(installed, record())).toBe(false);
+  });
+
+  test("git packages pi cloned into the project are listed with the clone's files but not its .git folder", () => {
+    settings({ packages: ["github:owner/repo"] });
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", "ext.ts"), "v1");
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", ".git", "HEAD"), "ref: a");
+    const before = record();
+
+    expect(listed().map((resource) => resource.path)).toEqual([".pi/git/github.com/"]);
+    expect(listed()[0]?.detail).toBe("named by .pi/settings.json (packages: github:owner/repo)");
+
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", ".git", "HEAD"), "ref: b");
+    expect(sameReview(before, record())).toBe(true);
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", "ext.ts"), "v2");
+    expect(sameReview(before, record())).toBe(false);
+  });
+
+  test("without a git package in the settings, a .pi/git folder is not part of the review", () => {
+    settings({ packages: ["npm:y"] });
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", "ext.ts"), "v1");
+
+    expect(listed()).toEqual([]);
+  });
+
+  test("a source pi cannot parse as git is a path under .pi, as pi reads it", () => {
+    write(join(project, ".pi", "https:", "foo", "index.ts"), "v1");
+    settings({ packages: ["https://foo"] });
+
+    expect(listed().map((resource) => resource.path)).toEqual([".pi/https:/foo/index.ts"]);
+  });
+
+  test("a target marcsh cannot read in full is unreadable, so trusting stays impossible", () => {
+    write(join(project, "tools", "big.ts"), "x".repeat(1024 * 1024 + 1));
+    settings({ extensions: ["../tools/big.ts"] });
+
+    expect(listed()).toEqual([{ path: "tools/big.ts", detail: "could not be read: larger than 1 MB", unreadable: true }]);
+  });
+
+  test("the target's name is shown escaped", () => {
+    write(join(project, "tools", "a\nb.ts"), "v1");
+    settings({ extensions: ["../tools"] });
+
+    expect(listed().map((resource) => resource.path)).toEqual(["tools/a\\nb.ts"]);
+  });
+
+  test("everything pi resolves for the project is covered by the review (pi's own package manager, offline)", async () => {
+    const agentDir = join(root, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    write(join(project, "tools", "ext.ts"), "x");
+    write(join(project, "tools", "dir-ext", "index.ts"), "x");
+    write(join(project, "myskills", "a", "SKILL.md"), "---\nname: a\ndescription: d\n---\n");
+    write(join(project, "myprompts", "p.md"), "x");
+    write(join(project, "mythemes", "t.json"), "{}");
+    write(join(root, "work", "outside", "o.ts"), "x");
+    write(join(project, "localpkg", "package.json"), JSON.stringify({ pi: { extensions: ["./ext", "../shared/s.ts"], skills: ["./sk"] } }));
+    write(join(project, "localpkg", "ext", "e.ts"), "x");
+    write(join(project, "localpkg", "sk", "b", "SKILL.md"), "---\nname: b\ndescription: d\n---\n");
+    write(join(project, "shared", "s.ts"), "x");
+    write(join(project, "filelocal.ts"), "x");
+    write(join(project, ".pi", "npm", "node_modules", "npmpkg", "package.json"), JSON.stringify({ version: "1.0.0", pi: { extensions: ["./index.ts"] } }));
+    write(join(project, ".pi", "npm", "node_modules", "npmpkg", "index.ts"), "x");
+    write(join(project, ".pi", "git", "github.com", "owner", "repo", "extensions", "g.ts"), "x");
+    write(join(project, ".pi", "extensions", "auto.ts"), "x");
+    write(join(project, ".agents", "skills", "c", "SKILL.md"), "---\nname: c\ndescription: d\n---\n");
+    settings({
+      extensions: ["../tools/ext.ts", "../tools/dir-ext", "../../outside/o.ts"],
+      skills: ["../myskills"],
+      prompts: ["../myprompts"],
+      themes: ["../mythemes"],
+      packages: ["../localpkg", "../filelocal.ts", "npm:npmpkg", "github:owner/repo"],
+    });
+    const savedOffline = process.env.PI_OFFLINE;
+    process.env.PI_OFFLINE = "1";
+    try {
+      const settingsManager = SettingsManager.create(project, agentDir);
+      const resolved = await new DefaultPackageManager({ cwd: project, agentDir, settingsManager }).resolve();
+      const covered = reviewProject(project).resources.map((resource) => (isAbsolute(resource.path) ? resource.path : join(project, resource.path)).replace(/\/$/, ""));
+      const viaProject = [...resolved.extensions, ...resolved.skills, ...resolved.prompts, ...resolved.themes].filter((entry) => entry.metadata.scope === "project");
+
+      expect(viaProject.length).toBeGreaterThan(8);
+      for (const { path } of viaProject) expect({ path, covered: covered.some((entry) => path === entry || path.startsWith(`${entry}${sep}`)) }).toEqual({ path, covered: true });
+    } finally {
+      if (savedOffline === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = savedOffline;
     }
   });
 });

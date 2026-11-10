@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Storage, StoredReview } from "../storage";
 
 /*
@@ -14,6 +15,10 @@ import type { Storage, StoredReview } from "../storage";
  *
  * pi's own list of gated resources is `hasTrustRequiringProjectResources` (core/trust-manager.js); this module mirrors it
  * without importing pi, so the app can ask before pi is ever loaded (a test keeps the two in step).
+ *
+ * Trusting also lets `<project>/.pi/settings.json` send pi to files anywhere: `extensions`, `skills`, `prompts` and `themes`
+ * paths, local `packages`, and the packages pi installs into the project (`.pi/npm`, `.pi/git`). Those are listed and
+ * reviewed like the project's own files, resolved the way pi's package manager resolves them (see `settingsTargets`).
  */
 
 /** pi's project config folder (`piConfig.configDir` in its package.json). */
@@ -39,7 +44,7 @@ export type ProjectResource = {
 export const unreadableResources = (resources: ProjectResource[]) => resources.filter((resource) => resource.unreadable);
 
 /** A resource as found on disk, before its strings are escaped: where its contents are (`source`), or their digest when the listing already read them. */
-type RawResource = ProjectResource & { source?: string; digest?: string };
+type RawResource = ProjectResource & { source?: string; digest?: string; skipGit?: true };
 
 const unreadableEntry = (path: string, reason: string): RawResource => ({ path, detail: `could not be read: ${reason}`, unreadable: true });
 
@@ -203,23 +208,195 @@ function describePackage(entry: unknown): string {
   return options.length > 0 ? `${source} (${options.join("; ")})` : source;
 }
 
-/** `.pi/settings.json`: executable settings go first (they run on trust), the rest after the extensions. */
-function settingsResources(file: string, path: string): { runs: RawResource[]; others: RawResource[] } {
+/** A file or folder a project's settings (or a package manifest) makes pi load: where it is, and why it is listed. */
+type Target = {
+  path: string;
+  via: string;
+  /** Look in it for a package.json that points pi further: as a package (all four kinds), or as an extension folder. */
+  scan?: "package" | "extensions";
+  /** A folder of git clones: their `.git` folders are not code pi loads and are left out of the review. */
+  skipGit?: true;
+};
+type SettingsTargets = { code: Target[]; others: Target[] };
+
+const RESOURCE_FIELDS = ["extensions", "skills", "prompts", "themes"] as const;
+const SETTINGS_FILE = `${CONFIG_DIR}/settings.json`;
+
+const isInside = (parent: string, child: string) => {
+  const rel = relative(parent, child);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+};
+
+const isFolder = (path: string) => {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** A path as the listing names it: relative to the project folder, or the resolved path when it lies outside. */
+const displayPath = (project: string, path: string) => (path === project ? "." : isInside(project, path) ? relative(project, path) : path);
+
+/** pi's `resolvePath` (utils/paths.js): trimmed, `~` is the home folder (`$HOME` first), `file://` is a path, a relative path starts at `base`. */
+function resolveFrom(input: string, base: string): string | undefined {
+  let path = input.trim();
+  const home = process.env.HOME || homedir();
+  if (path === "~") path = home;
+  else if (path.startsWith("~/")) path = join(home, path.slice(2));
+  if (/^file:\/\//.test(path)) {
+    try {
+      path = fileURLToPath(path);
+    } catch {
+      return undefined;
+    }
+  }
+  return isAbsolute(path) ? resolve(path) : resolve(base, path);
+}
+
+// pi's `isPattern`: these entries filter the files found, they do not name any.
+const isPattern = (entry: string) => /^[!+-]/.test(entry) || /[*?]/.test(entry);
+
+// pi's `isLocalPath`: a source that is not an `npm:`, git or URL source is a path.
+const isLocalSource = (source: string) => !/^(npm|git|github|http|https|ssh|builtin):/.test(source.trim());
+
+// pi's `parseNpmSpec`: the package name of `name`, `name@version`, `@scope/name@version`.
+const npmName = (spec: string) => spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/)?.[1] ?? spec;
+
+/**
+ * What `<project>/.pi/settings.json` makes pi load, resolved as pi's package manager does (core/package-manager.js `resolve`):
+ * - `extensions`, `skills`, `prompts`, `themes`: each plain entry (not a filter) is a path from the `.pi` folder.
+ * - `packages`: an `npm:` source is installed at `.pi/npm/node_modules/<name>` (`getManagedNpmInstallPath`); any other source is
+ *   a path from the `.pi` folder, and one that is not a path (a git or URL source) is cloned under `.pi/git` (`getGitInstallPath`).
+ *   (pi reads a source it cannot parse as git as a path, so both are listed.)
+ * Missing paths are skipped, as pi skips them: one created later is listed then, as added. A package that is not installed yet is
+ * covered by its settings entry.
+ */
+function settingsTargets(settings: Record<string, unknown>, project: string): SettingsTargets {
+  const base = join(project, CONFIG_DIR);
+  const targets: SettingsTargets = { code: [], others: [] };
+  for (const key of RESOURCE_FIELDS) {
+    // The old `skills: { customDirectories }` format is read as the list (settings-manager.js `migrateSettings`).
+    const value = key === "skills" && isRecord(settings.skills) ? settings.skills.customDirectories : settings[key];
+    for (const entry of Array.isArray(value) ? value : []) {
+      if (typeof entry !== "string" || isPattern(entry)) continue;
+      const path = resolveFrom(entry, base);
+      if (path) (key === "extensions" ? targets.code : targets.others).push({ path, via: `named by ${SETTINGS_FILE} (${key}: ${entry})`, ...(key === "extensions" ? { scan: "extensions" as const } : {}) });
+    }
+  }
+  for (const entry of Array.isArray(settings.packages) ? settings.packages : []) {
+    const source = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.source === "string" ? entry.source : undefined;
+    if (source === undefined) continue;
+    const via = `named by ${SETTINGS_FILE} (packages: ${source})`;
+    if (source.startsWith("npm:")) {
+      targets.code.push({ path: join(base, "npm", "node_modules", npmName(source.slice("npm:".length).trim())), via, scan: "package" });
+      continue;
+    }
+    const local = resolveFrom(source, base);
+    if (local) targets.code.push({ path: local, via, scan: "package" });
+    if (!isLocalSource(source)) targets.code.push({ path: join(base, "git"), via, skipGit: true });
+  }
+  return targets;
+}
+
+/** The folder part of a glob, which is where pi's `expandPackageGlob` looks. */
+const globBase = (pattern: string) => {
+  const segments = pattern.split("/");
+  return segments.slice(0, segments.findIndex((segment) => /[*?]/.test(segment))).join("/") || ".";
+};
+
+/** Where the `pi` manifest of `<root>/package.json` points for these kinds of file (pi-manifest.js `readPiManifest`; filters excluded), from `root`. */
+function manifestTargets(root: string, fields: readonly string[]): string[] {
+  const file = join(root, "package.json");
+  if (!existsSync(file)) return [];
   const read = readJson(file);
-  if ("unreadable" in read) return { runs: [], others: [unreadableEntry(path, read.unreadable)] };
+  if ("unreadable" in read || !isRecord(read.value) || !isRecord(read.value.pi)) return [];
+  const found: string[] = [];
+  for (const field of fields) {
+    const entries = read.value.pi[field];
+    if (!Array.isArray(entries) || !entries.every((entry) => typeof entry === "string")) continue;
+    for (const entry of entries as string[]) if (!/^[!+-]/.test(entry)) found.push(resolve(root, /[*?]/.test(entry) ? globBase(entry) : entry));
+  }
+  return found;
+}
+
+/** The folders directly inside `dir` that pi looks into (not hidden, not `node_modules`). */
+function childFolders(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => !name.startsWith(".") && name !== "node_modules" && isFolder(join(dir, name)))
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What a package.json inside `dir` points pi at beyond `dir`, which hashing `dir` does not cover: for a package, the four kinds of
+ * file its manifest lists (package-manager.js `collectPackageResources`) and those of its `extensions` folder; for an extension
+ * folder, `dir` and the folders directly in it (`resolveExtensionEntries`).
+ */
+function manifestEscapes(project: string, dir: string, scan: "package" | "extensions"): Target[] {
+  const found: Target[] = [];
+  for (const root of scan === "package" ? [dir] : [dir, ...childFolders(dir)]) {
+    const via = `named by ${displayPath(project, join(root, "package.json"))}`;
+    for (const path of manifestTargets(root, scan === "package" ? RESOURCE_FIELDS : ["extensions"])) {
+      if (!isInside(dir, path)) found.push({ path, via, scan: "extensions" });
+    }
+  }
+  const extensions = join(dir, "extensions");
+  if (scan === "package" && isFolder(extensions)) found.push(...manifestEscapes(project, extensions, "extensions"));
+  return found;
+}
+
+// How far package.json files may point at one another.
+const MAX_TARGET_DEPTH = 4;
+
+/** The listing for targets: a file is one entry; a folder is listed like the project's own resource folders, an empty one by itself. */
+function targetResources(project: string, targets: Target[]): RawResource[] {
+  const resources: RawResource[] = [];
+  const seen = new Set<string>();
+  const queue = targets.map((target) => ({ target, depth: 0 }));
+  for (let i = 0; i < queue.length; i++) {
+    const { target, depth } = queue[i]!;
+    if (seen.has(target.path) || !existsSync(target.path)) continue;
+    seen.add(target.path);
+    const path = displayPath(project, target.path);
+    let folder: boolean;
+    try {
+      folder = statSync(target.path).isDirectory();
+    } catch {
+      resources.push(unreadableEntry(path, "cannot be opened or read"));
+      continue;
+    }
+    if (!folder) {
+      resources.push({ path, detail: target.via, source: target.path });
+      continue;
+    }
+    resources.push(...folderResources(target.path, path, target.via, target.skipGit));
+    if (target.scan && depth < MAX_TARGET_DEPTH) queue.push(...manifestEscapes(project, target.path, target.scan).map((next) => ({ target: next, depth: depth + 1 })));
+  }
+  return resources;
+}
+
+/** `.pi/settings.json`: executable settings go first (they run on trust), the rest after the extensions. */
+function settingsResources(file: string, path: string, project: string): { runs: RawResource[]; others: RawResource[]; targets: SettingsTargets } {
+  const none: SettingsTargets = { code: [], others: [] };
+  const read = readJson(file);
+  if ("unreadable" in read) return { runs: [], others: [unreadableEntry(path, read.unreadable)], targets: none };
   const { value: parsed, digest } = read;
-  if (!isRecord(parsed)) return { runs: [], others: [{ path, digest }] };
+  if (!isRecord(parsed)) return { runs: [], others: [{ path, digest }], targets: none };
   const rowsFor = (keys: string[]): RawResource[] =>
     keys.filter((key) => key in parsed).flatMap((key) => describeSettingValue(key, parsed[key]).map((value) => ({ path, detail: `${key}: ${value}`, digest })));
   const listed = new Set([...EXECUTABLE_SETTINGS, ...PATH_SETTINGS]);
   const rest = Object.keys(parsed).filter((key) => !listed.has(key));
   const others = [...rowsFor(PATH_SETTINGS), ...(rest.length > 0 ? [{ path, detail: `sets ${rest.join(", ")}`, digest }] : [])];
   const runs = rowsFor(EXECUTABLE_SETTINGS);
-  return { runs, others: runs.length + others.length === 0 ? [{ path, digest }] : others };
+  return { runs, others: runs.length + others.length === 0 ? [{ path, digest }] : others, targets: settingsTargets(parsed, project) };
 }
 
 /** The entries of a resource folder, one per child; an empty folder is itself the resource. */
-function folderResources(dir: string, path: string): RawResource[] {
+function folderResources(dir: string, path: string, detail?: string, skipGit?: true): RawResource[] {
   let children: string[];
   try {
     children = readdirSync(dir, { withFileTypes: true })
@@ -228,8 +405,9 @@ function folderResources(dir: string, path: string): RawResource[] {
   } catch {
     return [unreadableEntry(`${path}/`, "cannot be listed")];
   }
-  if (children.length === 0) return [{ path: `${path}/`, source: dir }];
-  return children.map((child) => ({ path: `${path}/${child}`, source: join(dir, child.replace(/\/$/, "")) }));
+  const extra = { ...(detail === undefined ? {} : { detail }), ...(skipGit ? { skipGit } : {}) };
+  if (children.length === 0) return [{ path: `${path}/`, source: dir, ...extra }];
+  return children.map((child) => ({ path: path === "." ? child : `${path}/${child}`, source: join(dir, child.replace(/\/$/, "")), ...extra }));
 }
 
 /** Folders named `.agents/skills` in the project and its parents, except the user's own (`~/.agents/skills`). */
@@ -248,16 +426,21 @@ function listResources(cwd: string): RawResource[] {
   const project = canonical(cwd);
   const config = join(project, CONFIG_DIR);
   const has = (entry: string) => existsSync(join(config, entry));
-  const settings = has("settings.json") ? settingsResources(join(config, "settings.json"), `${CONFIG_DIR}/settings.json`) : { runs: [], others: [] };
+  const settings = has("settings.json")
+    ? settingsResources(join(config, "settings.json"), SETTINGS_FILE, project)
+    : { runs: [], others: [], targets: { code: [], others: [] } as SettingsTargets };
   const resources: RawResource[] = [];
 
   if (has("mcp.json")) resources.push(...mcpResources(join(config, "mcp.json"), `${CONFIG_DIR}/mcp.json`));
   resources.push(...settings.runs);
   if (has("extensions")) resources.push(...folderResources(join(config, "extensions"), `${CONFIG_DIR}/extensions`));
+  const extensionEscapes = has("extensions") ? manifestEscapes(project, join(config, "extensions"), "extensions") : [];
+  resources.push(...targetResources(project, [...extensionEscapes, ...settings.targets.code]));
   resources.push(...settings.others);
   for (const folder of ["skills", "prompts", "themes"]) {
     if (has(folder)) resources.push(...folderResources(join(config, folder), `${CONFIG_DIR}/${folder}`));
   }
+  resources.push(...targetResources(project, settings.targets.others));
   for (const file of ["SYSTEM.md", "APPEND_SYSTEM.md"]) {
     if (has(file)) resources.push({ path: `${CONFIG_DIR}/${file}`, detail: "changes the system prompt", source: join(config, file) });
   }
@@ -302,8 +485,11 @@ const MAX_REVIEW_DEPTH = 8;
 type Budget = { entries: number; bytes: number };
 type Digest = { digest: string } | { unreadable: string; at?: string };
 
-/** A hash of the file at `path`, or of the folder with everything in it; symlinks are followed (pi follows them). Reads regular files only, within the caps. */
-function digestPath(path: string, budget: Budget, depth = 0): Digest {
+/**
+ * A hash of the file at `path`, or of the folder with everything in it; symlinks are followed (pi follows them). Reads regular files
+ * only, within the caps. `skipGit` leaves out folders named `.git`.
+ */
+function digestPath(path: string, budget: Budget, skipGit: boolean, depth = 0): Digest {
   let isFolder: boolean;
   try {
     isFolder = statSync(path).isDirectory();
@@ -320,7 +506,7 @@ function digestPath(path: string, budget: Budget, depth = 0): Digest {
   if (depth >= MAX_REVIEW_DEPTH) return { unreadable: "folders nested too deep to review" };
   let names: string[];
   try {
-    names = readdirSync(path).sort();
+    names = readdirSync(path).sort().filter((name) => !(skipGit && name === ".git"));
   } catch {
     return { unreadable: "cannot be listed" };
   }
@@ -328,7 +514,7 @@ function digestPath(path: string, budget: Budget, depth = 0): Digest {
   if (budget.entries > MAX_REVIEW_ENTRIES) return { unreadable: `more than ${MAX_REVIEW_ENTRIES} files to review` };
   const children: [string, string][] = [];
   for (const name of names) {
-    const child = digestPath(join(path, name), budget, depth + 1);
+    const child = digestPath(join(path, name), budget, skipGit, depth + 1);
     if ("unreadable" in child) return { unreadable: child.unreadable, at: child.at === undefined ? name : `${name}/${child.at}` };
     children.push([name, child.digest]);
   }
@@ -345,14 +531,15 @@ const byPath = <T extends { path: string }>(a: T, b: T) => (a.path < b.path ? -1
 export function reviewProject(cwd: string): ProjectReview {
   const budget: Budget = { entries: 0, bytes: 0 };
   const digests = new Map<string, Digest>();
-  const digestOf = (source: string) => {
-    let digest = digests.get(source);
-    if (!digest) digests.set(source, (digest = digestPath(source, budget)));
+  const digestOf = (source: string, skipGit = false) => {
+    const key = `${skipGit ? "skip-git" : "all"}\0${source}`;
+    let digest = digests.get(key);
+    if (!digest) digests.set(key, (digest = digestPath(source, budget, skipGit)));
     return digest;
   };
   const hashed = listResources(cwd).map((raw): { resource: ProjectResource; digest: string } => {
     if (raw.unreadable) return { resource: raw, digest: "unreadable" };
-    const found: Digest = raw.digest !== undefined ? { digest: raw.digest } : raw.source !== undefined ? digestOf(raw.source) : { digest: "none" };
+    const found: Digest = raw.digest !== undefined ? { digest: raw.digest } : raw.source !== undefined ? digestOf(raw.source, raw.skipGit) : { digest: "none" };
     if ("unreadable" in found) return { resource: unreadableEntry(raw.path, `${found.at === undefined ? "" : `${found.at}: `}${found.unreadable}`), digest: "unreadable" };
     return { resource: raw, digest: found.digest };
   });
