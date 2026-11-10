@@ -5,6 +5,7 @@ import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import type { Engine, EngineEvent, EngineTurn, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
+import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
 import { getStorage, type StoredSession } from "../lib/storage";
 
@@ -137,6 +138,11 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
+      // Quitting the app aborts this turn and waits for `finished`, which settles after the reply has been saved.
+      let finishTurn = () => {};
+      const finished = new Promise<void>((resolve) => (finishTurn = resolve));
+      const unregisterTurn = registerTurn({ stop: () => abortController.abort(), done: finished });
+
       // One queue for approvals, questions and the engine's dialogs; each request resolves its promise once and an abort declines it.
       const waitForUser = <T,>(signal: AbortSignal, declined: T, build: (respond: (value: T) => void) => PendingRequest) =>
         new Promise<T>((resolve) => {
@@ -251,6 +257,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         } catch (err) {
           setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
         }
+        unregisterTurn();
+        finishTurn();
       }
     },
     [session.id, session.cwd, session.engine, engine, updateMessages, updateStatus],
