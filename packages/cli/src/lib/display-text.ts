@@ -5,12 +5,20 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /** The lines of text a model, tool or engine supplied, each escaped (see `escapeProjectText`); real newlines are kept as the line breaks. */
 export const escapedLines = (text: string): string[] => text.split("\n").map(escapeProjectText);
 
-/** The text with every control, escape and invisible character shown as a visible escape; newlines and tabs stay as they are. */
+// What can act on the terminal or reorder text: C0 controls other than newline and tab, DEL, C1 controls, bidi overrides and
+// isolates, the zero-width space and the BOM. Joiners (emoji sequences, Persian, Hindi), the soft hyphen and directional marks
+// are ordinary text and stay.
+const TERMINAL_UNSAFE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​‪-‮⁦-⁩﻿]/g;
+const visibleEscape = (char: string) =>
+  char === "\r" ? "\\r" : `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`;
+
+/**
+ * Chat text shown in the transcript (from the user, a model, a tool or an MCP server) with every character that could write to
+ * the terminal or reorder text shown as a visible escape. Newlines and tabs stay, and CRLF line ends are newlines. Prompts that
+ * gate actions use the stricter `escapeProjectText` instead.
+ */
 export const escapeTranscriptText = (text: string): string =>
-  text
-    .split("\n")
-    .map((line) => line.split("\t").map(escapeProjectText).join("\t"))
-    .join("\n");
+  text.replace(/\r\n/g, "\n").replace(TERMINAL_UNSAFE, visibleEscape);
 
 /**
  * One line cut into rows no wider than `width` terminal columns (a CJK character or an emoji counts two), never inside a character
