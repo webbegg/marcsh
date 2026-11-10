@@ -25,7 +25,7 @@ import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
-import { clearKeyActivity, noteKeyActivity, setDraft } from "../lib/prompt-lock";
+import { attachInput, clearKeyActivity, noteKeyActivity, setDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -276,7 +276,7 @@ type Props = {
  * and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
  * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead. Each returns false when the turn did not
  * take the text (it is over, or was interrupted): the text then stays in the input. `closed` once the turn has settled and
- * is only winding down: the input is off and says so.
+ * is only winding down: the input still takes keys, refuses to send, and says so.
  */
 export type TurnInput = { active: boolean; closed?: boolean; steer: (text: string) => boolean; queue: (text: string) => boolean };
 
@@ -285,8 +285,8 @@ export const TurnInputContext = createContext<TurnInput>({ active: false, steer:
 const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
 
 function turnHint(turnInput: TurnInput, disabled: boolean): string | undefined {
-  if (turnInput.active && !disabled) return "enter steers · alt+enter queues";
   if (turnInput.closed) return "turn ending · no more steers";
+  if (turnInput.active && !disabled) return "enter steers · alt+enter queues";
   return undefined;
 }
 
@@ -384,14 +384,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu, renderer]);
 
-  // A prompt that opens while the user is composing here opens locked (see prompt-lock); a new bar starts with nothing typed.
+  // A prompt that opens while the user is composing here opens locked (see prompt-lock). Keys can reach a new bar before this runs
+  // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
   useEffect(() => {
-    setDraft(renderer, false);
-    clearKeyActivity(renderer);
-    return () => {
-      setDraft(renderer, false);
-      clearKeyActivity(renderer);
-    };
+    return attachInput(renderer, (textareaRef.current?.plainText.length ?? 0) > 0);
   }, [renderer]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).

@@ -2,13 +2,15 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { act } from "react";
+import { act, useEffect } from "react";
 
 process.env.MARCSH_DB_PATH = ":memory:";
 const prefsDir = mkdtempSync(join(tmpdir(), "marcsh-pi-lock-prefs-"));
 process.env.MARCSH_PREFERENCES_PATH = join(prefsDir, "preferences.json");
 
 const { testRender } = await import("@opentui/react/test-utils");
+const { createMockKeys } = await import("@opentui/core/testing");
+const { useRenderer } = await import("@opentui/react");
 const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
@@ -72,8 +74,19 @@ const backspace = async () => {
   await settle(60);
 };
 
+// Keys that reach a new input bar in the commit that mounts it, before its mount effects have run (the home → session hand-off
+// under a fast typist): sibling layout effects run after the bar's textarea exists and before any passive effect.
+function TypeOnMount({ text }: { text: string }) {
+  const renderer = useRenderer();
+  useEffect(() => {
+    const keys = createMockKeys(renderer);
+    for (const char of text) keys.pressKey(char);
+  }, [renderer, text]);
+  return null;
+}
+
 // A pi-like engine (its turn takes steers, so the input is on) that asks once `open()` is called, and records the answer.
-function openSession(ask: (host: TurnHost, signal: AbortSignal) => Promise<unknown>) {
+function openSession(ask: (host: TurnHost, signal: AbortSignal) => Promise<unknown>, burstOnMount?: string) {
   const gate = Promise.withResolvers<void>();
   const answers: unknown[] = [];
   const engine: Engine = {
@@ -91,7 +104,7 @@ function openSession(ask: (host: TurnHost, signal: AbortSignal) => Promise<unkno
   engines.set("pi", engine);
   const session = getStorage().createSession({ title: "pi chat", cwd, engine: "pi" });
   const router = createMemoryRouter(
-    [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
+    [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <>{burstOnMount ? <TypeOnMount text={burstOnMount} /> : null}<Session /></> }] }],
     { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "opus" } } }] },
   );
   return {
@@ -178,6 +191,18 @@ describe("a prompt that opens while the user is composing (S4)", () => {
     await settle(400);
     await press("y");
     expect(turn.answers).toEqual(["allow"]);
+  }, 30000);
+
+  test("a burst typed into a session's input bar before its mount effects ran still counts: the prompt opens locked", async () => {
+    const turn = openSession(bash, "steer burst");
+    await turn.mount();
+    expect(frame()).toContain("steer burst");
+    await turn.open();
+
+    expect(await frameContaining("Allow")).toContain(LOCK_LINE);
+    await settle(400);
+    await press("y");
+    expect(turn.answers).toEqual([]);
   }, 30000);
 
   test("sending the text ends the composing: a prompt right after does not open locked", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clearKeyActivity, COMPOSING_MS, isComposing, noteKeyActivity, setDraft } from "./prompt-lock";
+import { attachInput, clearKeyActivity, COMPOSING_MS, isComposing, noteKeyActivity, setDraft } from "./prompt-lock";
 
 // What "the user is composing" means to a prompt that opens: a draft in the input, or a key typed there in the last 2 s.
 describe("isComposing", () => {
@@ -43,5 +43,45 @@ describe("isComposing", () => {
 
     expect(isComposing(typing, 1_001)).toBe(true);
     expect(isComposing(idle, 1_001)).toBe(false);
+  });
+});
+
+// The hand-off from the home screen: keys can land in the new input bar before it mounts, and the old bar's unmount can run after.
+describe("attachInput", () => {
+  test("a bar that mounts holding text composes, whatever keys were seen", () => {
+    const owner = {};
+    attachInput(owner, true);
+
+    expect(isComposing(owner, 10_000)).toBe(true);
+  });
+
+  test("a bar that mounts empty keeps the keys typed just before", () => {
+    const owner = {};
+    noteKeyActivity(owner, 1_000);
+    attachInput(owner, false);
+
+    expect(isComposing(owner, 1_001)).toBe(true);
+    expect(isComposing(owner, 1_000 + COMPOSING_MS)).toBe(false);
+  });
+
+  test("the old bar unmounting after the new one mounted clears nothing of the new one", () => {
+    const owner = {};
+    const detachOld = attachInput(owner, false);
+    const detachNew = attachInput(owner, true);
+    noteKeyActivity(owner, 1_000);
+    detachOld();
+
+    expect(isComposing(owner, 1_001)).toBe(true);
+    detachNew();
+    expect(isComposing(owner, 1_001)).toBe(false);
+  });
+
+  test("the bar that is current clears its draft and keys when it unmounts", () => {
+    const owner = {};
+    const detach = attachInput(owner, true);
+    noteKeyActivity(owner, 1_000);
+    detach();
+
+    expect(isComposing(owner, 1_001)).toBe(false);
   });
 });

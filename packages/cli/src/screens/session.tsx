@@ -123,8 +123,8 @@ function SessionChat({
   );
 
   // A turn that takes input (pi) keeps the input on; an approval, question or dialog still takes every key, so the input is off while one is open.
-  const typingDuringTurn = busy && canSteer;
-  // Once the engine has settled the turn takes no more text (`inputClosed`): the input is off, a draft stays in it, and it can be sent when the turn ends.
+  // Once the engine has settled the turn takes no more text (`inputClosed`): the input stays on so no key is lost, sending is refused, and the text can be sent when the turn ends.
+  const typingDuringTurn = busy && (canSteer || inputClosed);
   const turnInput = useMemo(
     () => ({ active: typingDuringTurn && !pendingRequest, closed: busy && inputClosed, steer, queue: followUp }),
     [typingDuringTurn, pendingRequest, busy, inputClosed, steer, followUp],

@@ -179,29 +179,20 @@ export function PermissionPrompt({ request }: Props) {
           </>
         ) : !quiet ? (
           <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
-        ) : confirmFirst ? (
-          <>
-            <text>y</text>
-            <text attributes={TextAttributes.DIM}>{armed ? "press Enter to confirm" : "allow once (then Enter)"}</text>
-          </>
         ) : (
           <>
             <text>y</text>
-            <text attributes={TextAttributes.DIM}>allow once</text>
-          </>
-        )}
-        {quiet && offerAlways ? (
-          <>
-            <text>a</text>
-            <text attributes={TextAttributes.DIM}>always allow</text>
-          </>
-        ) : null}
-        {quiet ? (
-          <>
+            <text attributes={TextAttributes.DIM}>{confirmFirst ? (armed ? "press Enter to confirm" : "allow once (then Enter)") : "allow once"}</text>
+            {offerAlways ? (
+              <>
+                <text>a</text>
+                <text attributes={TextAttributes.DIM}>always allow</text>
+              </>
+            ) : null}
             <text>n</text>
             <text attributes={TextAttributes.DIM}>deny</text>
           </>
-        ) : null}
+        )}
       </box>
       {lock.locked ? <text>{LOCKED_LINE}</text> : null}
     </box>

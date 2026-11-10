@@ -11,14 +11,14 @@ export const LOCKED_LINE = "you were typing: press ↓ to answer";
 /** A key typed in the input this recently means the user is composing. */
 export const COMPOSING_MS = 2000;
 
-type Composing = { lastKeyAt: number; draft: boolean };
+type Composing = { lastKeyAt: number; draft: boolean; input: object | null };
 
 // One state per screen (renderer), so nothing carries over between screens.
 const states = new WeakMap<object, Composing>();
 
 const stateOf = (owner: object): Composing => {
   let state = states.get(owner);
-  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false }));
+  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false, input: null }));
   return state;
 };
 
@@ -35,6 +35,24 @@ export function clearKeyActivity(owner: object) {
 /** Whether the input holds text. */
 export function setDraft(owner: object, hasDraft: boolean) {
   stateOf(owner).draft = hasDraft;
+}
+
+/**
+ * An input bar mounted, already holding text or not. Keys can reach a new bar before its mount effects run (the hand-off
+ * from the home screen), so the draft comes from the bar's content and the recent keys stay. The returned `detach` (its
+ * unmount) clears the state only if no newer bar attached since: an old bar unmounting late must not wipe the new one's.
+ */
+export function attachInput(owner: object, hasDraft: boolean): () => void {
+  const state = stateOf(owner);
+  const input = {};
+  state.input = input;
+  state.draft = hasDraft;
+  return () => {
+    if (state.input !== input) return;
+    state.input = null;
+    state.draft = false;
+    state.lastKeyAt = -Infinity;
+  };
 }
 
 export function isComposing(owner: object, now = Date.now()): boolean {
