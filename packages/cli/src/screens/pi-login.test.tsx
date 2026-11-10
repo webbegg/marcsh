@@ -159,10 +159,23 @@ describe("/login (S12)", () => {
     const filtered = frame();
     expect(filtered).toContain("Fake Device Login");
     expect(filtered).toContain("Fake Subscription (Pro)");
-    expect(filtered).toContain("subscription");
     expect(filtered).toContain("Fake Keyed API key");
-    expect(filtered).toContain("API key");
     expect(filtered).not.toContain("Anthropic");
+  });
+
+  test("each row says its auth type once: the label is not followed by the same words again", async () => {
+    await openSession("claude");
+    await run("/login");
+    await type("fake");
+
+    const rows = frame();
+    expect(rows).toContain("Fake Keyed API key");
+    expect(rows).not.toContain("API key API key");
+    expect(rows.match(/API key/gi)).toHaveLength(1);
+    expect(rows).toContain("Fake Subscription (Pro)");
+    expect(rows.match(/subscription/gi)).toHaveLength(1);
+    // A login whose label does not name its type still shows it.
+    expect(rows).toContain("Fake Device Login sign in");
   });
 
   test("subscription login on a Claude session: shows the URL, opens the browser, takes the pasted code masked, then toasts and stores the credential in pi", async () => {

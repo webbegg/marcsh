@@ -30,10 +30,19 @@ type Props = {
 
 const providerKey = (provider: LoginProvider) => `${provider.id}:${provider.authType}`;
 
+const kindName = (provider: LoginProvider) => (provider.authType === "api_key" ? "API key" : provider.subscription ? "subscription" : "sign in");
+
+const stateOf = (provider: LoginProvider) => (provider.source === "stored" || !provider.source ? "logged in" : provider.source);
+
 function kindOf(provider: LoginProvider): string {
-  const kind = provider.authType === "api_key" ? "API key" : provider.subscription ? "subscription" : "sign in";
-  if (!provider.loggedIn) return kind;
-  return `${kind} · ${provider.source === "stored" || !provider.source ? "logged in" : provider.source}`;
+  const kind = kindName(provider);
+  return provider.loggedIn ? `${kind} · ${stateOf(provider)}` : kind;
+}
+
+/** What a row shows after its label: the auth type unless the label already names it ("Cerebras API key"), then the login state. */
+function badgeOf(provider: LoginProvider): string {
+  if (!provider.label.toLowerCase().includes(kindName(provider).toLowerCase())) return kindOf(provider);
+  return provider.loggedIn ? stateOf(provider) : "";
 }
 
 export const LoginDialogContent = ({ runtime, getDeviceId, onLoggedIn }: Props) => {
@@ -64,7 +73,7 @@ export const LoginDialogContent = ({ runtime, getDeviceId, onLoggedIn }: Props) 
             {provider.label}
           </text>
           <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-            {kindOf(provider)}
+            {badgeOf(provider)}
           </text>
         </box>
       )}

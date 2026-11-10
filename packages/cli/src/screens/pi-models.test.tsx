@@ -201,7 +201,8 @@ describe("/models on a pi session (S12)", () => {
   test("with no model that has credentials, a toast points at /login and no dialog opens", async () => {
     await createRuntime([]);
     await openSession("pi");
-    expect(frame()).toContain(`${PI_DEFAULT_MODEL} · pi`);
+    expect(frame()).toContain("run /login");
+    expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
     await run("/models");
 
