@@ -40,7 +40,9 @@ export function setDraft(owner: object, hasDraft: boolean) {
 /**
  * An input bar mounted, already holding text or not. Keys can reach a new bar before its mount effects run (the hand-off
  * from the home screen), so the draft comes from the bar's content and the recent keys stay. The returned `detach` (its
- * unmount) clears the state only if no newer bar attached since: an old bar unmounting late must not wipe the new one's.
+ * unmount) clears the draft only if no newer bar attached since: an old bar unmounting late must not wipe the new one's.
+ * It never clears the recent keys: they say the user's hands are typing, whichever bar took them (a burst right after Enter
+ * on the home screen lands in the home bar just before it unmounts).
  */
 export function attachInput(owner: object, hasDraft: boolean): () => void {
   const state = stateOf(owner);
@@ -51,7 +53,6 @@ export function attachInput(owner: object, hasDraft: boolean): () => void {
     if (state.input !== input) return;
     state.input = null;
     state.draft = false;
-    state.lastKeyAt = -Infinity;
   };
 }
 

@@ -73,15 +73,21 @@ describe("attachInput", () => {
 
     expect(isComposing(owner, 1_001)).toBe(true);
     detachNew();
-    expect(isComposing(owner, 1_001)).toBe(false);
+    // The draft is gone with the bar; the recent keys still count until they are 2 s old.
+    expect(isComposing(owner, 1_001)).toBe(true);
+    expect(isComposing(owner, 1_000 + COMPOSING_MS)).toBe(false);
   });
 
-  test("the bar that is current clears its draft and keys when it unmounts", () => {
+  test("the bar that is current clears its draft when it unmounts, but recent keys still count (the home screen hand-off)", () => {
     const owner = {};
     const detach = attachInput(owner, true);
-    noteKeyActivity(owner, 1_000);
     detach();
-
     expect(isComposing(owner, 1_001)).toBe(false);
+
+    const detachAgain = attachInput(owner, false);
+    noteKeyActivity(owner, 1_000);
+    detachAgain();
+    expect(isComposing(owner, 1_500)).toBe(true);
+    expect(isComposing(owner, 1_000 + COMPOSING_MS)).toBe(false);
   });
 });
