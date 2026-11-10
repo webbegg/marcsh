@@ -1,5 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { claudeEngine } from "./claude";
+import type { ClaudeCommand } from "../claude-commands";
+import { getStorage } from "../storage";
 import type { PiEngine } from "./pi";
 import type { Engine } from "./types";
 
@@ -44,6 +46,23 @@ export const engines = createEngineRegistry(
 );
 
 export const getEngine = (id: string) => engines.get(id);
+
+/**
+ * Fills an engine's `/` menu cache without a model turn, in the background; never delays or breaks the caller.
+ * Asking for pi is what loads pi, so Claude-only runs never do.
+ */
+export async function warmUpEngineCommands(
+  id: string,
+  {
+    cwd = process.cwd(),
+    registry = engines,
+    save = (commands) => getStorage().saveCommands(id, commands),
+  }: { cwd?: string; registry?: Pick<typeof engines, "get">; save?: (commands: ClaudeCommand[]) => void } = {},
+) {
+  try {
+    await registry.get(id)?.warmUpCommands({ cwd, save });
+  } catch {}
+}
 
 /**
  * The pi engine's model runtime and device id, for the login and model dialogs: they use the runtime the pi

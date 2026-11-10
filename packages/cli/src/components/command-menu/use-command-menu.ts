@@ -7,14 +7,16 @@ import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { getStorage } from "../../lib/storage";
 import { combineClaudeCommands } from "../../lib/claude-commands";
 import { marcshPluginPath, readPluginCommands } from "../../lib/plugin";
+import { bundledPiCommands } from "../../lib/engine/pi-commands";
 
 // Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
 // The plugin's own commands are read from disk, so they are listed even with an empty cache.
-function loadMenuCommands(): Command[] {
+function loadMenuCommands(engine: string): Command[] {
   const pluginPath = marcshPluginPath();
-  const bundled = pluginPath ? readPluginCommands(pluginPath) : [];
+  // Each engine has its own cache and its own names for the plugin's commands (on pi, `marcsh:feature` is a template).
+  const bundled = !pluginPath ? [] : engine === "pi" ? bundledPiCommands(pluginPath) : readPluginCommands(pluginPath);
   try {
-    return getMenuCommands(combineClaudeCommands(getStorage().getClaudeCommands(), bundled));
+    return getMenuCommands(combineClaudeCommands(getStorage().getCommands(engine), bundled));
   } catch {
     return getMenuCommands(bundled);
   }
@@ -32,7 +34,8 @@ type UseCommandMenuReturn = {
   setSelectedIndex: (index: number) => void;
 };
 
-export function useCommandMenu(): UseCommandMenuReturn {
+/** The `/` menu of the engine the prompt runs on: its commands after marcsh's own. */
+export function useCommandMenu(engine: string): UseCommandMenuReturn {
   const [textValue, setTextValue] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
@@ -41,7 +44,7 @@ export function useCommandMenu(): UseCommandMenuReturn {
 
   const commandQuery = showCommandMenu && textValue.startsWith("/") ? textValue.slice(1) : "";
 
-  const menuCommands = useMemo(() => (showCommandMenu ? loadMenuCommands() : []), [showCommandMenu]);
+  const menuCommands = useMemo(() => (showCommandMenu ? loadMenuCommands(engine) : []), [showCommandMenu, engine]);
   const filteredCommands = useMemo(
     () => getFilteredCommands(commandQuery, menuCommands),
     [commandQuery, menuCommands],

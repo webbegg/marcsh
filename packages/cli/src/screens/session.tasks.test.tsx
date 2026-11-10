@@ -34,6 +34,16 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 // Joins word-wrapped lines (and the line's left border) back into one string.
 const collapse = (frame: string) => frame.replace(/[│\s]+/g, " ");
+// Under a loaded full suite the turn can take longer than a fixed wait: poll until the expected state appears.
+async function waitFor<T>(read: () => T, done: (value: T) => boolean, timeoutMs = 3000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let value = read();
+  while (!done(value) && Date.now() < deadline) {
+    await settle(20);
+    value = read();
+  }
+  return value;
+}
 
 async function openSession() {
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd" });
@@ -54,7 +64,10 @@ afterEach(async () => {
 describe("subagent task progress (S11b)", () => {
   test("shows one compact task line with its summary and hides the subagent's inner tool call", async () => {
     await openSession();
-    const frame = collapse(screen!.captureCharFrame());
+    const frame = await waitFor(
+      () => collapse(screen!.captureCharFrame()),
+      (text) => text.includes("Found three modules"),
+    );
 
     expect(frame).toContain("Task: Searching · completed · Grep · 4 tools · 1500 tok");
     expect(frame).toContain("Found three modules");
@@ -64,7 +77,10 @@ describe("subagent task progress (S11b)", () => {
 
   test("persists the task part with the saved message", async () => {
     const session = await openSession();
-    const saved = getStorage().getSession(session.id)!;
+    const saved = await waitFor(
+      () => getStorage().getSession(session.id)!,
+      (stored) => (stored.messages.at(-1)?.parts ?? []).some((p) => p.type === "task" && p.status === "completed"),
+    );
     const parts = saved.messages.at(-1)!.parts;
 
     expect(parts.filter((p) => p.type === "task")).toEqual([

@@ -1,9 +1,14 @@
-/** A Claude Code command or skill as the `/` menu shows it (the SDK's `SlashCommand`, minus what the menu doesn't use). */
+/**
+ * A command or skill as the `/` menu shows it (for Claude Code, the SDK's `SlashCommand` minus what the menu doesn't use).
+ * Other engines' commands share the shape.
+ */
 export type ClaudeCommand = {
   /** Without the leading slash. */
   name: string;
   description: string;
   argumentHint: string;
+  /** Where an engine says the command comes from (pi: `extension`, `prompt`, `skill`). Claude's carry none. */
+  source?: string;
 };
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
@@ -13,6 +18,15 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
  * Unusable entries are skipped; rows that share a name collapse to the builtin row, else the first.
  */
 export function normalizeClaudeCommands(raw: unknown): ClaudeCommand[] {
+  return normalizeCommands(raw, false);
+}
+
+/** Like `normalizeClaudeCommands`, for the other engines' lists: a text `source` is kept. */
+export function normalizeEngineCommands(raw: unknown): ClaudeCommand[] {
+  return normalizeCommands(raw, true);
+}
+
+function normalizeCommands(raw: unknown, keepSource: boolean): ClaudeCommand[] {
   if (!Array.isArray(raw)) return [];
 
   const byName = new Map<string, { command: ClaudeCommand; builtin: boolean }>();
@@ -25,8 +39,14 @@ export function normalizeClaudeCommands(raw: unknown): ClaudeCommand[] {
     const builtin = row.builtin === true;
     const known = byName.get(name);
     if (known && (known.builtin || !builtin)) continue;
+    const source = keepSource ? text(row.source) : "";
     byName.set(name, {
-      command: { name, description: text(row.description), argumentHint: text(row.argumentHint) },
+      command: {
+        name,
+        description: text(row.description),
+        argumentHint: text(row.argumentHint),
+        ...(source !== "" ? { source } : {}),
+      },
       builtin,
     });
   }

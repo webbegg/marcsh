@@ -11,12 +11,14 @@ import {
 } from "../components/messages";
 import { PermissionPrompt } from "../components/permission-prompt";
 import { QuestionPrompt } from "../components/question-prompt";
+import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
 import { getStorage, type StoredSession } from "../lib/storage";
-import { getEngine, unknownEngine } from "../lib/engine";
+import { getEngine, unknownEngine, warmUpEngineCommands } from "../lib/engine";
+import type { NoticeLevel } from "../lib/engine/types";
 import { modelForEngine } from "../lib/models";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 
@@ -69,7 +71,18 @@ function SessionChat({
     () => getEngine(session.engine) ?? unknownEngine(session.engine),
     [session.engine],
   );
-  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session, engine);
+  const toast = useToast();
+  // An engine's notices are toasts (an extension's text is stripped of terminal controls); a warning has no color of its own, so it says so.
+  const chatOptions = useMemo(
+    () => ({
+      notify: (message: string, level: NoticeLevel) => {
+        const text = stripControlChars(message);
+        toast.show({ variant: level === "error" ? "error" : "info", message: level === "warning" ? `Warning: ${text}` : text });
+      },
+    }),
+    [toast],
+  );
+  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session, engine, chatOptions);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -112,6 +125,11 @@ function SessionChat({
     if (session.engine === "pi") void refreshPiModel();
   }, [session.engine, refreshPiModel]);
 
+  // The `/` menu of a pi session lists pi's commands from the first keystroke, not only after its first turn.
+  useEffect(() => {
+    if (session.engine === "pi") void warmUpEngineCommands("pi", { cwd: session.cwd });
+  }, [session.engine, session.cwd]);
+
   // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
     // Esc inside a question's free-text field only closes the field.
@@ -143,6 +161,10 @@ function SessionChat({
       {pendingRequest?.kind === "question" && (
         <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
       )}
+      {pendingRequest?.kind === "select" && <SelectPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "confirm" && <ConfirmPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "input" && <InputPrompt key={pendingRequest.id} request={pendingRequest} />}
+      {pendingRequest?.kind === "editor" && <EditorPrompt key={pendingRequest.id} request={pendingRequest} />}
       {error && <ErrorMessage message={error} />}
     </SessionShell>
   );

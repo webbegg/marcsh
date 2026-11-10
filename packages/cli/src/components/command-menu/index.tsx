@@ -44,6 +44,9 @@ export function CommandMenu({
     Math.max(...filtered.map((cmd) => cmd.name.length), 0) + 4,
   );
 
+  // Wide enough for the longest source word shown (pi's `extension`), and never narrower than Claude's tags need.
+  const sourceTagWidth = Math.max(SOURCE_TAG_WIDTH, ...filtered.map((cmd) => (cmd.source?.length ?? 0) + 1));
+
   // The menu sits right above the input, so the screen row of its bottom edge is the number of free rows above.
   const { height: terminalHeight } = useTerminalDimensions();
   const [measuredRows, setMeasuredRows] = useState<number | null>(null);
@@ -102,7 +105,7 @@ export function CommandMenu({
                 {cmd.argumentHint ? `${cmd.argumentHint} ${cmd.description}` : cmd.description}
               </text>
             </box>
-            <box width={SOURCE_TAG_WIDTH} alignItems="flex-end" flexShrink={0}>
+            <box width={sourceTagWidth} alignItems="flex-end" flexShrink={0}>
               <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
                 {cmd.source ?? ""}
               </text>

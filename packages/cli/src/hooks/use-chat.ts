@@ -3,7 +3,7 @@ import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
-import type { Engine, EngineEvent, EngineTurn, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
+import type { Engine, EngineEvent, EngineTurn, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
 import { finishReply } from "../lib/reply";
 import { getStorage, type StoredSession } from "../lib/storage";
 
@@ -22,11 +22,63 @@ export type QuestionRequest = {
   respond: (answers: Record<string, string> | null) => void;
 };
 
-export type PendingRequest = PermissionRequest | QuestionRequest;
+/** An engine's own dialogs (pi extensions): each `respond` takes the answer, or the cancelled value. */
+export type SelectRequest = {
+  kind: "select";
+  id: string;
+  title: string;
+  options: string[];
+  respond: (choice: string | undefined) => void;
+};
+
+export type ConfirmRequest = {
+  kind: "confirm";
+  id: string;
+  title: string;
+  message: string;
+  respond: (confirmed: boolean) => void;
+};
+
+export type InputRequest = {
+  kind: "input";
+  id: string;
+  title: string;
+  placeholder?: string;
+  respond: (text: string | undefined) => void;
+};
+
+export type EditorRequest = {
+  kind: "editor";
+  id: string;
+  title: string;
+  prefill?: string;
+  respond: (text: string | undefined) => void;
+};
+
+export type PendingRequest = PermissionRequest | QuestionRequest | SelectRequest | ConfirmRequest | InputRequest | EditorRequest;
+
+export type ChatOptions = {
+  /** Shows a message from the engine that needs no answer (a toast). */
+  notify?: (message: string, level: NoticeLevel) => void;
+};
+
+/** Cancels a request the user never answered. */
+function decline(request: PendingRequest) {
+  switch (request.kind) {
+    case "permission":
+      return request.respond("deny");
+    case "question":
+      return request.respond(null);
+    case "confirm":
+      return request.respond(false);
+    default:
+      return request.respond(undefined);
+  }
+}
 
 export type SubmitParams = { userText: string; mode: ModeType; model: string };
 
-export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
+export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +91,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
   const abortControllerRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
   const pendingRequestsRef = useRef(new Set<PendingRequest>());
+  const notifyRef = useRef(options.notify);
+  notifyRef.current = options.notify;
 
   const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
     messagesRef.current = update(messagesRef.current);
@@ -71,9 +125,11 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      // One queue for approvals and questions; each request resolves its promise once and an abort declines it.
+      // One queue for approvals, questions and the engine's dialogs; each request resolves its promise once and an abort declines it.
       const waitForUser = <T,>(signal: AbortSignal, declined: T, build: (respond: (value: T) => void) => PendingRequest) =>
         new Promise<T>((resolve) => {
+          // An abort that already happened would never be heard: decline without showing anything.
+          if (signal.aborted) return resolve(declined);
           const respond = (value: T) => {
             // Already answered, declined by abort, or declined at turn end: never resolve twice.
             if (!pendingRequestsRef.current.delete(request)) return;
@@ -100,7 +156,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
           case "commands":
             // The command list only feeds the `/` menu: failing to save it never affects the turn.
             try {
-              getStorage().saveClaudeCommands(event.commands);
+              getStorage().saveCommands(session.engine, event.commands);
             } catch {}
             break;
           case "error":
@@ -120,6 +176,33 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
             questions,
             respond,
           })),
+        select: (title, options, signal) =>
+          waitForUser<string | undefined>(signal, undefined, (respond) => ({
+            kind: "select",
+            id: crypto.randomUUID(),
+            title,
+            options,
+            respond,
+          })),
+        confirm: (title, message, signal) =>
+          waitForUser<boolean>(signal, false, (respond) => ({ kind: "confirm", id: crypto.randomUUID(), title, message, respond })),
+        input: (title, placeholder, signal) =>
+          waitForUser<string | undefined>(signal, undefined, (respond) => ({
+            kind: "input",
+            id: crypto.randomUUID(),
+            title,
+            placeholder,
+            respond,
+          })),
+        editor: (title, prefill, signal) =>
+          waitForUser<string | undefined>(signal, undefined, (respond) => ({
+            kind: "editor",
+            id: crypto.randomUUID(),
+            title,
+            prefill,
+            respond,
+          })),
+        notify: (message, level) => notifyRef.current?.(message, level),
       };
 
       try {
@@ -144,10 +227,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
         turnRef.current = null;
         abortControllerRef.current = null;
         // Requests the engine is still waiting on (it can end the turn without aborting) are declined, not just dropped.
-        for (const request of [...pendingRequestsRef.current]) {
-          if (request.kind === "question") request.respond(null);
-          else request.respond("deny");
-        }
+        for (const request of [...pendingRequestsRef.current]) decline(request);
         setPermissionQueue([]);
         applyToReply(finishReply);
         updateStatus("ready");
@@ -159,7 +239,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine) {
         }
       }
     },
-    [session.id, session.cwd, engine, updateMessages, updateStatus],
+    [session.id, session.cwd, session.engine, engine, updateMessages, updateStatus],
   );
 
   const interrupt = useCallback(() => {

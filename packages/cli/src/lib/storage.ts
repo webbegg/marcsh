@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ChatMessage } from "./chat-types";
-import { normalizeClaudeCommands, type ClaudeCommand } from "./claude-commands";
+import { normalizeClaudeCommands, normalizeEngineCommands, type ClaudeCommand } from "./claude-commands";
 
 export type SessionSummary = {
   id: string;
@@ -36,6 +36,9 @@ export type Storage = {
   /** Last known Claude Code commands and skills, kept so the `/` menu has them after a restart. */
   getClaudeCommands(): ClaudeCommand[];
   saveClaudeCommands(commands: ClaudeCommand[]): void;
+  /** The last known command list of an engine (`claude` is the list above); every other engine has its own. */
+  getCommands(engine: string): ClaudeCommand[];
+  saveCommands(engine: string, commands: ClaudeCommand[]): void;
   addPermissionRule(rule: PermissionRule): void;
   hasPermissionRule(rule: PermissionRule): boolean;
 };
@@ -53,6 +56,9 @@ type SessionRow = {
 };
 
 const CLAUDE_COMMANDS_KEY = "claude_commands";
+
+// The Claude key is the one marcsh has always used; other engines get `<engine>_commands`.
+const commandsKey = (engine: string) => (engine === "claude" ? CLAUDE_COMMANDS_KEY : `${engine}_commands`);
 
 const marcshDir = () => join(homedir(), ".marcsh");
 
@@ -134,6 +140,23 @@ export function openStorage(path = defaultDbPath()): Storage {
     };
   }
 
+  function readCommands(key: string, normalize: (raw: unknown) => ClaudeCommand[]): ClaudeCommand[] {
+    const row = db.query<{ value: string }, { key: string }>("SELECT value FROM meta WHERE key = $key").get({ key });
+    if (!row) return [];
+    try {
+      return normalize(JSON.parse(row.value));
+    } catch {
+      return [];
+    }
+  }
+
+  function writeCommands(key: string, commands: ClaudeCommand[], normalize: (raw: unknown) => ClaudeCommand[]) {
+    db.query(
+      `INSERT INTO meta (key, value) VALUES ($key, $value)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run({ key, value: JSON.stringify(normalize(commands)) });
+  }
+
   return {
     listSessions() {
       return db
@@ -182,22 +205,19 @@ export function openStorage(path = defaultDbPath()): Storage {
     },
 
     getClaudeCommands() {
-      const row = db
-        .query<{ value: string }, { key: string }>("SELECT value FROM meta WHERE key = $key")
-        .get({ key: CLAUDE_COMMANDS_KEY });
-      if (!row) return [];
-      try {
-        return normalizeClaudeCommands(JSON.parse(row.value));
-      } catch {
-        return [];
-      }
+      return readCommands(CLAUDE_COMMANDS_KEY, normalizeClaudeCommands);
     },
 
     saveClaudeCommands(commands) {
-      db.query(
-        `INSERT INTO meta (key, value) VALUES ($key, $value)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ).run({ key: CLAUDE_COMMANDS_KEY, value: JSON.stringify(normalizeClaudeCommands(commands)) });
+      writeCommands(CLAUDE_COMMANDS_KEY, commands, normalizeClaudeCommands);
+    },
+
+    getCommands(engine) {
+      return readCommands(commandsKey(engine), engine === "claude" ? normalizeClaudeCommands : normalizeEngineCommands);
+    },
+
+    saveCommands(engine, commands) {
+      writeCommands(commandsKey(engine), commands, engine === "claude" ? normalizeClaudeCommands : normalizeEngineCommands);
     },
 
     addPermissionRule({ cwd, toolName, command = "" }) {

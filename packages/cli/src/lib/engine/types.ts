@@ -38,12 +38,28 @@ export type TurnRequest = {
   signal: AbortSignal;
 };
 
+export type NoticeLevel = "info" | "warning" | "error";
+
 /** What the chat offers an engine during a turn. Each ask resolves once; an aborted signal resolves it as declined. */
 export type TurnHost = {
   emit(event: EngineEvent): void;
   askPermission(ask: PermissionAsk, signal: AbortSignal): Promise<PermissionDecision>;
   /** Resolves with the answers keyed by question text, or null when the user declines. */
   askQuestions(questions: AskQuestion[], signal: AbortSignal): Promise<Record<string, string> | null>;
+  /*
+   * Generic asks, for engines whose extensions open their own dialogs (pi). Each resolves once, as cancelled when
+   * the user cancels or the signal aborts. A host without them cancels every ask; the Claude engine never uses them.
+   */
+  /** Resolves with the chosen option, or undefined when cancelled. */
+  select?(title: string, options: string[], signal: AbortSignal): Promise<string | undefined>;
+  /** Resolves with the answer; false when cancelled. */
+  confirm?(title: string, message: string, signal: AbortSignal): Promise<boolean>;
+  /** Resolves with the text, or undefined when cancelled. */
+  input?(title: string, placeholder: string | undefined, signal: AbortSignal): Promise<string | undefined>;
+  /** Resolves with the edited text, or undefined when cancelled. */
+  editor?(title: string, prefill: string | undefined, signal: AbortSignal): Promise<string | undefined>;
+  /** A short message for the user that needs no answer. */
+  notify?(message: string, level: NoticeLevel): void;
 };
 
 export type EngineTurn = {
