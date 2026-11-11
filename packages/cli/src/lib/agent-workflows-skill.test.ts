@@ -63,7 +63,7 @@ describe("the agent-workflows skill", () => {
 
   test("names every rule packs.ts rejects a pack for", () => {
     const body = text();
-    for (const phrase of ["symlink", "1 MB", "256 KB", "hooks", "`...`", "allowed-tools", "primary agent", "MCP"]) {
+    for (const phrase of ["symlink", "1 MB", "256 KB", "5,000 entries", "50 MB", "hooks", "`...`", "allowed-tools", "primary agent", "MCP"]) {
       expect(body).toContain(phrase);
     }
   });
@@ -72,6 +72,10 @@ describe("the agent-workflows skill", () => {
     const body = text();
     expect(body).toContain("An agent file whose frontmatter is never closed");
     for (const word of ["claude-", "opus", "sonnet", "haiku", "gpt-4o"]) expect(body).toContain(word);
+  });
+
+  test("says Esc cancels an install while it is fetching", () => {
+    expect(text()).toMatch(/Esc[^.]*(cancels|stops)[^.]*fetch/i);
   });
 
   test("says skills and commands load only while the pack's agent is selected", () => {

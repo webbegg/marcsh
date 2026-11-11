@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
 import { agentLabel, type Agent } from "../../lib/agents";
+import { lockProblem } from "../../lib/packs";
 import { Mode } from "../../lib/modes";
 
 type AgentsDialogContentProps = {
@@ -29,6 +30,8 @@ export const AgentsDialogContent = ({
   onPacksChanged = () => {},
 }: AgentsDialogContentProps) => {
   const dialog = useDialog();
+  // An unreadable packs.json hides every pack agent without a word otherwise.
+  const [problem] = useState(() => lockProblem());
 
   const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
 
@@ -57,18 +60,25 @@ export const AgentsDialogContent = ({
       .join("");
 
   return (
-    <DialogSearchList
-      items={rows}
-      onSelect={handleSelect}
-      filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
-      renderItem={(row, isSelected) => (
-        <text selectable={false} fg={isSelected ? "black" : "white"}>
-          {row.kind === "agent" ? agentRow(row.agent) : `   ${row.label}`}
+    <box flexDirection="column" gap={1}>
+      {problem && (
+        <text fg="yellow" wrapMode="word" width="100%">
+          {`packs.json could not be read: ${problem}; pack agents are hidden`}
         </text>
       )}
-      getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
-      placeholder="Search agents"
-      emptyText="No matching agents"
-    />
+      <DialogSearchList
+        items={rows}
+        onSelect={handleSelect}
+        filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
+        renderItem={(row, isSelected) => (
+          <text selectable={false} fg={isSelected ? "black" : "white"}>
+            {row.kind === "agent" ? agentRow(row.agent) : `   ${row.label}`}
+          </text>
+        )}
+        getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
+        placeholder="Search agents"
+        emptyText="No matching agents"
+      />
+    </box>
   );
 };

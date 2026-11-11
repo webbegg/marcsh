@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -212,7 +212,77 @@ describe("/agents installs packs from GitHub (S10)", () => {
 
     await waitForFrame("owner/repo");
     expect(frame()).toContain("Cannot install");
+    // The working dialog that was open while the spec failed is closed.
+    expect(frame()).not.toContain("Fetching");
     expect(listPacks()).toEqual([]);
+  });
+
+  test("Esc while git is fetching stops git, shows no error and installs nothing; a dialog opened afterwards stays open [R4-005]", async () => {
+    // A git whose fetch hangs, like a stalled network; its child `sleep` writes its pid so the test can see it stopped.
+    const bin = join(work, "bin");
+    const pidFile = join(work, "sleep.pid");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = fetch ]; then sleep 30 & echo $! > '${pidFile}'; wait; exit 0; fi; done\nexit 0\n`);
+    chmodSync(join(bin, "git"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      await openHome();
+      await type("/agents install acme/flows");
+      await enter();
+      await waitForFrame("Fetching acme/flows");
+      while (!existsSync(pidFile)) await settle(50);
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+
+      await escape();
+
+      await waitForFrame("Install cancelled", 5000);
+      const text = frame();
+      expect(text).not.toContain("Installed");
+      expect(text).not.toContain("git ");
+      expect(listPacks()).toEqual([]);
+      expect(readdirSync(join(process.env.MARCSH_PACKS_DIR!, ".staging"))).toEqual([]);
+      let alive = true;
+      for (let tries = 0; alive && tries < 50; tries++) {
+        try {
+          process.kill(pid, 0);
+          await settle(100);
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
+
+      // The finished flow closed nothing that is not its own: the dialog opened next is still there.
+      await type("/agents");
+      await enter();
+      await settle(300);
+      expect(frame()).toContain("Select Agent");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
+  test("a pack folder with no lock entry: install says how to clear it, and /agents remove clears it [R4-002]", async () => {
+    const leftover = join(process.env.MARCSH_PACKS_DIR!, "acme", "flows");
+    mkdirSync(join(leftover, "src"), { recursive: true });
+    await openHome();
+
+    await type("/agents install acme/flows");
+    await enter();
+    // The toast wraps inside its box, so only a part that fits one line is matched; packs.test.ts holds the full message.
+    await waitForFrame("is not an installed pack");
+    expect(existsSync(leftover)).toBe(true);
+    await act(async () => screen!.renderer.destroy());
+
+    await openHome();
+    await type("/agents remove acme/flows");
+    await enter();
+    await waitForFrame("Remove the leftover folder of acme/flows?");
+    await down();
+    await enter();
+    await waitForFrame("Removed the leftover folder of acme/flows");
+    expect(existsSync(leftover)).toBe(false);
   });
 
   test("/agents install owner/repo, typed, installs after the preview instead of being ignored", async () => {

@@ -5,9 +5,12 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  MAX_PACK_BYTES,
+  MAX_PACK_ENTRIES,
   PackError,
   installPack,
   listPacks,
+  lockProblem,
   packPluginDir,
   packsRoot,
   parsePackSpec,
@@ -904,5 +907,218 @@ describe("review corrections", () => {
     expect(seen.retiredAge).toBeDefined();
     expect(seen.retiredAge!).toBeLessThan(60_000);
     expect(seen.stagingAge!).toBeLessThan(60_000);
+  });
+});
+
+describe("cancelling a fetch [R4-005]", () => {
+  // A git that hangs in `fetch` (its child `sleep` writes its pid to a file), like a stalled network.
+  function slowGit() {
+    const bin = join(work, "bin");
+    const pidFile = join(work, "sleep.pid");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = fetch ]; then sleep 30 & echo $! > '${pidFile}'; wait; exit 0; fi; done\nexit 0\n`);
+    chmodSync(join(bin, "git"), 0o755);
+    return { bin, pidFile };
+  }
+
+  const waitFor = async (check: () => boolean, ms = 10_000) => {
+    const until = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > until) throw new Error("condition never became true");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  async function cancelledRun(run: (signal: AbortSignal) => Promise<unknown>, pidFile: string) {
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = run(controller.signal);
+    const outcome = pending.then(
+      () => "resolved",
+      (error) => error as Error,
+    );
+    await waitFor(() => existsSync(pidFile));
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    expect(alive(pid)).toBe(true);
+    controller.abort();
+    const result = await outcome;
+    expect(result).toBeInstanceOf(PackError);
+    expect((result as Error).message).toBe("Cancelled");
+    expect(Date.now() - started).toBeLessThan(15_000);
+    // git is not left running: not even the program it started.
+    await waitFor(() => !alive(pid), 5_000);
+  }
+
+  test("aborting an install stops git, rejects with Cancelled, and leaves no staging and no lock entry", async () => {
+    const { bin, pidFile } = slowGit();
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      await cancelledRun((signal) => installPack("acme/flows", { ...options(), signal }), pidFile);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+    expect(existsSync(join(root, "packs.json"))).toBe(false);
+    expect(existsSync(join(root, "acme"))).toBe(false);
+  });
+
+  test("a signal that is already aborted never starts git", async () => {
+    const { bin, pidFile } = slowGit();
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(installPack("acme/flows", { ...options(), signal: controller.signal })).rejects.toThrow("Cancelled");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    expect(existsSync(pidFile)).toBe(false);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+
+  test("aborting an update keeps the installed commit and files", async () => {
+    const { repo, sha } = makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    commitFiles(repo, { "agents/writer.md": "Write." });
+    const lockBefore = readFileSync(join(root, "packs.json"), "utf8");
+
+    const { bin, pidFile } = slowGit();
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      await cancelledRun((signal) => updatePack("acme/flows", { ...options(), signal }), pidFile);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+
+    expect(readFileSync(join(root, "packs.json"), "utf8")).toBe(lockBefore);
+    expect(listPacks({ root })[0]!.commit).toBe(sha);
+    expect(readFileSync(join(root, "acme/flows/src/agents/reviewer.md"), "utf8")).toBe(AGENT);
+    expect(existsSync(join(root, "acme/flows/src/agents/writer.md"))).toBe(false);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+});
+
+describe("the size of a pack [A7, R4-004]", () => {
+  test("the limits are 5,000 entries and 50 MB", () => {
+    expect(MAX_PACK_ENTRIES).toBe(5000);
+    expect(MAX_PACK_BYTES).toBe(50 * 1024 * 1024);
+  });
+
+  test("a pack with more entries than the limit is rejected before anything is installed; .git is not counted", async () => {
+    makeRepo("acme/flows", goodPack);
+    // goodPack has 13 entries (files and folders); its .git has many more.
+    const text = await installPack("acme/flows", { ...options(), limits: { maxEntries: 12 } }).then(
+      () => "",
+      (error: Error) => error.message,
+    );
+    expect(text).toMatch(/^Pack rejected: the repository is larger than marcsh accepts \(\d+ files \/ [\d.]+ MB\)$/);
+    expect(listPacks({ root })).toEqual([]);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+
+    expect((await installPack("acme/flows", { ...options(), limits: { maxEntries: 13 } })).status).toBe("installed");
+  });
+
+  test("a pack with more bytes than the limit is rejected", async () => {
+    makeRepo("acme/flows", { ...goodPack, "assets/blob.bin": "x".repeat(2 * 1024 * 1024) });
+    await expect(installPack("acme/flows", { ...options(), limits: { maxBytes: 1024 * 1024 } })).rejects.toThrow(
+      /^Pack rejected: the repository is larger than marcsh accepts \(\d+ files \/ [\d.]+ MB\)$/,
+    );
+    expect(listPacks({ root })).toEqual([]);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+
+  test("an update to a pack that outgrew the limit is rejected and keeps the old install", async () => {
+    const { repo, sha } = makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    commitFiles(repo, { "assets/blob.bin": "x".repeat(2 * 1024 * 1024) });
+    await expect(updatePack("acme/flows", { ...options(), limits: { maxBytes: 1024 * 1024 } })).rejects.toThrow(/larger than marcsh accepts/);
+    expect(listPacks({ root })[0]!.commit).toBe(sha);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+});
+
+describe("a pack folder without a lock entry [R4-002]", () => {
+  const leftover = () => {
+    mkdirSync(join(root, "acme", "flows", "src"), { recursive: true });
+    writeFileSync(join(root, "acme", "flows", "src", "x.md"), "x");
+  };
+
+  test("install says how to clear it", async () => {
+    makeRepo("acme/flows", goodPack);
+    leftover();
+    await expect(installPack("acme/flows", options())).rejects.toThrow("run /agents remove acme/flows");
+  });
+
+  test("removePack removes it and reports it, then the pack can be installed", async () => {
+    makeRepo("acme/flows", goodPack);
+    leftover();
+    expect(await removePack("acme/flows", { root })).toEqual({ status: "removed-leftover" });
+    expect(existsSync(join(root, "acme"))).toBe(false);
+    expect((await installPack("acme/flows", options())).status).toBe("installed");
+  });
+
+  test("only that exact folder goes: a sibling pack and the lockfile stay", async () => {
+    makeRepo("acme/other", goodPack);
+    await installPack("acme/other", options());
+    leftover();
+    expect(await removePack("acme/flows", { root })).toEqual({ status: "removed-leftover" });
+    expect(existsSync(join(root, "acme/flows"))).toBe(false);
+    expect(existsSync(join(root, "acme/other/src"))).toBe(true);
+    expect(listPacks({ root }).map((p) => p.id)).toEqual(["acme/other"]);
+  });
+
+  test("removing an installed pack reports removed", async () => {
+    makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    expect(await removePack("acme/flows", { root })).toEqual({ status: "removed" });
+  });
+
+  test("an owner folder that is a link out of the root is never followed", async () => {
+    const outside = join(work, "outside");
+    mkdirSync(join(outside, "flows"), { recursive: true });
+    writeFileSync(join(outside, "flows", "keep.txt"), "keep");
+    mkdirSync(root, { recursive: true });
+    symlinkSync(outside, join(root, "acme"));
+    await expect(removePack("acme/flows", { root })).rejects.toThrow(PackError);
+    expect(readFileSync(join(outside, "flows", "keep.txt"), "utf8")).toBe("keep");
+  });
+
+  test("an unreadable lockfile still stops the removal", async () => {
+    leftover();
+    writeFileSync(join(root, "packs.json"), "{not json");
+    await expect(removePack("acme/flows", { root })).rejects.toThrow(/packs\.json/);
+    expect(existsSync(join(root, "acme/flows/src/x.md"))).toBe(true);
+  });
+});
+
+describe("lockProblem [R4-003]", () => {
+  test("null without a lockfile and with a readable one", async () => {
+    expect(lockProblem(root)).toBeNull();
+    makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    expect(lockProblem(root)).toBeNull();
+  });
+
+  test("says why a lockfile cannot be read, without quoting its content", () => {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "packs.json"), "{not json SECRET");
+    expect(lockProblem(root)).toBe("not valid JSON");
+    writeFileSync(join(root, "packs.json"), '{"other":1}');
+    expect(lockProblem(root)).toBe("no packs list");
+    rmSync(join(root, "packs.json"));
+    mkdirSync(join(root, "packs.json"));
+    expect(lockProblem(root)).toMatch(/EISDIR/);
   });
 });
