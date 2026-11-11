@@ -280,7 +280,6 @@ describe("/agents installs packs from GitHub (S10)", () => {
   });
 
   test("bad arguments are an error toast with the usage line, and nothing is fetched", async () => {
-    await openHome();
     for (const [args, message] of [
       ["install", "Usage: /agents install"],
       ["frobnicate acme/flows", "Usage: /agents install"],
@@ -289,9 +288,13 @@ describe("/agents installs packs from GitHub (S10)", () => {
       ["install ../evil", "Cannot install"],
       ["remove acme/flows", "acme/flows is not installed"],
     ] as const) {
+      // A fresh screen per case: an error toast lasts 8 s, so on a shared one a case could pass on the previous case's toast.
+      await openHome();
       await type(`/agents ${args}`);
+      expect(frame()).not.toContain(message);
       await enter();
       await waitForFrame(message);
+      await act(async () => screen!.renderer.destroy());
     }
     expect(listPacks()).toEqual([]);
     expect(existsSync(join(process.env.MARCSH_PACKS_DIR!, ".staging"))).toBe(false);

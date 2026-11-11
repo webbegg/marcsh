@@ -39,11 +39,11 @@ Frontmatter (flat `key: value` lines):
 | `description` | text | One line shown in `/agents`. |
 | `mode` | `primary` or `all` | Selectable. `subagent` is never selectable: the file is skipped. Omitted means selectable. |
 | `permission` | `read-only` or `build` | `read-only` behaves like Plan (reads, changes nothing). `build` behaves like Build (asks before writing or running). Omitted means `build`. |
-| `model` | optional | pi takes `provider/id`; Claude takes names without `/`. A model the engine cannot use is ignored with a warning and the session model is used. Leave it out unless the role needs one. |
+| `model` | optional | pi takes `provider/id`. Claude takes `claude-*` names or the aliases `default`, `opus`, `sonnet`, `haiku`, `opusplan` (optionally with a suffix like `sonnet[1m]`); a name like `gpt-4o` is not one. A model the engine cannot use is ignored with a warning and the session model is used. Leave it out unless the role needs one. |
 
 The body is appended to the engine's own system prompt, never in place of it. Write only the role: do not repeat what the engine already knows.
 
-Any other field (`tools`, `temperature`, ...) is read but not applied; selecting the agent shows a one-line warning. A value that is not valid for `mode` or `permission` is ignored the same way. Per-agent tool lists are not supported.
+Any other field (`tools`, `temperature`, ...) is read but not applied; selecting the agent shows a one-line warning. A value that is not valid for `mode` or `permission` is ignored the same way. A file that opens with `---` but never closes it loads as a Build agent with the frontmatter in its prompt, and warns the same way. Per-agent tool lists are not supported.
 
 ## Pack layout
 
@@ -66,6 +66,7 @@ commands/*.md                   slash commands
 - Any symlink in `skills/` or `commands/`, or a symlinked `agents/` folder. Only real folders and regular files. (A symlinked file inside `agents/` is not rejected but is silently never loaded.)
 - A file in `skills/` or `commands/` over 1 MB.
 - An agent file over 256 KB.
+- An agent file whose frontmatter is never closed (an opening `---` with no closing `---`).
 - No primary agent in `agents/*.md` (only subagents, or none).
 - `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested).
 - A `...` line inside a skill or command frontmatter.
@@ -89,8 +90,9 @@ Not a rejection, but shown as a warning in the preview: `allowed-tools` in a ski
 Check each item on the files; report any that fails and fix it first.
 
 - [ ] `agents/` has at least one agent without `mode: subagent`, and each agent file is under 256 KB.
+- [ ] Each agent file opens and closes its frontmatter with a bare `---` line.
 - [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`.
-- [ ] `model`, if present, fits the engine: `provider/id` for pi, no `/` for Claude.
+- [ ] `model`, if present, fits the engine: `provider/id` for pi, a `claude-*` name or alias (`opus`, `sonnet`, `haiku`...) for Claude.
 - [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
 - [ ] No file in `skills/` or `commands/` over 1 MB.
 - [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.

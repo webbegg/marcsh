@@ -15,6 +15,7 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -204,7 +205,8 @@ function git(cwd: string, args: string[], { url, timeoutMs }: { url: string; tim
     child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
     child.on("close", (code, signal) => {
       if (code === 0) return done(out.trim());
-      const why = signal ? `timed out after ${Math.round(timeoutMs / 1000)} s` : err.trim() || `exited with ${code}`;
+      // The server's own words reach the toast: cleaned, and only the end of them (git puts the reason last).
+      const why = signal ? `timed out after ${Math.round(timeoutMs / 1000)} s` : printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
       fail(new PackError(`git ${args[0]} failed: ${why}`));
     });
   });
@@ -212,9 +214,19 @@ function git(cwd: string, args: string[], { url, timeoutMs }: { url: string; tim
 
 type Fetched = { staging: string; src: string; commit: string };
 
-const STALE_STAGING_MS = 3600_000;
+// A fetch waits for the user's answer before it moves anything, so the limit is generous: another process's directory must outlive that.
+const STALE_STAGING_MS = 24 * 3600_000;
+const MAX_GIT_MESSAGE = 500;
 
-/** Fetches that were killed leave their directory behind: those older than an hour (no live fetch takes that long) are deleted. */
+/** Marks a directory as in use now: a rename keeps the old mtime, and the stale cleanup of another process goes by it. */
+function touch(path: string) {
+  try {
+    const now = new Date();
+    utimesSync(path, now, now);
+  } catch {}
+}
+
+/** Fetches that were killed leave their directory behind: those untouched for a day are deleted. */
 function removeStaleStaging(stagingRoot: string) {
   for (const item of listDir(stagingRoot)) {
     if (!/^(?:old-)?pack-/.test(item.name)) continue;
@@ -423,15 +435,18 @@ export function scanPack(src: string): Parts {
   const outside: string[] = [];
   walkForLinks(src, src, realpathSync(src), outside);
   if (outside.length > 0) {
-    throw new PackError(`Pack rejected: ${outside[0]} is a symlink that points outside the pack${outside.length > 1 ? ` (and ${outside.length - 1} more)` : ""}`);
+    throw new PackError(`Pack rejected: ${printable(outside[0]!)} is a symlink that points outside the pack${outside.length > 1 ? ` (and ${outside.length - 1} more)` : ""}`);
   }
 
   if (agentsIsLink(src)) throw rejected("agents is a symlink, so its files would not be read");
   let primary = 0;
   for (const file of agentFiles(src)) {
     const path = join(src, "agents", file);
-    if (lstatSync(path).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${file} is larger than ${MAX_AGENT_BYTES / 1024} KB`);
-    if (parseAgentFile(readFileSync(path, "utf8"), { pack: "pack", file })) primary++;
+    if (lstatSync(path).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${printable(file)} is larger than ${MAX_AGENT_BYTES / 1024} KB`);
+    const agent = parseAgentFile(readFileSync(path, "utf8"), { pack: "pack", file });
+    // The loader keeps such a file as a Build agent whose prompt starts with the frontmatter; a pack fails closed instead.
+    if (agent?.ignored.includes("frontmatter")) throw rejected(`agents/${printable(file)} has a frontmatter that is never closed`);
+    if (agent) primary++;
   }
   if (primary === 0) throw new PackError("Pack rejected: it has no primary agent in agents/*.md");
 
@@ -447,14 +462,11 @@ function pluginManifestKeys(src: string): Set<string> {
   }
 }
 
-// Zero-width characters (U+200B-200F, U+FEFF) and bidi controls (U+202A-202E, U+2066-2069) change how a line reads without showing.
-const INVISIBLE = new RegExp(
-  `[${[[0x200b, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069], [0xfeff, 0xfeff]].map(([from, to]) => `${String.fromCharCode(from!)}-${String.fromCharCode(to!)}`).join("")}]`,
-  "g",
-);
-
-/** Text from a pack as it may reach the terminal: every control character (ESC sequences start with one), bidi control and zero-width character is removed. */
-export const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").replace(INVISIBLE, "");
+/**
+ * Text from a pack as it may reach the terminal: every control character (ESC sequences start with one) and every Unicode format
+ * character (zero-width, bidi controls, word joiner, soft hyphen, tag characters...) is removed; those change how a line reads without showing.
+ */
+export const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").replace(/\p{Cf}/gu, "");
 
 /** What the pack holds and what marcsh will not use of it, read without running or following anything. `parts` is what `scanPack` read. */
 export function previewPack(src: string, { id, commit }: { id: string; commit: string }, parts: Parts = readParts(src)): PackPreview {
@@ -535,6 +547,7 @@ export async function installPack(
     if (!(await confirm(preview))) return { status: "cancelled" };
 
     mkdirSync(dirname(target), { recursive: true });
+    touch(staging);
     renameSync(staging, target);
     const pack: PackEntry = { id: spec.id, url: spec.url, ...(spec.ref ? { ref: spec.ref } : {}), commit, installedAt: new Date().toISOString() };
     try {
@@ -577,8 +590,18 @@ export async function updatePack(
 
     const target = packDir(id, root);
     const hadOld = existsSync(target);
-    if (hadOld) renameSync(target, retired);
-    renameSync(staging, target);
+    touch(staging);
+    if (hadOld) {
+      renameSync(target, retired);
+      touch(retired);
+    }
+    try {
+      renameSync(staging, target);
+    } catch (error) {
+      // The retired copy is the only one left: put it back instead of letting the cleanup below delete it.
+      if (hadOld) renameSync(retired, target);
+      throw error;
+    }
     const pack: PackEntry = { ...current, commit, installedAt: new Date().toISOString() };
     try {
       changeLock(root, (latest) => {

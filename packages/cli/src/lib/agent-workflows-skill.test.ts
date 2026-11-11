@@ -68,6 +68,12 @@ describe("the agent-workflows skill", () => {
     }
   });
 
+  test("rejects an agent file whose frontmatter is never closed, and says which models Claude takes [R3-002, R3-003]", () => {
+    const body = text();
+    expect(body).toContain("An agent file whose frontmatter is never closed");
+    for (const word of ["claude-", "opus", "sonnet", "haiku", "gpt-4o"]) expect(body).toContain(word);
+  });
+
   test("says skills and commands load only while the pack's agent is selected", () => {
     expect(text()).toMatch(/only while[^.]*agent[^.]*selected/i);
   });

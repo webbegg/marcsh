@@ -3,6 +3,7 @@ import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
 import { agentLabel, type Agent } from "../../lib/agents";
+import { Mode } from "../../lib/modes";
 
 type AgentsDialogContentProps = {
   agents: Agent[];
@@ -48,6 +49,13 @@ export const AgentsDialogContent = ({
 
   const label = (row: Row) => (row.kind === "agent" ? agentLabel(row.agent, agents) : row.label);
 
+  // The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
+  const permission = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
+  const agentRow = (agent: Agent) =>
+    [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents), permission(agent) && `  ${permission(agent)}`, agent.description && `  ${agent.description}`]
+      .filter(Boolean)
+      .join("");
+
   return (
     <DialogSearchList
       items={rows}
@@ -55,9 +63,7 @@ export const AgentsDialogContent = ({
       filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
       renderItem={(row, isSelected) => (
         <text selectable={false} fg={isSelected ? "black" : "white"}>
-          {row.kind === "agent"
-            ? `${row.agent.id === currentId ? " • " : "   "}${label(row)}${row.agent.description ? `  ${row.agent.description}` : ""}`
-            : `   ${row.label}`}
+          {row.kind === "agent" ? agentRow(row.agent) : `   ${row.label}`}
         </text>
       )}
       getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
