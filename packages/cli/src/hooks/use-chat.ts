@@ -89,8 +89,8 @@ function decline(request: PendingRequest) {
   }
 }
 
-/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine. */
-export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string } };
+/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one. */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string; pluginDir?: string } };
 
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
@@ -234,6 +234,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             mode,
             model,
             systemPromptAppend: agent?.prompt,
+            ...(agent?.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             signal: abortController.signal,
           },

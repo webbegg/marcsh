@@ -1,7 +1,11 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Mode, type ModeType } from "./modes";
+import { listPacks, packAgentsDir, packPluginDir, packsRoot, printable } from "./packs";
+
+/** An agent file larger than this is not read (a pack is third-party content). */
+export const MAX_AGENT_BYTES = 256 * 1024;
 
 /**
  * A selectable agent: Tab cycles them and `/agents` lists them. Build and Plan are built in; the rest are markdown files with
@@ -18,8 +22,10 @@ export type Agent = {
   prompt?: string;
   /** The model this agent asks for; the session model is used when absent or unusable on the engine. */
   model?: string;
-  /** Where the agent comes from: "user" for ~/.marcsh/agents; undefined for the built-ins. */
+  /** Where the agent comes from: "user" for ~/.marcsh/agents, "owner/repo" for an installed pack; undefined for the built-ins. */
   pack?: string;
+  /** A pack agent's generated plugin view (its skills and commands): loaded by the engines only while this agent is selected. */
+  pluginDir?: string;
   /** Frontmatter fields marcsh reads but does not apply. */
   ignored: string[];
 };
@@ -103,24 +109,59 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
   };
 }
 
-/** The built-ins, then the selectable agents in `dir` (sorted by file name). Unreadable files are skipped. */
-export function loadAgents(dir = agentsDir()): Agent[] {
+function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boolean }): Agent[] {
   let files: string[];
   try {
     files = readdirSync(dir).filter((file) => file.endsWith(".md")).sort();
   } catch {
-    return [...BUILTIN_AGENTS];
+    return [];
   }
   const loaded: Agent[] = [];
   for (const file of files) {
     try {
       const path = join(dir, file);
-      if (!statSync(path).isFile()) continue;
-      const agent = parseAgentFile(readFileSync(path, "utf8"), { pack: "user", file });
-      if (agent) loaded.push(agent);
+      // A pack's file is read only when it is a regular file in the clone: a link could point at any file of the user's.
+      const stat = untrusted ? lstatSync(path) : statSync(path);
+      if (!stat.isFile() || (untrusted && stat.size > MAX_AGENT_BYTES)) continue;
+      const agent = parseAgentFile(readFileSync(path, "utf8"), { pack, file });
+      if (!agent) continue;
+      // A pack's names are shown in the status line and the menus: no escape sequence may get through.
+      loaded.push(
+        untrusted
+          ? {
+              ...agent,
+              name: printable(agent.name),
+              description: agent.description && printable(agent.description),
+              model: agent.model && printable(agent.model),
+              ignored: agent.ignored.map(printable),
+            }
+          : agent,
+      );
     } catch {}
   }
-  return [...BUILTIN_AGENTS, ...loaded];
+  return loaded;
+}
+
+/**
+ * The built-ins, then the selectable agents in `dir` (sorted by file name), then those of every installed pack (by pack ID).
+ * Unreadable files are skipped.
+ */
+export function loadAgents(dir = agentsDir(), packsDir = packsRoot()): Agent[] {
+  const user = readAgentDir(dir, "user", { untrusted: false });
+  const packs = listPacks({ root: packsDir })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .flatMap((pack) => {
+      const agentsPath = packAgentsDir(pack.id, packsDir);
+      // A symlinked agents/ directory would read files outside the pack.
+      try {
+        if (!lstatSync(agentsPath).isDirectory()) return [];
+      } catch {
+        return [];
+      }
+      const pluginDir = packPluginDir(pack.id, packsDir);
+      return readAgentDir(agentsPath, pack.id, { untrusted: true }).map((agent) => ({ ...agent, pluginDir }));
+    });
+  return [...BUILTIN_AGENTS, ...user, ...packs];
 }
 
 /** The agent with this ID, else Build. */
