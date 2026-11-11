@@ -1,12 +1,12 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Mode } from "../modes";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
-import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
+import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
@@ -15,7 +15,7 @@ import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from 
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
-import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
+import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -151,6 +151,61 @@ async function newSessionTools(
   return [...new Set([...builtin, ...registered])];
 }
 
+function userText(message: { content?: unknown }): string {
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return message.content.map((block: { type?: string; text?: unknown }) => (block.type === "text" && typeof block.text === "string" ? block.text : "")).join("");
+}
+
+/** The items of `before` that `after` no longer holds (one for one, so equal texts are told apart by count). */
+function taken(before: readonly string[], after: readonly string[]): string[] {
+  const left = [...after];
+  return before.filter((text) => {
+    const at = left.indexOf(text);
+    if (at === -1) return true;
+    left.splice(at, 1);
+    return false;
+  });
+}
+
+/**
+ * pi lists the messages it has queued (`queue_update`) and drops one from that list just before the user message it
+ * sends starts. The tracker tells the host what is still waiting and, when such a message starts, which kind it was.
+ * The first user message of a turn is the prompt, which was never queued, so it matches nothing.
+ */
+export function createQueueTracker() {
+  let steering: readonly string[] = [];
+  let followUp: readonly string[] = [];
+  const sent: Array<{ kind: "steer" | "followUp"; text: string }> = [];
+
+  return {
+    /** Feeds one session event; returns what the host should hear about the queues, if anything. */
+    observe(event: AgentSessionEvent): EngineEvent | null {
+      if (event.type === "queue_update") {
+        sent.push(
+          ...taken(steering, event.steering).map((text) => ({ kind: "steer" as const, text })),
+          ...taken(followUp, event.followUp).map((text) => ({ kind: "followUp" as const, text })),
+        );
+        steering = event.steering;
+        followUp = event.followUp;
+        return { type: "queue", steering: [...steering], followUp: [...followUp] };
+      }
+      if (event.type === "message_start" && event.message.role === "user") {
+        const text = userText(event.message);
+        const at = sent.findIndex((item) => item.text === text);
+        if (at === -1) return null;
+        const [item] = sent.splice(at, 1);
+        return { type: "delivered", text, kind: item!.kind };
+      }
+      return null;
+    },
+    /** Forgets what was sent but not yet started (the queues were cleared). */
+    reset() {
+      sent.length = 0;
+    },
+  };
+}
+
 function parseModel(ref: string): { provider: string; id: string } | null {
   const slash = ref.indexOf("/");
   if (slash <= 0 || slash === ref.length - 1) return null;
@@ -214,10 +269,49 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     let aborted = signal.aborted;
     // Aborts when the turn is interrupted or over: pending approvals are then declined.
     const turnEnded = new AbortController();
+    // Streamed text reaches the host at most ~30 times a second; the feed is closed (queue sent, timer gone) when the turn ends.
+    const feed = createReplyFeed((event) => host.emit(event));
+    const queue = createQueueTracker();
+    // Typed before the prompt reached pi: held until it did, in the order typed. Each entry's promise settles when pi took the text
+    // or, if the turn ends first (startup failed, interrupted), rejects so the host can give the text back to the user.
+    let promptSent = false;
+    const early: Array<{ kind: "steer" | "followUp"; text: string; resolve: () => void; reject: (error: Error) => void }> = [];
+    // pi's own frontmatter reader, once pi is loaded: a steer or follow-up expands the plugin's `/marcsh:...` like a prompt does.
+    let stripFrontmatter: ((content: string) => string) | undefined;
+    // What pi was sent in place of what the user typed (`/marcsh:feature x` expands), so the transcript shows what was typed.
+    const typedAs = new Map<string, string>();
+    const asTyped = (text: string) => typedAs.get(text) ?? text;
+    const announceQueue = (steering: readonly string[], followUp: readonly string[]) =>
+      host.emit({ type: "queue", steering: steering.map(asTyped), followUp: followUp.map(asTyped) });
+    // The held text is shown as pending like the text pi has queued.
+    const showEarly = () =>
+      announceQueue(
+        early.filter((entry) => entry.kind === "steer").map((entry) => entry.text),
+        early.filter((entry) => entry.kind === "followUp").map((entry) => entry.text),
+      );
+    const refuseEarly = (reason: string) => {
+      const refused = early.splice(0);
+      if (refused.length === 0) return;
+      for (const entry of refused) entry.reject(new Error(reason));
+      showEarly();
+    };
+    // Set once pi has settled (its prompt resolved and nothing is queued): the session shutdown that follows can take seconds,
+    // and a steer or follow-up accepted then would be shown as pending and never sent.
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      host.emit({ type: "input-closed" });
+    };
 
     const interrupt = () => {
       aborted = true;
       turnEnded.abort();
+      feed.flush();
+      // Messages pi has not sent are discarded, never run after the response is stopped; text pi never got is given back to the user.
+      refuseEarly("The turn was interrupted before the message was sent.");
+      session?.clearQueue();
+      queue.reset();
       void session?.abort();
     };
     signal.addEventListener("abort", interrupt, { once: true });
@@ -227,10 +321,34 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (!aborted) host.emit({ type: "error", message: redactSecrets(friendlyPiError(message)) });
     };
 
+    const queueInput = async (kind: "steer" | "followUp", text: string): Promise<void> => {
+      if (aborted) return;
+      if (settled) throw new TurnClosedError();
+      if (!session || !promptSent) {
+        await new Promise<void>((resolve, reject) => {
+          early.push({ kind, text, resolve, reject });
+          showEarly();
+        });
+        return;
+      }
+      // Like a prompt, `/marcsh:...` is expanded here; pi expands its own templates and skills and refuses extension commands.
+      const sent = expandPluginInvocation(text, pluginPath, stripFrontmatter!);
+      if (sent !== text) typedAs.set(sent, text);
+      await (kind === "steer" ? session.steer(sent) : session.followUp(sent));
+      // An interrupt that came while pi was taking the text cleared the queues before it was in them.
+      if (aborted) session.clearQueue();
+      // pi settled while it was taking the text: nothing is left to send it.
+      else if (settled) {
+        session.clearQueue();
+        throw new TurnClosedError();
+      }
+    };
+
     const run = async () => {
       process.env[AGENT_DIR_ENV] = agentDir;
       prepareAgentDir();
       const pi = await loadPi();
+      stripFrontmatter = pi.stripFrontmatter;
       const models = await runtimeFor(pi);
       const wanted = parseModel(model);
       const resolved = wanted && models.getModel(wanted.provider, wanted.id);
@@ -335,8 +453,16 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       session.subscribe((event) => {
         const failure = errors.observe(event);
         if (failure) fail(failure);
-        if (event.type === "message_end" || event.type === "tool_execution_end") {
-          host.emit({ type: "reply", update: (reply) => applyPiEvent(reply, event) });
+        // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
+        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event));
+        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event));
+        const queued = queue.observe(event);
+        if (queued) {
+          // What was streamed so far belongs to the reply before the message that was just sent.
+          if (queued.type === "delivered") feed.flush();
+          if (queued.type === "queue") announceQueue(queued.steering, queued.followUp);
+          else if (queued.type === "delivered") host.emit({ ...queued, text: asTyped(queued.text) });
+          else host.emit(queued);
         }
       });
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
@@ -345,9 +471,30 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
         const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
-        await session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        const sending = session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        promptSent = true;
+        for (const entry of early.splice(0)) {
+          queueInput(entry.kind, entry.text).then(entry.resolve, (error: unknown) => {
+            entry.reject(error instanceof TurnClosedError ? error : new Error(redactSecrets(friendlyPiError(error instanceof Error ? error.message : String(error)))));
+            // pi never queued it: show what it does hold, not the held text.
+            if (!aborted && !settled && session) announceQueue(session.getSteeringMessages(), session.getFollowUpMessages());
+          });
+        }
+        await sending;
         await session.waitForIdle();
+        // A message typed as the run was ending was queued too late for pi to pick it up: it runs as a turn of its own
+        // (a follow-up still unsent when pi goes idle is sent the same way, not lost).
+        while (!aborted && session.pendingMessageCount > 0) {
+          const { steering, followUp } = session.clearQueue();
+          for (const text of [...steering, ...followUp]) {
+            if (aborted) break;
+            await session.prompt(text, { expandPromptTemplates: false });
+            await session.waitForIdle();
+          }
+        }
       } finally {
+        settle();
+        feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });
       }
 
@@ -359,12 +506,21 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       .catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
       .finally(() => {
         signal.removeEventListener("abort", interrupt);
+        settle();
+        // The turn is over and pi never got these: the host gives them back.
+        refuseEarly("The turn ended before the message was sent.");
         turnEnded.abort();
+        feed.close();
         // Tells the extensions the session is over (MCP closes its servers then) before pi's dispose drops them.
         return disposePiSession(session);
       });
 
-    return { done, interrupt };
+    return {
+      done,
+      interrupt,
+      steer: (text) => queueInput("steer", text),
+      followUp: (text) => queueInput("followUp", text),
+    };
   }
 
   return {

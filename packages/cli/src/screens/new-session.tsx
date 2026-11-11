@@ -62,8 +62,9 @@ export function NewSession() {
 
   if (!state) return null;
 
+  // Keys typed here (a burst right after Enter on the home screen) are the start of the next message: the bar hands them to the session's input when it unmounts.
   return (
-    <SessionShell onSubmit={() => {}} inputDisabled loading>
+    <SessionShell onSubmit={() => {}} inputTypeOnly loading>
       <UserMessage message={state.message} mode={state.mode} />
     </SessionShell>
   );

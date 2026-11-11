@@ -7,6 +7,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, InMemoryCredentialStore, 
 import { Mode } from "../modes";
 import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 
 let dir: string, agentDir: string, cwd: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "marcsh-pi-plugin-exact-")); agentDir = join(dir, "agent"); cwd = join(dir, "project"); mkdirSync(cwd, { recursive: true }); });
@@ -23,8 +24,7 @@ async function send(prompt: string) {
   modelRuntime.registerNativeProvider(faux.provider);
   let seen = [] as string[]; let calls = 0;
   faux.setResponses([(c: any) => ((calls++, seen = userTexts(c.messages)), fauxAssistantMessage([fauxText("ok")]))]);
-  // Project trust (S18) is not what this checks: the project's own files are trusted.
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} } });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: trustEveryProject });
   const errs: any[] = [];
   const turn = engine.startTurn({ prompt, cwd, mode: Mode.BUILD, model: "faux/faux-1", signal: new AbortController().signal }, { emit(e: any) { if (e.type === "error") errs.push(e); }, askPermission: async () => "deny", askQuestions: async () => null });
   await turn.done;

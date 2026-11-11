@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { useRef, useState, useCallback, useEffect, type RefObject } from "react";
+import { createContext, useContext, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
 import { TextAttributes } from "@opentui/core";
 
@@ -26,6 +26,7 @@ import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
+import { attachInput, clearKeyActivity, handOffDraft, mergeGivenBack, noteKeyActivity, onGivenBack, setDraft, setInputTakesKeys, takeHandOffDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -269,7 +270,32 @@ type Props = {
   cwd?: string;
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
   engine?: string;
+  /** Takes keys but never sends: Enter and the `/` commands do nothing, the text stays (the new-session screen, where there is no prompt yet). */
+  typeOnly?: boolean;
 };
+
+/**
+ * Typing during a turn. `active` while the running turn takes input (a pi session): Enter then steers it through `steer`,
+ * and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
+ * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead. Each returns false when the turn did not
+ * take the text (it is over, or was interrupted): the text then stays in the input. `closed` once the turn has settled and
+ * is only winding down: the input still takes keys, refuses to send, and says so. `starting` while a pi session is
+ * starting (the model check, before the turn can take steers): the input takes keys, Enter, Alt+Enter and `/queue` keep the
+ * text and do nothing yet, and the hint says so.
+ */
+export type TurnInput = { active: boolean; closed?: boolean; starting?: boolean; steer: (text: string) => boolean; queue: (text: string) => boolean };
+
+export const TurnInputContext = createContext<TurnInput>({ active: false, steer: () => false, queue: () => false });
+
+const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
+
+// Wordings of the hint, longest first: the status line shows the first that fits its width.
+function turnHint(turnInput: TurnInput, disabled: boolean): string[] | undefined {
+  if (turnInput.closed) return ["turn ending · no more steers", "turn ending"];
+  if (turnInput.starting && !disabled) return ["turn starting · enter steers once it runs", "turn starting"];
+  if (turnInput.active && !disabled) return ["enter steers · alt+enter queues", "enter steer · alt+enter queue", "↵ steer · alt+↵ queue", "enter steers"];
+  return undefined;
+}
 
 export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
@@ -278,13 +304,15 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false }: Props) {
   const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
   const activeMentionRef = useRef<MentionMatch | null>(null);
   const mentionScrollRef = useRef<ScrollBoxRenderable>(null);
+  // What text the engine did not take put at the front of the input (see `mergeGivenBack`); forgotten once the input is empty.
+  const givenBackRef = useRef("");
 
   const renderer = useRenderer();
   const navigate = useNavigate();
@@ -297,6 +325,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   }, [engineId, toast]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
+  const turnInput = useContext(TurnInputContext);
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -364,9 +393,64 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     const text = textarea.plainText;
 
+    setDraft(renderer, text.length > 0);
+    if (text.length === 0) givenBackRef.current = "";
     handleContentChange(textarea.plainText);
     syncMentionMenu(text, textarea.cursorOffset);
-  }, [handleContentChange, syncMentionMenu]);
+  }, [handleContentChange, syncMentionMenu, renderer]);
+
+  // A screen stays mounted a few ms after it navigates (the home screen after Enter, the new-session screen), and keys typed in that
+  // gap land in its bar. Every bar hands the text it still holds over when it unmounts (a layout cleanup, while the textarea is still
+  // there), and the next bar takes it on mount. A bar empties its textarea when it sends, so a sent message is never handed over.
+  useLayoutEffect(() => {
+    return () => {
+      try {
+        handOffDraft(renderer, textareaRef.current?.plainText ?? "");
+      } catch {
+        // The whole screen is going away (the renderer destroyed the textarea first): there is no next bar.
+      }
+    };
+  }, [renderer]);
+
+  // Takes the hand-off once, ahead of what the textarea already holds (keys that reached it first stay after the hand-off), and
+  // leaves the cursor at the end.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const held = textarea.plainText;
+    const text = takeHandOffDraft(renderer) + held;
+    if (text === held) return;
+    textarea.setText(text);
+    textarea.cursorOffset = text.length;
+    setDraft(renderer, text.length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
+  }, []);
+
+  // A prompt that opens while the user is composing here opens locked (see prompt-lock). Keys can reach a new bar before this runs
+  // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
+  useEffect(() => {
+    return attachInput(renderer, (textareaRef.current?.plainText.length ?? 0) > 0);
+  }, [renderer]);
+
+  // A Claude session's input is off for the whole turn, so a draft it still holds (one carried over) is not the user composing and
+  // must not lock the prompts that open then. A pi session's input takes keys whenever no prompt is open: its draft always counts.
+  useEffect(() => {
+    setInputTakesKeys(renderer, !disabled || engineId === "pi");
+  }, [renderer, disabled, engineId]);
+
+  // Text the engine did not take (a refused steer, a turn that ended before it was sent) comes back here, ahead of what is typed now.
+  useEffect(() => {
+    return onGivenBack(renderer, (returned) => {
+      const textarea = textareaRef.current;
+      if (!textarea) return false;
+      const { text, block } = mergeGivenBack(returned, textarea.plainText, givenBackRef.current);
+      textarea.setText(text);
+      textarea.cursorOffset = text.length;
+      givenBackRef.current = block;
+      setDraft(renderer, true);
+      return true;
+    });
+  }, [renderer]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
   useEffect(() => {
@@ -436,20 +520,31 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
   const handleCommandExecute = useCallback(
     (index: number) => {
+      if (typeOnly) return;
       const command = resolveCommand(index);
       handleCommand(command);
     },
-    [resolveCommand, handleCommand],
+    [resolveCommand, handleCommand, typeOnly],
   );
 
-  const handleSubmit = useCallback(() => {
-    if (disabled) return;
+  const handleSubmit = useCallback((queue = false) => {
+    if (disabled || typeOnly) return;
 
     const textarea = textareaRef.current;
     if (!textarea) return;
 
     const text = textarea.plainText.trim();
     if (text.length === 0) return;
+
+    // While a turn takes input, `/queue <text>` queues like Alt+Enter does; before it can, the text stays where it is.
+    const queuedByCommand = turnInput.active || turnInput.starting ? QUEUE_COMMAND.exec(text) : null;
+    if (queuedByCommand) {
+      if (!turnInput.starting && turnInput.queue(queuedByCommand[1]!.trim())) {
+        clearKeyActivity(renderer);
+        textarea.setText("");
+      }
+      return;
+    }
 
     // marcsh's own commands win; any other /name (with or without arguments) goes to Claude Code verbatim
     const ownNames = COMMANDS.map((command) => command.name);
@@ -459,9 +554,19 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return;
     }
 
-    onSubmit(text);
+    // A session that is starting, or a turn that is over, takes nothing: the text stays in the input, to be sent once the turn ends.
+    if (turnInput.starting) return;
+    if (turnInput.active) {
+      if (!(queue ? turnInput.queue(text) : turnInput.steer(text))) return;
+      clearKeyActivity(renderer);
+      textarea.setText("");
+      return;
+    }
+    // The text is gone from the input before anything can navigate away: what the bar hands over on unmount is only what is typed after.
+    clearKeyActivity(renderer);
     textarea.setText("");
-  }, [disabled, onSubmit, handleCommand])
+    onSubmit(text);
+  }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer])
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
@@ -502,7 +607,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   }, []);
 
   onSubmitRef.current = () => {
-    if (disabled) return;
+    if (disabled || typeOnly) return;
 
     if (showCommandMenu) {
       const command = resolveCommand(selectedIndex);
@@ -525,9 +630,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   useKeyboard((key) => {
     if (disabled) return;
     if (!isTopLayer("base")) return;
+    // Keys typed here mean the user is composing; Enter sends, and Esc and Tab are not typing.
+    const sends = (key.name === "return" || key.name === "enter") && !key.shift;
+    if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      warnAboutAgent(cycleAgent());
+      if (!typeOnly) warnAboutAgent(cycleAgent());
+    } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
+      key.preventDefault();
+      handleSubmit(true);
     }
   });
 
@@ -654,7 +765,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} />
+          <StatusBar engine={engineId} hint={turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>

@@ -31,6 +31,12 @@ export type PermissionRule = {
 /** Whether pi may load a project's own pi files (extensions, MCP servers, settings...). A project nobody decided about has no decision. */
 export type ProjectTrust = "trusted" | "untrusted";
 
+/**
+ * What the user reviewed when trusting a project: one entry per listed path with a hash of what was shown for it and a hash of
+ * its contents (a folder: of what it holds). Only paths and hashes; never contents, commands or environment values.
+ */
+export type StoredReview = { path: string; shown: string; content: string }[];
+
 export type Storage = {
   listSessions(): SessionSummary[];
   getSession(id: string): StoredSession | null;
@@ -46,8 +52,10 @@ export type Storage = {
   hasPermissionRule(rule: PermissionRule): boolean;
   /** The stored decision for the project at `cwd` (its resolved real path), or null when undecided. */
   getProjectTrust(cwd: string): ProjectTrust | null;
-  /** Stores the decision for the project at `cwd`; null forgets it. */
-  setProjectTrust(cwd: string, decision: ProjectTrust | null): void;
+  /** Stores the decision for the project at `cwd`; null forgets it. A "trusted" keeps the `review` it was given; any other decision keeps none. */
+  setProjectTrust(cwd: string, decision: ProjectTrust | null, review?: StoredReview): void;
+  /** What was reviewed when the project at `cwd` was trusted; null when undecided, not trusted, trusted before reviews were kept, or unreadable. */
+  getProjectReview(cwd: string): StoredReview | null;
 };
 
 type SessionRow = {
@@ -68,6 +76,23 @@ const CLAUDE_COMMANDS_KEY = "claude_commands";
 const commandsKey = (engine: string) => (engine === "claude" ? CLAUDE_COMMANDS_KEY : `${engine}_commands`);
 
 const marcshDir = () => join(homedir(), ".marcsh");
+
+/** The stored review as written by `setProjectTrust`; anything else (damaged, from another version) is no review. */
+function parseReview(text: string | null): StoredReview | null {
+  if (text === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!Array.isArray(parsed)) return null;
+    const review: StoredReview = [];
+    for (const entry of parsed) {
+      if (typeof entry?.path !== "string" || typeof entry.shown !== "string" || typeof entry.content !== "string") return null;
+      review.push({ path: entry.path, shown: entry.shown, content: entry.content });
+    }
+    return review;
+  } catch {
+    return null;
+  }
+}
 
 /** A project is known by its real path, so a symlink and its target share one decision. A folder that is not there yet keeps its absolute path. */
 function projectPath(cwd: string): string {
@@ -140,14 +165,22 @@ export function openStorage(path = defaultDbPath()): Storage {
     )
   `);
 
-  // One row per project (its real path); undecided projects have no row.
+  // One row per project (its real path); undecided projects have no row. `reviewed` is the JSON of a StoredReview, set with a "trusted".
   db.run(`
     CREATE TABLE IF NOT EXISTS project_trust (
       path TEXT PRIMARY KEY,
       decision TEXT NOT NULL CHECK (decision IN ('trusted', 'untrusted')),
-      decided_at INTEGER NOT NULL
+      decided_at INTEGER NOT NULL,
+      reviewed TEXT
     )
   `);
+  // Databases created before reviews only gain the column; their trusted rows have no review, so they are asked about again.
+  const missingReviewed = () => !db.query<{ name: string }, []>("PRAGMA table_info(project_trust)").all().some((c) => c.name === "reviewed");
+  if (missingReviewed()) {
+    db.transaction(() => {
+      if (missingReviewed()) db.run("ALTER TABLE project_trust ADD COLUMN reviewed TEXT");
+    }).immediate();
+  }
 
   const selectSession = db.query<SessionRow, { id: string }>("SELECT * FROM sessions WHERE id = $id");
 
@@ -267,16 +300,26 @@ export function openStorage(path = defaultDbPath()): Storage {
       return row?.decision ?? null;
     },
 
-    setProjectTrust(cwd, decision) {
+    setProjectTrust(cwd, decision, review) {
       const path = projectPath(cwd);
       if (decision === null) {
         db.query("DELETE FROM project_trust WHERE path = $path").run({ path });
         return;
       }
+      // Fields are copied one by one: nothing but the path and the two hashes is ever written.
+      const reviewed =
+        decision === "trusted" && review ? JSON.stringify(review.map(({ path, shown, content }) => ({ path, shown, content }))) : null;
       db.query(
-        `INSERT INTO project_trust (path, decision, decided_at) VALUES ($path, $decision, $now)
-         ON CONFLICT(path) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at`,
-      ).run({ path, decision, now: Date.now() });
+        `INSERT INTO project_trust (path, decision, decided_at, reviewed) VALUES ($path, $decision, $now, $reviewed)
+         ON CONFLICT(path) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, reviewed = excluded.reviewed`,
+      ).run({ path, decision, now: Date.now(), reviewed });
+    },
+
+    getProjectReview(cwd) {
+      const row = db
+        .query<{ reviewed: string | null }, { path: string }>("SELECT reviewed FROM project_trust WHERE path = $path AND decision = 'trusted'")
+        .get({ path: projectPath(cwd) });
+      return parseReview(row?.reviewed ?? null);
     },
   };
 }
