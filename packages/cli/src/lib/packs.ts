@@ -233,35 +233,33 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal }: { url: str
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(cancelled());
     // An argv array, never a shell string: nothing in the URL or ref is interpreted.
-    const child = spawn("git", [...hardened, ...args], {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-      killSignal: "SIGKILL",
-      detached: true,
-    });
-    // Cancelling does not wait for git to exit: a program it started may hold its pipes open a while.
+    const child = spawn("git", [...hardened, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    // Cancelling and timing out do not wait for git to exit: a program it started may hold its pipes open a while.
     const onAbort = () => {
       killTree(child);
       reject(cancelled());
     };
+    const timer = setTimeout(() => {
+      killTree(child);
+      fail(new PackError(`git ${args[0]} failed: timed out after ${Math.round(timeoutMs / 1000)} s`));
+    }, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
-    const done = (text: string) => (signal?.removeEventListener("abort", onAbort), resolve(text));
-    const fail = (error: PackError) => (signal?.removeEventListener("abort", onAbort), reject(error));
+    const settle = () => (clearTimeout(timer), signal?.removeEventListener("abort", onAbort));
+    const done = (text: string) => (settle(), resolve(text));
+    const fail = (error: PackError) => (settle(), reject(error));
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
     child.stderr.on("data", (chunk) => (err += chunk));
     child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
-    child.on("close", (code, signal) => {
+    child.on("close", (code) => {
       if (code === 0) return done(out.trim());
       // GitHub answers a missing or private repo by asking for a login, which is off: say what that means.
       if (/could not read Username|Authentication failed|Repository not found/.test(err)) {
         return fail(new PackError(`${printable(url)} was not found, or it is private: marcsh installs public repositories only`));
       }
       // The server's own words reach the toast: cleaned, and only the end of them (git puts the reason last).
-      const why = signal ? `timed out after ${Math.round(timeoutMs / 1000)} s` : printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
+      const why = printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
       fail(new PackError(`git ${args[0]} failed: ${why}`));
     });
   });
@@ -691,12 +689,15 @@ export async function updatePack(
   }
 }
 
+const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
 export type RemoveResult = { status: "removed" } | { status: "removed-leftover" };
 
 /** Whether `<root>/<owner>/<repo>` exists without a lock entry: a crash between the rename and the lock write leaves one. */
 export function hasLeftover(id: string, { root = packsRoot() }: RootOption = {}): boolean {
   assertPackId(id);
-  if (listPacks({ root }).some((pack) => pack.id === id)) return false;
+  // On a case-insensitive disk another spelling of an installed id names the installed folder, which is not a leftover.
+  if (listPacks({ root }).some((pack) => sameId(pack.id, id))) return false;
   try {
     lstatSync(packDir(id, root));
     return true;
@@ -712,7 +713,10 @@ export function hasLeftover(id: string, { root = packsRoot() }: RootOption = {})
 export async function removePack(id: string, { root = packsRoot() }: RootOption = {}): Promise<RemoveResult> {
   assertPackId(id);
   const target = packDir(id, root);
-  const installed = readLock(root, true).some((pack) => pack.id === id);
+  const packs = readLock(root, true);
+  const installed = packs.some((pack) => pack.id === id);
+  const spelled = packs.find((pack) => sameId(pack.id, id));
+  if (!installed && spelled) throw new PackError(`${id} is not installed; did you mean ${spelled.id}?`);
   if (!installed) {
     if (!hasLeftover(id, { root })) throw new PackError(`${id} is not installed`);
     if (lstatSync(dirname(target)).isSymbolicLink()) throw new PackError(`${dirname(target)} is a link; remove ${target} by hand`);
