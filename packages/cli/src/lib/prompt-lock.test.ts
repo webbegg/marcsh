@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { attachInput, clearKeyActivity, COMPOSING_MS, isComposing, noteKeyActivity, setDraft } from "./prompt-lock";
+import { attachInput, clearKeyActivity, COMPOSING_MS, handOffDraft, isComposing, noteKeyActivity, setDraft, takeHandOffDraft } from "./prompt-lock";
 
 // What "the user is composing" means to a prompt that opens: a draft in the input, or a key typed there in the last 2 s.
 describe("isComposing", () => {
@@ -89,5 +89,50 @@ describe("attachInput", () => {
     detachAgain();
     expect(isComposing(owner, 1_500)).toBe(true);
     expect(isComposing(owner, 1_000 + COMPOSING_MS)).toBe(false);
+  });
+});
+
+// The new-session screen hands what was typed in its bar to the next bar when it unmounts, not when it navigates.
+describe("handOffDraft", () => {
+  test("the next bar takes the text once", () => {
+    const owner = {};
+    handOffDraft(owner, "please check the ");
+
+    expect(takeHandOffDraft(owner)).toBe("please check the ");
+    expect(takeHandOffDraft(owner)).toBe("");
+  });
+
+  test("nothing handed off: nothing taken", () => {
+    expect(takeHandOffDraft({})).toBe("");
+  });
+
+  test("a later hand-off replaces an earlier one, and an empty one clears it", () => {
+    const owner = {};
+    handOffDraft(owner, "first");
+    handOffDraft(owner, "second");
+    expect(takeHandOffDraft(owner)).toBe("second");
+
+    handOffDraft(owner, "stale");
+    handOffDraft(owner, "");
+    expect(takeHandOffDraft(owner)).toBe("");
+  });
+
+  test("it is appended to the draft the bar already has, without repeating it", () => {
+    const owner = {};
+    handOffDraft(owner, "the rest");
+    expect(takeHandOffDraft(owner, "start ")).toBe("start the rest");
+
+    handOffDraft(owner, "start the rest");
+    expect(takeHandOffDraft(owner, "start ")).toBe("start the rest");
+
+    expect(takeHandOffDraft(owner, "only the carried draft")).toBe("only the carried draft");
+  });
+
+  test("each owner (a screen's renderer) has its own hand-off", () => {
+    const a = {};
+    handOffDraft(a, "for a");
+
+    expect(takeHandOffDraft({})).toBe("");
+    expect(takeHandOffDraft(a)).toBe("for a");
   });
 });

@@ -11,14 +11,14 @@ export const LOCKED_LINE = "you were typing: press ↓ to answer";
 /** A key typed in the input this recently means the user is composing. */
 export const COMPOSING_MS = 2000;
 
-type Composing = { lastKeyAt: number; draft: boolean; input: object | null };
+type Composing = { lastKeyAt: number; draft: boolean; input: object | null; handedOff: string };
 
 // One state per screen (renderer), so nothing carries over between screens.
 const states = new WeakMap<object, Composing>();
 
 const stateOf = (owner: object): Composing => {
   let state = states.get(owner);
-  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false, input: null }));
+  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false, input: null, handedOff: "" }));
   return state;
 };
 
@@ -54,6 +54,27 @@ export function attachInput(owner: object, hasDraft: boolean): () => void {
     state.input = null;
     state.draft = false;
   };
+}
+
+/**
+ * The text of a bar that is going away, for the bar that comes next. The new-session screen stays mounted a few ms after it
+ * navigates, and keys typed in that gap land in its bar: it hands its text over when it unmounts, so none is lost. An empty
+ * text clears an earlier hand-off.
+ */
+export function handOffDraft(owner: object, text: string) {
+  stateOf(owner).handedOff = text;
+}
+
+/**
+ * What the previous bar handed off, once: the next bar takes it when it mounts, appended to the `carried` draft it already
+ * has (unless that already starts the hand-off). "" when there is none.
+ */
+export function takeHandOffDraft(owner: object, carried = ""): string {
+  const state = stateOf(owner);
+  const text = state.handedOff;
+  state.handedOff = "";
+  if (text.length === 0) return carried;
+  return text.startsWith(carried) ? text : carried + text;
 }
 
 export function isComposing(owner: object, now = Date.now()): boolean {

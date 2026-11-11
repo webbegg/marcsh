@@ -16,7 +16,6 @@ type Props = {
   engine?: string;
   /** Text the input mounts with (see InputBar). */
   initialDraft?: string;
-  readDraftRef?: { current: (() => string) | null };
   /** The input takes keys but never sends (see InputBar). */
   inputTypeOnly?: boolean;
 };
@@ -30,7 +29,6 @@ export function SessionShell({
   cwd,
   engine,
   initialDraft,
-  readDraftRef,
   inputTypeOnly = false,
 }: Props) {
   const { mode } = usePromptConfig();
@@ -55,7 +53,6 @@ export function SessionShell({
           cwd={cwd}
           engine={engine}
           initialDraft={initialDraft}
-          readDraftRef={readDraftRef}
           typeOnly={inputTypeOnly}
         />
       </box>

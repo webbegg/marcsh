@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { createContext, useContext, useRef, useState, useCallback, useEffect, type RefObject } from "react";
+import { createContext, useContext, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
 import { TextAttributes } from "@opentui/core";
 
@@ -25,7 +25,7 @@ import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
-import { attachInput, clearKeyActivity, noteKeyActivity, setDraft } from "../lib/prompt-lock";
+import { attachInput, clearKeyActivity, handOffDraft, noteKeyActivity, setDraft, takeHandOffDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -271,11 +271,6 @@ type Props = {
   engine?: string;
   /** Text the bar mounts with (a draft carried over from the screen before). */
   initialDraft?: string;
-  /**
-   * Set to a function that reads the text as it is right now. The text of a key is in the textarea before its content-change event
-   * fires, so a screen that moves on mid-burst reads it here, not from an event.
-   */
-  readDraftRef?: { current: (() => string) | null };
   /** Takes keys but never sends: Enter and the `/` commands do nothing, the text stays (the new-session screen, where there is no prompt yet). */
   typeOnly?: boolean;
 };
@@ -309,7 +304,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, initialDraft, readDraftRef, typeOnly = false }: Props) {
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, initialDraft, typeOnly = false }: Props) {
   const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
@@ -396,13 +391,24 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu, renderer]);
 
-  useEffect(() => {
-    if (!readDraftRef) return;
-    readDraftRef.current = () => textareaRef.current?.plainText ?? "";
-    return () => {
-      readDraftRef.current = null;
-    };
-  }, [readDraftRef]);
+  // The new-session screen stays mounted a few ms after it navigates, and keys typed in that gap land in its bar: a type-only bar
+  // hands its text over when it unmounts (a layout cleanup, while the textarea is still there), and the next bar takes it on mount.
+  useLayoutEffect(() => {
+    if (!typeOnly) return;
+    return () => handOffDraft(renderer, textareaRef.current?.plainText ?? "");
+  }, [typeOnly, renderer]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || typeOnly) return;
+    const carried = initialDraft ?? "";
+    const text = takeHandOffDraft(renderer, carried);
+    if (text === carried) return;
+    textarea.setText(text);
+    textarea.cursorOffset = text.length;
+    setDraft(renderer, text.length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
+  }, []);
 
   // A prompt that opens while the user is composing here opens locked (see prompt-lock). Keys can reach a new bar before this runs
   // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
