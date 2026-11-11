@@ -4,6 +4,7 @@ import { z } from "zod";
 import { useKeyboard } from "@opentui/react";
 import { type ModeType } from "../lib/modes";
 import { SessionShell } from "../components/session-shell";
+import { TurnInputContext } from "../components/input-bar";
 import { 
   UserMessage, 
   BotMessage, 
@@ -44,7 +45,7 @@ function ChatMessage(
       .map((p) => p.text)
       .join("");
 
-    return <UserMessage message={text} mode={msg.metadata?.mode ?? "BUILD"} />;
+    return <UserMessage message={text} mode={msg.metadata?.mode ?? "BUILD"} marker={msg.metadata?.steered ? "↳ steer" : undefined} />;
   }
 
   return (
@@ -83,7 +84,7 @@ function SessionChat({
     }),
     [toast],
   );
-  const { messages, status, submit, abort, interrupt, error, pendingRequest } = useChat(session, engine, chatOptions);
+  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, error, pendingRequest } = useChat(session, engine, chatOptions);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -121,6 +122,10 @@ function SessionChat({
     [session.engine, submit, refreshPiModel],
   );
 
+  // A turn that takes input (pi) keeps the input on; an approval, question or dialog still takes every key, so the input is off while one is open.
+  const typingDuringTurn = busy && canSteer;
+  const turnInput = useMemo(() => ({ active: typingDuringTurn && !pendingRequest, queue: followUp }), [typingDuringTurn, pendingRequest, followUp]);
+
   // Show the pi model in use (the saved one may need a fallback) before the first prompt.
   useEffect(() => {
     if (session.engine === "pi") void refreshPiModel();
@@ -147,17 +152,23 @@ function SessionChat({
   }, [initialPrompt, send]);
 
   return (
-    <>
+    <TurnInputContext.Provider value={turnInput}>
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
-        onSubmit={(text) => send(text, mode, model)}
-        inputDisabled={busy || choosingModel}
+        onSubmit={(text) => (busy ? steer(text) : send(text, mode, model))}
+        inputDisabled={(busy && !typingDuringTurn) || choosingModel || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
       >
         {messages.map((msg) => (
           <ChatMessage key={msg.id} msg={msg} />
+        ))}
+        {queued.steering.map((text, index) => (
+          <UserMessage key={`steer-${index}`} message={text} mode={mode} marker="↳ steer · pending" pending />
+        ))}
+        {queued.followUp.map((text, index) => (
+          <UserMessage key={`queued-${index}`} message={text} mode={mode} marker="queued" pending />
         ))}
         {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
         {pendingRequest?.kind === "question" && (
@@ -171,7 +182,7 @@ function SessionChat({
       </SessionShell>
       {/* The trust question owns the whole screen while pending, so its title and key hints never scroll away. */}
       {pendingRequest?.kind === "trust" && <TrustPrompt key={pendingRequest.id} request={pendingRequest} />}
-    </>
+    </TurnInputContext.Provider>
   );
 }
 

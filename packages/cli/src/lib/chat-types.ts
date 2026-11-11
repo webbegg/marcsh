@@ -32,6 +32,8 @@ export type ChatMessageMetadata = {
   model?: string;
   durationMs?: number;
   costUsd?: number;
+  /** A user message typed during a turn and delivered to it (shown with a marker). */
+  steered?: boolean;
 };
 
 export type ChatMessage = {
