@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
-import cliPackage from "../../package.json";
 
 process.env.MARCSH_DB_PATH = ":memory:";
 // Never the real ~/.marcsh/preferences.json: a missing file reads as no preferences, and writes land in tmp.
@@ -28,7 +27,7 @@ afterEach(async () => {
 });
 
 describe("home screen (S16)", () => {
-  test("shows the pi version that powers marcsh", async () => {
+  test("no longer prints a 'powered by pi' line under the banner (the prompt's status line names the engine)", async () => {
     const router = createMemoryRouter(
       [{ path: "/", element: <RootLayout />, children: [{ index: true, element: <Home /> }] }],
       { initialEntries: ["/"] },
@@ -36,8 +35,8 @@ describe("home screen (S16)", () => {
     screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
     await settle();
 
-    const version = cliPackage.dependencies["@earendil-works/pi-coding-agent"];
-    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(collapse(screen.captureCharFrame())).toContain(`powered by pi v${version}`);
+    const text = collapse(screen.captureCharFrame());
+    expect(text).toContain("Ask anything");
+    expect(text).not.toContain("powered by");
   });
 });

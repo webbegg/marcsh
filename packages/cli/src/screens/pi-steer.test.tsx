@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -36,6 +36,7 @@ afterAll(() => rmSync(prefsDir, { recursive: true, force: true }));
 
 afterEach(async () => {
   engines.set("pi", undefined);
+  engines.set("claude", undefined);
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
   rmSync(dir, { recursive: true, force: true });
@@ -91,24 +92,25 @@ function gated(content: () => Parameters<typeof fauxAssistantMessage>[0], option
 }
 
 // A real pi engine on pi's faux provider (no network).
-async function openPiSession(responses: FauxResponseStep[]) {
-  const faux = fauxProvider({ models: [{ id: "faux-1" }], tokensPerSecond: 3000, tokenSize: { min: 1, max: 1 } });
+async function openPiSession(responses: FauxResponseStep[], options: { width?: number; modelId?: string } = {}) {
+  const modelId = options.modelId ?? "faux-1";
+  const faux = fauxProvider({ models: [{ id: modelId }], tokensPerSecond: 3000, tokenSize: { min: 1, max: 1 } });
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
-  const model = modelRuntime.getModel("faux", "faux-1")!;
+  const model = modelRuntime.getModel("faux", modelId)!;
   modelRuntime.getAvailable = async () => [model];
   faux.setResponses(responses);
   engines.set("pi", createPiEngine({ agentDir, modelRuntime }));
-  return { faux, session: await openScreen() };
+  return { faux, session: await openScreen(options.width) };
 }
 
-async function openScreen() {
+async function openScreen(width = 110) {
   const session = getStorage().createSession({ title: "pi chat", cwd, engine: "pi" });
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
     { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "opus" } } }] },
   );
-  screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 40 });
+  screen = await testRender(<RouterProvider router={router} />, { width, height: 40 });
   await settle();
   return session;
 }
@@ -130,6 +132,25 @@ describe("typing during a pi turn (S4)", () => {
 
     await type("keep going");
     expect(frame()).toContain("keep going");
+    first.release();
+  }, 30000);
+
+  // At 80 columns the line `Build › faux/fake-model-12345 · pi v1.5.0 · enter steers · alt+enter queues` wrapped: the hint drops what does not fit, and the engine stays whole.
+  test("at 80 columns the status line stays on one row during a turn, engine label intact", async () => {
+    const first = gated(() => [fauxText("first answer")]);
+    await openPiSession([first.step], { width: 80, modelId: "fake-model-12345" });
+    await first.started;
+    await settle();
+
+    const rows = screen!.captureCharFrame().split("\n");
+    // The input's status line (the transcript shows a `Build › model` label too).
+    const status = rows.findLastIndex((row) => row.includes("Build ›"));
+    expect(status).toBeGreaterThanOrEqual(0);
+    expect(rows[status]).toContain("faux/fake-model-12345 · pi v1.5.0");
+    expect(rows[status]).toMatch(/steer/);
+    expect(rows[status]).toMatch(/queue/);
+    // Nothing of the line spilled onto the row below it.
+    expect(rows[status + 1]).not.toMatch(/queue|steer/);
     first.release();
   }, 30000);
 
@@ -285,7 +306,9 @@ describe("typing during a pi turn (S4)", () => {
     expect(frame()).not.toContain("zzz");
     expect(frame()).toContain("Allow");
 
-    // The prompt answers to its own keys, then the input is back with the draft intact.
+    // It opened while the user was composing, so it is locked until ↓; then it answers to its own keys, and the input is back with the draft intact.
+    expect(frame()).toContain("press ↓ to answer");
+    await act(async () => screen!.mockInput.pressArrow("down"));
     await settle(400);
     await press("y");
     const done = await frameContaining("all done");
@@ -300,13 +323,14 @@ describe("typing during a pi turn (S4)", () => {
 describe("an engine without steer keeps today's behavior (S4)", () => {
   test("the input is off during the turn and text typed then goes nowhere", async () => {
     const release = Promise.withResolvers<void>();
+    // A Claude session: its turn takes no input, and a pi session's input is on whenever no prompt is open.
     const stub: Engine = {
-      id: "pi",
+      id: "claude",
       startTurn: () => ({ done: release.promise, interrupt: () => release.resolve() }),
       warmUpCommands: async () => {},
     };
-    engines.set("pi", stub);
-    const session = getStorage().createSession({ title: "chat", cwd, engine: "pi" });
+    engines.set("claude", stub);
+    const session = getStorage().createSession({ title: "chat", cwd, engine: "claude" });
     const router = createMemoryRouter(
       [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
       { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "opus" } } }] },
@@ -326,4 +350,44 @@ describe("an engine without steer keeps today's behavior (S4)", () => {
     release.resolve();
     await settle(100);
   }, 30000);
+});
+
+// B2: pi's session shutdown (an extension or MCP server closing) runs after the answer, while the turn still counts as running.
+describe("after pi has settled (S4)", () => {
+  test("the turn stops advertising steering, a draft stays in the input, and it can be sent once the turn ends", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "slow-shutdown.ts"),
+      `export default function (pi: any) { pi.on("session_shutdown", async () => { await new Promise((r) => setTimeout(r, 1500)); }); }\n`,
+    );
+    const first = gated(() => [fauxText("first answer")]);
+    const { faux } = await openPiSession([first.step, fauxAssistantMessage([fauxText("second answer")])]);
+    await first.started;
+
+    await type("late words");
+    expect(frame()).toContain("enter steers");
+    first.release();
+
+    // The answer is in and pi is shutting down: no steering is offered, and Enter does not send the draft anywhere.
+    const closing = await frameContaining("turn ending");
+    expect(closing).toContain("first answer");
+    expect(closing).not.toContain("enter steers");
+    expect(closing).toContain("late words");
+    await enter();
+    await enter({ meta: true });
+    expect(frame()).toContain("late words");
+    expect(frame()).not.toContain("pending");
+    expect(frame()).not.toContain("queued");
+    expect(faux.state.callCount).toBe(1);
+
+    // Once the turn is over the draft is sent as the next prompt.
+    await frameWithout("turn ending", 15000);
+    expect(frame()).toContain("late words");
+    expect(frame()).not.toContain("enter steers");
+    await enter();
+    const done = await frameContaining("second answer");
+    expect(done).toContain("second answer");
+    expect(faux.state.callCount).toBe(2);
+    expect(occurrences(done, "late words")).toBe(1);
+  }, 40000);
 });

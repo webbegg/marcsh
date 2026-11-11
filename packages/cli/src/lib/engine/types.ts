@@ -31,7 +31,17 @@ export type EngineEvent =
   /** The messages the user typed during the turn that the engine has not sent yet (replaces the last list). */
   | { type: "queue"; steering: string[]; followUp: string[] }
   /** A queued message was just sent: the reply so far is complete, and what follows answers this message. */
-  | { type: "delivered"; text: string; kind: "steer" | "followUp" };
+  | { type: "delivered"; text: string; kind: "steer" | "followUp" }
+  /** The engine has settled: the turn takes no more steers or follow-ups, though it may still be shutting down. */
+  | { type: "input-closed" };
+
+/** What `steer` and `followUp` reject with once the engine has settled: the text was not taken and nothing will send it. */
+export class TurnClosedError extends Error {
+  constructor() {
+    super("The turn is already over, so the message was not sent.");
+    this.name = "TurnClosedError";
+  }
+}
 
 export type TurnRequest = {
   prompt: string;
@@ -79,7 +89,8 @@ export type EngineTurn = {
   interrupt(): void;
   /*
    * Typing during a turn. An engine without them takes no input until the turn ends (the chat keeps its input
-   * disabled). Each rejects when the engine cannot take the text; after an interrupt they do nothing.
+   * disabled). Each rejects when the engine cannot take the text (`TurnClosedError` once it has settled, see the
+   * `input-closed` event); after an interrupt they do nothing.
    */
   /** Sends the text to the running turn, before the model's next response. */
   steer?(text: string): Promise<void>;

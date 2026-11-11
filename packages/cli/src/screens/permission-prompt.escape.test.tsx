@@ -12,6 +12,8 @@ const { testRender } = await import("@opentui/react/test-utils");
 const { ThemeProvider } = await import("../providers/theme");
 const { KeyboardLayerProvider } = await import("../providers/keyboard-layer");
 const { PermissionPrompt } = await import("../components/permission-prompt");
+const { LOCKED_LINE, setDraft } = await import("../lib/prompt-lock");
+const { useRenderer } = await import("@opentui/react");
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 let answers: string[] = [];
@@ -153,5 +155,46 @@ describe("PermissionPrompt escapes what the engine supplies", () => {
     await act(async () => screen!.mockInput.pressKey("y" as never));
     await settle();
     expect(answers).toEqual(["allow"]);
+  });
+});
+
+// The user was composing when it opened, so it is locked; once the quiet window has passed it must still draw one hint row.
+function Composing({ children }: { children: React.ReactNode }) {
+  setDraft(useRenderer(), true);
+  return <>{children}</>;
+}
+
+describe("a locked PermissionPrompt", () => {
+  const showLocked = async (ask: Record<string, unknown> = {}) => {
+    const request = { kind: "permission", toolName: "Bash", input: { command: "ls" }, respond: (decision: string) => answers.push(decision), ...ask } as any;
+    screen = await testRender(
+      <ThemeProvider>
+        <KeyboardLayerProvider>
+          <Composing>
+            <PermissionPrompt request={request} />
+          </Composing>
+        </KeyboardLayerProvider>
+      </ThemeProvider>,
+      { width: 110, height: 30 },
+    );
+    await settle(400);
+    await screen.renderOnce();
+    return screen.captureCharFrame();
+  };
+  const keyRows = (frame: string) => rowsOf(frame).filter((row) => /^y\s.*allow once/.test(row));
+  const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+  test("draws its dim hint row once after the quiet window, each key once", async () => {
+    const frame = await showLocked();
+    expect(frame).toContain(LOCKED_LINE);
+    expect(keyRows(frame)).toEqual(["y allow once  a always allow  n deny"]);
+    expect(occurrences(frame, "always allow")).toBe(1);
+    expect(occurrences(frame, "n deny")).toBe(1);
+  });
+
+  test("the confirm-first variant has no always-allow key and still one row", async () => {
+    const frame = await showLocked({ defaultToNo: true });
+    expect(keyRows(frame)).toEqual(["y allow once (then Enter)  n deny"]);
+    expect(occurrences(frame, "deny")).toBe(1);
   });
 });

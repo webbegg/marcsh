@@ -32,6 +32,8 @@ const sessionLocationSchema = z.object({
       model: z.string(),
     })
     .optional(),
+  // Text typed on the new-session screen, to be carried into the input.
+  draft: z.string().optional(),
 });
 
 function ChatMessage(
@@ -62,9 +64,11 @@ function ChatMessage(
 function SessionChat({ 
   session,
   initialPrompt,
+  draft,
 }: { 
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string };
+  draft?: string;
 }) {
   const { mode, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
@@ -84,7 +88,7 @@ function SessionChat({
     }),
     [toast],
   );
-  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, error, pendingRequest } = useChat(session, engine, chatOptions);
+  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest } = useChat(session, engine, chatOptions);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -122,9 +126,17 @@ function SessionChat({
     [session.engine, submit, refreshPiModel],
   );
 
-  // A turn that takes input (pi) keeps the input on; an approval, question or dialog still takes every key, so the input is off while one is open.
-  const typingDuringTurn = busy && canSteer;
-  const turnInput = useMemo(() => ({ active: typingDuringTurn && !pendingRequest, queue: followUp }), [typingDuringTurn, pendingRequest, followUp]);
+  // A pi session's input takes keys whenever no prompt is open: while it starts (the model check, before the turn can take steers), while the
+  // turn runs, and while it closes. An approval, question or dialog still takes every key, so the input is off while one is open.
+  // Only sending waits: before the turn can take steers (`starting`) and once the engine has settled it (`inputClosed`) Enter keeps the text,
+  // which is sent as the next prompt when the turn ends.
+  const piSession = session.engine === "pi";
+  const typingDuringTurn = busy && (canSteer || inputClosed);
+  const starting = piSession && (choosingModel || (busy && !canSteer && !inputClosed));
+  const turnInput = useMemo(
+    () => ({ active: typingDuringTurn && !pendingRequest, closed: busy && inputClosed, starting, steer, queue: followUp }),
+    [typingDuringTurn, pendingRequest, busy, inputClosed, starting, steer, followUp],
+  );
 
   // Show the pi model in use (the saved one may need a fallback) before the first prompt.
   useEffect(() => {
@@ -156,8 +168,9 @@ function SessionChat({
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
+        initialDraft={draft}
         onSubmit={(text) => (busy ? steer(text) : send(text, mode, model))}
-        inputDisabled={(busy && !typingDuringTurn) || choosingModel || pendingRequest !== null}
+        inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
       >
@@ -192,9 +205,9 @@ export function Session() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const initialPrompt = useMemo(() => {
+  const { initialPrompt, draft } = useMemo(() => {
     const parsed = sessionLocationSchema.safeParse(location.state);
-    return parsed.success ? parsed.data.initialPrompt : undefined;
+    return parsed.success ? parsed.data : { initialPrompt: undefined, draft: undefined };
   }, [location.state]);
 
   const { session, loadError } = useMemo(() => {
@@ -224,6 +237,7 @@ export function Session() {
       key={session.id} 
       session={session} 
       initialPrompt={initialPrompt}
+      draft={draft}
     />
   );
 };

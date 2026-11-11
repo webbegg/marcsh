@@ -4,6 +4,7 @@ import { useKeyboard } from "@opentui/react";
 import { EmptyBorder } from "./border";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
 import { useTheme } from "../providers/theme";
 import type { ConfirmRequest, EditorRequest, InputRequest, SelectRequest } from "../hooks/use-chat";
 
@@ -58,6 +59,9 @@ function Frame({ children }: { children: ReactNode }) {
 
 // Esc on any of these prompts cancels the ask, and the session's own Esc handler also interrupts the turn, as it does
 // on an approval or a question: an extension that asks again cannot trap the session.
+// A prompt that opens while the user is composing is locked (see `usePromptLock`): only Esc and ↓ do anything, and ↓
+// unlocks it with a fresh quiet window; text fields stay unfocused so typing ahead goes nowhere.
+const unlocksPrompt = (key: { name: string }, isTopLayer: boolean) => key.name === "down" && isTopLayer;
 const hasModifier = (key: { ctrl: boolean; meta: boolean; option: boolean; super?: boolean; hyper?: boolean }) =>
   key.ctrl || key.meta || key.option || key.super || key.hyper;
 
@@ -65,6 +69,7 @@ export function SelectPrompt({ request }: PromptProps<SelectRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const [index, setIndex] = useState(0);
   const { options } = request;
 
@@ -74,7 +79,7 @@ export function SelectPrompt({ request }: PromptProps<SelectRequest>) {
       return;
     }
 
-    // Moving the highlight and cancelling are harmless, so they work at once.
+    // Moving the highlight and cancelling are harmless, so they work at once; while locked, ↓ unlocks instead of moving.
     if (key.name === "escape") {
       key.preventDefault();
       request.respond(undefined);
@@ -83,7 +88,12 @@ export function SelectPrompt({ request }: PromptProps<SelectRequest>) {
       setIndex((i) => Math.max(0, i - 1));
     } else if (key.name === "down") {
       key.preventDefault();
-      setIndex((i) => Math.min(options.length - 1, i + 1));
+      if (lock.isLocked()) {
+        lock.unlock();
+        restartQuiet();
+      } else setIndex((i) => Math.min(options.length - 1, i + 1));
+    } else if (lock.isLocked()) {
+      // Nothing else answers it until ↓.
     } else if (!isQuiet()) {
       // Any other key before the keyboard is quiet (answer keys included) is ignored and restarts the wait.
       restartQuiet();
@@ -121,7 +131,11 @@ export function SelectPrompt({ request }: PromptProps<SelectRequest>) {
       })}
       {below > 0 ? <text attributes={TextAttributes.DIM}>↓ {below} more</text> : null}
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "↑/↓ move · Enter selects · 1-9 pick · Esc cancels and stops the turn" : "waiting for typing to stop…"}
+        {lock.locked
+          ? `${LOCKED_LINE} · Esc cancels and stops the turn`
+          : quiet
+            ? "↑/↓ move · Enter selects · 1-9 pick · Esc cancels and stops the turn"
+            : "waiting for typing to stop…"}
       </text>
     </Frame>
   );
@@ -136,6 +150,7 @@ export function ConfirmPrompt({ request }: PromptProps<ConfirmRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const [armedRequest, setArmedRequest] = useState<ConfirmRequest | null>(null);
   const armed = armedRequest === request;
 
@@ -143,6 +158,15 @@ export function ConfirmPrompt({ request }: PromptProps<ConfirmRequest>) {
     if (isTopLayer("base") && !hasModifier(key) && key.name === "escape") {
       key.preventDefault();
       request.respond(false);
+      return;
+    }
+
+    if (lock.isLocked()) {
+      if (!hasModifier(key) && unlocksPrompt(key, isTopLayer("base"))) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
       return;
     }
 
@@ -175,7 +199,14 @@ export function ConfirmPrompt({ request }: PromptProps<ConfirmRequest>) {
       </text>
       {request.message ? <text attributes={TextAttributes.DIM} wrapMode="char">{stripControlChars(request.message)}</text> : null}
       <box flexDirection="row" gap={2}>
-        {!quiet ? (
+        {lock.locked ? (
+          <>
+            <text attributes={TextAttributes.DIM}>y confirm (then Enter)</text>
+            <text attributes={TextAttributes.DIM}>n cancel</text>
+            <text attributes={TextAttributes.DIM}>Esc cancel and stop the turn</text>
+            <text>{LOCKED_LINE}</text>
+          </>
+        ) : !quiet ? (
           <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
         ) : (
           <>
@@ -196,6 +227,7 @@ export function InputPrompt({ request }: PromptProps<InputRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const inputRef = useRef<InputRenderable>(null);
 
   useKeyboard((key) => {
@@ -204,6 +236,12 @@ export function InputPrompt({ request }: PromptProps<InputRequest>) {
     if (key.name === "escape") {
       key.preventDefault();
       request.respond(undefined);
+    } else if (lock.isLocked()) {
+      if (unlocksPrompt(key, true)) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
     } else if (key.name === "return" || key.name === "enter") {
       key.preventDefault();
       // An Enter that was typed ahead of the prompt must not submit it.
@@ -217,9 +255,13 @@ export function InputPrompt({ request }: PromptProps<InputRequest>) {
       <text>
         <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
-      <input ref={inputRef} placeholder={stripControlChars(request.placeholder ?? "")} focused />
+      <input ref={inputRef} placeholder={stripControlChars(request.placeholder ?? "")} focused={!lock.locked} />
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "Enter submits · Esc cancels and stops the turn" : "waiting for typing to stop…"}
+        {lock.locked
+          ? `${LOCKED_LINE} · Esc cancels and stops the turn`
+          : quiet
+            ? "Enter submits · Esc cancels and stops the turn"
+            : "waiting for typing to stop…"}
       </text>
     </Frame>
   );
@@ -237,6 +279,7 @@ export function EditorPrompt({ request }: PromptProps<EditorRequest>) {
   const { colors } = useTheme();
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const editorRef = useRef<TextareaRenderable>(null);
   const prefill = stripControlChars(request.prefill ?? "");
 
@@ -251,6 +294,12 @@ export function EditorPrompt({ request }: PromptProps<EditorRequest>) {
     if (key.name === "escape") {
       key.preventDefault();
       request.respond(undefined);
+    } else if (lock.isLocked()) {
+      if (unlocksPrompt(key, true)) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
     } else if ((key.name === "return" || key.name === "enter") && !key.shift) {
       key.preventDefault();
       // An Enter that was typed ahead of the prompt must not submit it.
@@ -264,9 +313,13 @@ export function EditorPrompt({ request }: PromptProps<EditorRequest>) {
       <text>
         <em fg={colors.info}>{stripControlChars(request.title)}</em>
       </text>
-      <textarea ref={editorRef} initialValue={prefill} keyBindings={EDITOR_KEY_BINDINGS} focused />
+      <textarea ref={editorRef} initialValue={prefill} keyBindings={EDITOR_KEY_BINDINGS} focused={!lock.locked} />
       <text attributes={TextAttributes.DIM}>
-        {quiet ? "Enter submits · Shift+Enter adds a line · Esc cancels and stops the turn" : "waiting for typing to stop…"}
+        {lock.locked
+          ? `${LOCKED_LINE} · Esc cancels and stops the turn`
+          : quiet
+            ? "Enter submits · Shift+Enter adds a line · Esc cancels and stops the turn"
+            : "waiting for typing to stop…"}
       </text>
     </Frame>
   );

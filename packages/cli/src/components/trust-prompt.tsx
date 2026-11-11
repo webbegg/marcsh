@@ -5,6 +5,7 @@ import { EmptyBorder } from "./border";
 import { escapeProjectText, unreadableResources } from "../lib/engine/pi-trust";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
 import { useTheme } from "../providers/theme";
 import type { TrustRequest } from "../hooks/use-chat";
 
@@ -67,6 +68,8 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const anchorRef = useRef<BoxRenderable>(null);
   const hosted = layer !== "base";
+  // A dialog the user opened themselves (hosted) is never locked: they are not composing a message.
+  const lock = usePromptLock(request, !hosted);
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const { width, height } = useTerminalDimensions();
   const renderer = useRenderer();
@@ -139,6 +142,14 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   useKeyboard((key) => {
     const modified = key.ctrl || key.meta || key.option || key.super || key.hyper;
 
+    // Opened while the user was composing: only reading (↑/↓, PgUp/PgDn) and Esc work until ↓, which also scrolls; then the
+    // rules below apply from a fresh quiet window.
+    if (lock.isLocked() && key.name === "down" && isTopLayer(layer) && !modified) {
+      lock.unlock();
+      setArmedRequest(null);
+      restartQuiet();
+    }
+
     // Reading the list answers nothing and does not touch the quiet window or an armed `t`.
     const page = Math.max(1, (scrollRef.current?.viewport.height ?? 1) - 1);
     const scrollBy = { up: -1, down: 1, pageup: -page, pagedown: page }[key.name as string];
@@ -155,6 +166,8 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
       request.respond("skip");
       return;
     }
+
+    if (lock.isLocked()) return;
 
     // Any key before the keyboard is quiet (answer keys included) is ignored and restarts the wait.
     if (!isQuiet() || !isTopLayer(layer) || modified) {
@@ -181,7 +194,14 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     }
   });
 
-  const keyHints = !quiet ? (
+  const keyHints = lock.locked ? (
+    <>
+      {reviewable ? <text attributes={TextAttributes.DIM}>t trust (then Enter)</text> : null}
+      <text attributes={TextAttributes.DIM}>d don&apos;t trust</text>
+      <text attributes={TextAttributes.DIM}>Esc not now (this turn only)</text>
+      <text>{LOCKED_LINE}</text>
+    </>
+  ) : !quiet ? (
     <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
   ) : (
     <>

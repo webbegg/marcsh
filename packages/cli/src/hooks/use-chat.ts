@@ -4,7 +4,7 @@ import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
-import type { Engine, EngineEvent, EngineTurn, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
+import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
 import { getStorage, type StoredSession } from "../lib/storage";
@@ -104,6 +104,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const [permissionQueue, setPermissionQueue] = useState<PendingRequest[]>([]);
   const [queued, setQueued] = useState<QueuedInput>(NOTHING_QUEUED);
   const [canSteer, setCanSteer] = useState(false);
+  // The turn is still winding down but takes no more text: the engine has settled, or the turn was interrupted.
+  const [inputClosed, setInputClosed] = useState(false);
 
   const messagesRef = useRef(messages);
   const statusRef = useRef<ChatStatus>("ready");
@@ -111,6 +113,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const turnRef = useRef<EngineTurn | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
+  const inputClosedRef = useRef(false);
   const pendingRequestsRef = useRef(new Set<PendingRequest>());
   const notifyRef = useRef(options.notify);
   notifyRef.current = options.notify;
@@ -131,6 +134,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       updateStatus("submitted");
       setError(null);
       interruptedRef.current = false;
+      inputClosedRef.current = false;
 
       // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
       let replyId = crypto.randomUUID();
@@ -192,6 +196,12 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             break;
           case "queue":
             if (!interruptedRef.current) setQueued({ steering: event.steering, followUp: event.followUp });
+            break;
+          case "input-closed":
+            inputClosedRef.current = true;
+            setInputClosed(true);
+            setCanSteer(false);
+            setQueued(NOTHING_QUEUED);
             break;
           case "delivered": {
             const closed = replyId;
@@ -280,6 +290,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         turnRef.current = null;
         abortControllerRef.current = null;
         setCanSteer(false);
+        setInputClosed(false);
         setQueued(NOTHING_QUEUED);
         // Requests the engine is still waiting on (it can end the turn without aborting) are declined, not just dropped.
         for (const request of [...pendingRequestsRef.current]) decline(request);
@@ -303,16 +314,26 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     interruptedRef.current = true;
     // The engine discards what it has not sent; the turn takes no more input while it winds down.
     setCanSteer(false);
+    if (turnRef.current) {
+      inputClosedRef.current = true;
+      setInputClosed(true);
+    }
     setQueued(NOTHING_QUEUED);
     turnRef.current?.interrupt();
   }, []);
 
-  // Typing during a turn: only an engine whose turn takes it (and only until it is interrupted) gets the text.
+  // Typing during a turn: only an engine whose turn takes it (and only until it is interrupted or has settled) gets the text.
+  // Returns whether the text was handed over; the caller keeps a refused text where the user typed it. An engine that
+  // refuses afterwards (it settled in between) is reported with the text, so it is never lost silently.
   const sendToTurn = useCallback((kind: "steer" | "followUp", text: string) => {
     const turn = turnRef.current;
     const send = kind === "steer" ? turn?.steer : turn?.followUp;
-    if (!turn || !send || interruptedRef.current) return;
-    send.call(turn, text).catch((err: unknown) => notifyRef.current?.(err instanceof Error ? err.message : String(err), "warning"));
+    if (!turn || !send || interruptedRef.current || inputClosedRef.current) return false;
+    send.call(turn, text).catch((err: unknown) => {
+      const message = err instanceof TurnClosedError ? `${err.message} ("${text.length > 60 ? `${text.slice(0, 60)}…` : text}")` : err instanceof Error ? err.message : String(err);
+      notifyRef.current?.(message, "warning");
+    });
+    return true;
   }, []);
   const steer = useCallback((text: string) => sendToTurn("steer", text), [sendToTurn]);
   const followUp = useCallback((text: string) => sendToTurn("followUp", text), [sendToTurn]);
@@ -332,6 +353,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     followUp,
     queued,
     canSteer,
+    inputClosed,
     pendingRequest: permissionQueue[0] ?? null,
   };
 }

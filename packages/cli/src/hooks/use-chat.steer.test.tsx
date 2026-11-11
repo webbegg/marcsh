@@ -7,7 +7,7 @@ const { testRender } = await import("@opentui/react/test-utils");
 const { useChat } = await import("./use-chat");
 const { getStorage } = await import("../lib/storage");
 import type { ChatMessage } from "../lib/chat-types";
-import type { Engine, EngineEvent, EngineTurn, NoticeLevel, TurnHost, TurnRequest } from "../lib/engine/types";
+import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type TurnHost, type TurnRequest } from "../lib/engine/types";
 
 let latest: ReturnType<typeof useChat>;
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
@@ -21,7 +21,7 @@ type Script = {
   interrupted: number;
   emit: (event: EngineEvent) => void;
   finish: () => void;
-  failSteer?: string;
+  failSteer?: string | Error;
 };
 
 // A pi-like engine: its turn runs until the test finishes it, takes steer/followUp, and reports what the test makes it emit.
@@ -51,7 +51,7 @@ function steerableEngine(withSteer = true) {
       };
       if (withSteer) {
         turn.steer = async (text) => {
-          if (script.failSteer) throw new Error(script.failSteer);
+          if (script.failSteer) throw typeof script.failSteer === "string" ? new Error(script.failSteer) : script.failSteer;
           script.steered.push(text);
         };
         turn.followUp = async (text) => {
@@ -292,6 +292,85 @@ describe("typing during a turn (S4)", () => {
     expect(notices).toEqual([{ message: 'Extension command "/x" cannot be queued.', level: "warning" }]);
     expect(latest.error).toBeNull();
     scripts[0]!.finish();
+    await running;
+  });
+});
+
+// B2: once the engine has settled the turn takes no more text; a refused text stays with the user (the caller keeps it in the input).
+describe("a turn that has settled takes no more input (S4)", () => {
+  test("steer and followUp say whether the turn took the text", async () => {
+    const { engine, scripts } = steerableEngine();
+    await open(engine);
+    expect(latest.steer("nobody listens")).toBe(false);
+
+    const running = start("go");
+    await settle();
+    expect(latest.steer("now")).toBe(true);
+    expect(latest.followUp("later")).toBe(true);
+    await settle();
+    expect(scripts[0]!.steered).toEqual(["now"]);
+    expect(scripts[0]!.followedUp).toEqual(["later"]);
+
+    act(() => latest.interrupt());
+    expect(latest.steer("too late")).toBe(false);
+    expect(latest.followUp("too late")).toBe(false);
+    await running;
+  });
+
+  test("after input-closed the chat stops advertising input and refuses text without forwarding it", async () => {
+    const { engine, scripts } = steerableEngine();
+    await open(engine);
+    const running = start("go");
+    await settle();
+    const turn = scripts[0]!;
+    turn.emit({ type: "queue", steering: [], followUp: ["queued"] });
+    await settle();
+    expect(latest.canSteer).toBe(true);
+    expect(latest.inputClosed).toBe(false);
+
+    turn.emit({ type: "input-closed" });
+    await settle();
+    expect(latest.canSteer).toBe(false);
+    expect(latest.inputClosed).toBe(true);
+    expect(latest.queued).toEqual({ steering: [], followUp: [] });
+    expect(latest.status).not.toBe("ready");
+
+    expect(latest.steer("too late")).toBe(false);
+    expect(latest.followUp("too late")).toBe(false);
+    await settle();
+    expect(turn.steered).toEqual([]);
+    expect(turn.followedUp).toEqual([]);
+    expect(notices).toEqual([]);
+
+    turn.finish();
+    await running;
+    await settle();
+    expect(latest.status).toBe("ready");
+    expect(latest.inputClosed).toBe(false);
+    // The next turn takes input again.
+    const next = start("again");
+    await settle();
+    expect(latest.canSteer).toBe(true);
+    expect(latest.steer("works")).toBe(true);
+    scripts[1]!.finish();
+    await next;
+  });
+
+  test("an engine that refuses after taking the call is reported with the text, not silently", async () => {
+    const { engine, scripts } = steerableEngine();
+    await open(engine);
+    const running = start("go");
+    await settle();
+    const turn = scripts[0]!;
+    turn.failSteer = new TurnClosedError();
+
+    latest.steer("just too late");
+    await settle();
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.level).toBe("warning");
+    expect(notices[0]!.message).toContain("just too late");
+    turn.finish();
     await running;
   });
 });

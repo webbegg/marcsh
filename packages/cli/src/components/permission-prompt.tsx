@@ -4,6 +4,7 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { EmptyBorder } from "./border";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
 import { useTheme } from "../providers/theme";
 import type { PermissionRequest } from "../hooks/use-chat";
 import { escapeProjectText } from "../lib/engine/pi-trust";
@@ -99,6 +100,7 @@ export function PermissionPrompt({ request }: Props) {
   const { isTopLayer } = useKeyboardLayer();
   const [armedRequest, setArmedRequest] = useState<PermissionRequest | null>(null);
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
 
   const confirmFirst = request.defaultToNo === true;
   const offerAlways = !confirmFirst && !request.suppressAlwaysAllowRule;
@@ -107,6 +109,16 @@ export function PermissionPrompt({ request }: Props) {
   const titleRows = request.title !== undefined ? wrapByWidth(escapeProjectText(request.title), textWidth) : labelledRows("Allow ", `${request.toolName}?`, textWidth);
 
   useKeyboard((key) => {
+    // Opened while the user was composing: nothing answers it until ↓, then the rules below apply from a fresh quiet window.
+    if (lock.isLocked()) {
+      if (key.name === "down" && isTopLayer("base") && !key.ctrl && !key.meta && !key.option && !key.super && !key.hyper) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
+      return;
+    }
+
     // Any key before the keyboard is quiet (approval keys included) is ignored and restarts the wait.
     if (!isQuiet() || !isTopLayer("base") || key.ctrl || key.meta || key.option || key.super || key.hyper) {
       setArmedRequest(null);
@@ -159,32 +171,30 @@ export function PermissionPrompt({ request }: Props) {
         </box>
       ) : null}
       <box flexDirection="row" gap={2}>
-        {!quiet ? (
-          <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
-        ) : confirmFirst ? (
+        {lock.locked ? (
           <>
-            <text>y</text>
-            <text attributes={TextAttributes.DIM}>{armed ? "press Enter to confirm" : "allow once (then Enter)"}</text>
+            <text attributes={TextAttributes.DIM}>y {confirmFirst ? "allow once (then Enter)" : "allow once"}</text>
+            {offerAlways ? <text attributes={TextAttributes.DIM}>a always allow</text> : null}
+            <text attributes={TextAttributes.DIM}>n deny</text>
           </>
+        ) : !quiet ? (
+          <text attributes={TextAttributes.DIM}>waiting for typing to stop…</text>
         ) : (
           <>
             <text>y</text>
-            <text attributes={TextAttributes.DIM}>allow once</text>
-          </>
-        )}
-        {quiet && offerAlways ? (
-          <>
-            <text>a</text>
-            <text attributes={TextAttributes.DIM}>always allow</text>
-          </>
-        ) : null}
-        {quiet ? (
-          <>
+            <text attributes={TextAttributes.DIM}>{confirmFirst ? (armed ? "press Enter to confirm" : "allow once (then Enter)") : "allow once"}</text>
+            {offerAlways ? (
+              <>
+                <text>a</text>
+                <text attributes={TextAttributes.DIM}>always allow</text>
+              </>
+            ) : null}
             <text>n</text>
             <text attributes={TextAttributes.DIM}>deny</text>
           </>
-        ) : null}
+        )}
       </box>
+      {lock.locked ? <text>{LOCKED_LINE}</text> : null}
     </box>
   );
 }
