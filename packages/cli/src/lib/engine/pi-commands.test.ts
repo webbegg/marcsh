@@ -119,6 +119,7 @@ describe("bundledPiCommands", () => {
 
     expect(commands.map((c) => [c.name, c.source])).toEqual([
       ["marcsh:feature", "prompt"],
+      ["marcsh:agent-workflows", "skill"],
       ["marcsh:workflow", "skill"],
     ]);
     expect(commands[0]!.argumentHint).toBe("<feature-name>");

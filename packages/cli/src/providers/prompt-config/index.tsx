@@ -1,12 +1,15 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
-import { Mode, type ModeType } from "../../lib/modes";
+import type { ModeType } from "../../lib/modes";
+import { findAgent, loadAgents, nextAgent, type Agent } from "../../lib/agents";
 import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
 import { getPiRuntime, type EngineId } from "../../lib/engine";
-import { listAvailablePiModels, pickPiModel } from "../../lib/engine/pi-models";
+import { listAvailablePiModels, pickPiModel, pickTurnPiModel } from "../../lib/engine/pi-models";
 import {
+  getAgentId,
   getDefaultEngine,
   getPiModel,
+  setAgentId,
   setDefaultEngine as persistDefaultEngine,
   setPiModel as persistPiModel,
 } from "../../lib/preferences";
@@ -19,9 +22,18 @@ import {
 export type PiModelStatus = "pending" | "ready" | "none" | "unavailable";
 
 type PromptConfigContextValue = {
+  /** Build, Plan, then the user's own agents; Tab cycles them in this order. */
+  agents: Agent[];
+  /** The selected agent: its permission profile is `mode`, its prompt and model go with every turn. */
+  agent: Agent;
+  /** The selected agent's permission profile. */
   mode: ModeType;
-  toggleMode: () => void;
-  setMode: (mode: ModeType) => void;
+  /** Selects the agent with this ID (Build when it is gone) and keeps the choice; resolves the selected agent. */
+  selectAgent: (id: string) => Agent;
+  /** Selects the agent after the current one, wrapping around; resolves the selected agent. */
+  cycleAgent: () => Agent;
+  /** Reads the agent files again (one may have been added or removed) and resolves the new list. */
+  reloadAgents: () => Agent[];
   model: SupportedChatModelId;
   setModel: (model: SupportedChatModelId) => void;
   /** The engine new sessions start on; an open session keeps the one it was created with. */
@@ -33,8 +45,11 @@ type PromptConfigContextValue = {
   piModelStatus: PiModelStatus;
   /** Picks the pi model for the following turns and for new pi sessions (kept in the preferences). */
   setPiModel: (model: string) => void;
-  /** Checks the pi model against the models that have credentials now, and resolves with the one to use. */
-  refreshPiModel: () => Promise<string>;
+  /**
+   * Checks the pi model against the models that have credentials now, and resolves with the one to use: `turnModel` (an
+   * agent's) when it is available, else the same pick the status line shows.
+   */
+  refreshPiModel: (turnModel?: string) => Promise<string>;
 };
 
 /** How long the pi model check may take before it counts as failed. Mutable so tests can shorten it. */
@@ -63,7 +78,30 @@ type PromptConfigProviderProps = {
 };
 
 export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
-  const [mode, setMode] = useState<ModeType>(Mode.BUILD);
+  const [agents, setAgents] = useState<Agent[]>(() => loadAgents());
+  const [agentId, setAgentIdState] = useState(() => findAgent(agents, getAgentId()).id);
+  const agent = findAgent(agents, agentId);
+  // Tab can fire twice before a render: the next agent is computed from what was selected last, not from the render.
+  const agentsRef = useRef(agents);
+  const agentIdRef = useRef(agentId);
+
+  const selectAgent = useCallback((id: string) => {
+    const next = findAgent(agentsRef.current, id);
+    agentIdRef.current = next.id;
+    setAgentIdState(next.id);
+    setAgentId(next.id);
+    return next;
+  }, []);
+
+  const cycleAgent = useCallback(() => selectAgent(nextAgent(agentsRef.current, agentIdRef.current).id), [selectAgent]);
+
+  const reloadAgents = useCallback(() => {
+    const loaded = loadAgents();
+    agentsRef.current = loaded;
+    setAgents(loaded);
+    return loaded;
+  }, []);
+
   const [model, setModel] = useState<SupportedChatModelId>(DEFAULT_CHAT_MODEL_ID);
 
   const [defaultEngine, setDefaultEngineState] = useState<EngineId>(() => getDefaultEngine());
@@ -96,7 +134,7 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
   // Checks overlap (a screen opening, a turn starting): only the latest one may change what the line says.
   const latestCheck = useRef(0);
 
-  const refreshPiModel = useCallback(async () => {
+  const refreshPiModel = useCallback(async (turnModel?: string) => {
     const check = ++latestCheck.current;
     try {
       const available = await withinLimit(
@@ -105,7 +143,7 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
       );
       const next = pickPiModel(preferredPiModel.current, available);
       if (check === latestCheck.current) applyPiModel(next, available.length > 0 ? "ready" : "none");
-      return next;
+      return pickTurnPiModel(turnModel, preferredPiModel.current, available);
     } catch {
       // No runtime to ask, or it took too long: the line names no model (the built-in default is only a guess), nothing is
       // shown as a toast, and a turn still goes out with what is in use so it reports what is missing.
@@ -119,16 +157,15 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     if (defaultEngine === "pi") void refreshPiModel();
   }, [defaultEngine, refreshPiModel]);
 
-  const toggleMode = useCallback(() => {
-    setMode((m) => (m === Mode.BUILD ? Mode.PLAN : Mode.BUILD));
-  }, []);
-
   return (
     <PromptConfigContext.Provider 
       value={{ 
-        mode, 
-        toggleMode, 
-        setMode, 
+        agents,
+        agent,
+        mode: agent.mode,
+        selectAgent,
+        cycleAgent,
+        reloadAgents,
         model, 
         setModel,
         defaultEngine,

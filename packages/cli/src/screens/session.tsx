@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import { type ModeType } from "../lib/modes";
+import { Mode, type ModeType } from "../lib/modes";
+import { agentModelFits, findAgent, type Agent } from "../lib/agents";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
 import { 
@@ -31,6 +32,7 @@ const sessionLocationSchema = z.object({
       message: z.string(),
       mode: z.custom<ModeType>(),
       model: z.string(),
+      agent: z.string().optional(),
     })
     .optional(),
 });
@@ -54,6 +56,7 @@ function ChatMessage(
       parts={msg.parts}
       model={msg.metadata?.model ?? "unknown"}
       mode={msg.metadata?.mode ?? "BUILD"}
+      agent={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
       streaming={false}
     />
@@ -65,9 +68,9 @@ function SessionChat({
   initialPrompt,
 }: { 
   session: StoredSession,
-  initialPrompt?: { message: string; mode: ModeType; model: string };
+  initialPrompt?: { message: string; mode: ModeType; model: string; agent?: string };
 }) {
-  const { mode, model, refreshPiModel } = usePromptConfig();
+  const { agents, agent, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
   const renderer = useRenderer();
   const mountedRef = useRef(true);
@@ -107,17 +110,20 @@ function SessionChat({
     };
   }, [abort]);
 
-  // Starts a turn on the model this session's engine uses: a pi session sends the pi model that has credentials now.
+  // Starts a turn for `turnAgent` on the model this session's engine uses: the agent's own when this engine can use it,
+  // else the session's (a pi session sends the pi model that has credentials now).
   const send = useCallback(
-    (userText: string, turnMode: ModeType, claudeModel: string) => {
+    (userText: string, turnAgent: Agent, claudeModel: string) => {
+      const turn = { userText, mode: turnAgent.mode, agent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir } };
+      const agentModel = turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined;
       if (session.engine !== "pi") {
-        void submit({ userText, mode: turnMode, model: modelForEngine(session.engine, claudeModel) });
+        void submit({ ...turn, model: agentModel ?? modelForEngine(session.engine, claudeModel) });
         return;
       }
       setChoosingModel(true);
-      void refreshPiModel()
+      void refreshPiModel(agentModel)
         .then((piModel) => {
-          if (mountedRef.current) void submit({ userText, mode: turnMode, model: piModel });
+          if (mountedRef.current) void submit({ ...turn, model: piModel });
         })
         .finally(() => {
           if (mountedRef.current) setChoosingModel(false);
@@ -160,15 +166,18 @@ function SessionChat({
   useEffect(() => {
     if (!initialPrompt || hasSubmittedInitialPromptRef.current) return;
     hasSubmittedInitialPromptRef.current = true;
-    send(initialPrompt.message, initialPrompt.mode, initialPrompt.model);
-  }, [initialPrompt, send]);
+    // A prompt that names no agent (older navigation state) runs as the selected agent, or as the built-in one when the mode it carries differs.
+    const fallback = agent.mode === initialPrompt.mode ? agent.id : initialPrompt.mode === Mode.PLAN ? "plan" : "build";
+    const first = findAgent(agents, initialPrompt.agent ?? fallback);
+    send(initialPrompt.message, first, initialPrompt.model);
+  }, [initialPrompt, agents, agent, send]);
 
   return (
     <TurnInputContext.Provider value={turnInput}>
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
-        onSubmit={(text) => send(text, mode, model)}
+        onSubmit={(text) => send(text, agent, model)}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
@@ -177,10 +186,10 @@ function SessionChat({
           <ChatMessage key={msg.id} msg={msg} />
         ))}
         {queued.steering.map((text, index) => (
-          <UserMessage key={`steer-${index}`} message={text} mode={mode} marker="↳ steer · pending" pending />
+          <UserMessage key={`steer-${index}`} message={text} mode={agent.mode} marker="↳ steer · pending" pending />
         ))}
         {queued.followUp.map((text, index) => (
-          <UserMessage key={`queued-${index}`} message={text} mode={mode} marker="queued" pending />
+          <UserMessage key={`queued-${index}`} message={text} mode={agent.mode} marker="queued" pending />
         ))}
         {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
         {pendingRequest?.kind === "question" && (

@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { readFrontmatter } from "./agent-file";
 import type { ClaudeCommand } from "./claude-commands";
 
 // From src/lib (bin/marcsh runs the sources) or from dist (the built bundle), relative to the running file's directory.
@@ -14,20 +15,6 @@ export function marcshPluginPath(baseDir: string = import.meta.dir): string | nu
   return null;
 }
 
-const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
-
-// The `key: value` lines of a leading `---` block; anything else (nested YAML, no block) is ignored.
-function frontmatter(file: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  const match = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return fields;
-  for (const line of match[1]!.split(/\r?\n/)) {
-    const at = line.indexOf(":");
-    if (at > 0) fields[line.slice(0, at).trim()] = unquote(line.slice(at + 1).trim());
-  }
-  return fields;
-}
-
 /** A plugin command or skill: the menu entry, what it is, and the name its file or folder gives it outside Claude. */
 export type PluginEntry = ClaudeCommand & {
   kind: "command" | "skill";
@@ -39,13 +26,15 @@ export type PluginEntry = ClaudeCommand & {
 
 function entry(file: string, kind: PluginEntry["kind"], fallbackName: string): PluginEntry | null {
   try {
-    const fields = frontmatter(file);
+    const { fields } = readFrontmatter(readFileSync(file, "utf8"));
+    // A key with a nested block has no text value.
+    const text = (key: string) => fields.get(key) ?? "";
     return {
-      name: `marcsh:${fields.name || fallbackName}`,
-      description: fields.description ?? "",
-      argumentHint: fields["argument-hint"] ?? "",
+      name: `marcsh:${text("name") || fallbackName}`,
+      description: text("description"),
+      argumentHint: text("argument-hint"),
       kind,
-      id: kind === "command" ? fallbackName : fields.name || fallbackName,
+      id: kind === "command" ? fallbackName : text("name") || fallbackName,
       file,
     };
   } catch {
@@ -53,7 +42,7 @@ function entry(file: string, kind: PluginEntry["kind"], fallbackName: string): P
   }
 }
 
-function listDir(path: string) {
+export function listDir(path: string) {
   try {
     return readdirSync(path, { withFileTypes: true });
   } catch {

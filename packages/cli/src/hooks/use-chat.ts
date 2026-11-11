@@ -95,7 +95,8 @@ function decline(request: PendingRequest) {
   }
 }
 
-export type SubmitParams = { userText: string; mode: ModeType; model: string };
+/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one. */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string; pluginDir?: string } };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -136,7 +137,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   }, []);
 
   const submit = useCallback(
-    async ({ userText, mode, model }: SubmitParams) => {
+    async ({ userText, mode, model, agent }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
@@ -146,7 +147,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
       let replyId = crypto.randomUUID();
       const replyIds = [replyId];
-      const metadata = { mode, model };
+      const metadata = { mode, model, ...(agent ? { agent: agent.name } : {}) };
       updateMessages((prev) => [
         ...prev,
         { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
@@ -281,6 +282,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             cwd: session.cwd,
             mode,
             model,
+            systemPromptAppend: agent?.prompt,
+            ...(agent?.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             signal: abortController.signal,
           },

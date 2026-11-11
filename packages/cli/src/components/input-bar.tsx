@@ -21,6 +21,7 @@ import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
@@ -304,7 +305,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
 ];
 
 export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false }: Props) {
-  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -317,6 +318,11 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
+  const warnAboutAgent = useCallback((agent: Agent) => {
+    const warnings = agentWarnings(agent, engineId);
+    if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
+  }, [engineId, toast]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
   const turnInput = useContext(TurnInputContext);
@@ -480,7 +486,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   }, [syncMentionMenu]);
 
   const handleCommand = useCallback((
-    command: Command | undefined
+    command: Command | undefined,
+    args = "",
   ) => {
     const textarea = textareaRef.current;
     if (!textarea || !command) return;
@@ -489,6 +496,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     if (command.action) {
       command.action({
+        args,
         exit: () => void quitApp(renderer),
         dialog,
         toast,
@@ -500,14 +508,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         setPiModel,
         refreshPiModel,
         navigate,
-        mode,
-        setMode,
+        agentId: agent.id,
+        reloadAgents,
+        selectAgent: (id) => warnAboutAgent(selectAgent(id)),
         setModel,
       });
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
@@ -540,7 +549,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     // marcsh's own commands win; any other /name (with or without arguments) goes to Claude Code verbatim
     const ownNames = COMMANDS.map((command) => command.name);
     if (slashInputKind(text, ownNames) === "marcsh") {
-      handleCommand(COMMANDS.find((command) => command.value === text.split(/\s/)[0]));
+      const name = text.split(/\s/)[0]!;
+      handleCommand(COMMANDS.find((command) => command.value === name), text.slice(name.length).trim());
       return;
     }
 
@@ -625,7 +635,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      if (!typeOnly) toggleMode();
+      if (!typeOnly) warnAboutAgent(cycleAgent());
     } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);

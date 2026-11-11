@@ -1,47 +1,89 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
-import { Mode, type ModeType } from "../../lib/modes";
-
-const AVAILABLE_MODES: ModeType[] = [Mode.BUILD, Mode.PLAN];
+import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
+import { agentLabel, type Agent } from "../../lib/agents";
+import { lockProblem } from "../../lib/packs";
+import { Mode } from "../../lib/modes";
 
 type AgentsDialogContentProps = {
-  currentMode: ModeType;
-  onSelectMode: (mode: ModeType) => void;
+  agents: Agent[];
+  currentId: string;
+  onSelectAgent: (id: string) => void;
+  /** Called after a pack was installed, updated or removed, so the agent list is read again. */
+  onPacksChanged?: () => void;
 };
 
-function getModeLabel(mode: ModeType) {
-  return mode === Mode.PLAN ? "Plan" : "Build";
+type Row = { kind: "agent"; agent: Agent } | { kind: "action"; id: "install" | "update" | "remove"; label: string };
+
+// After the agents: the pack actions.
+const ACTIONS: Row[] = [
+  { kind: "action", id: "install", label: "Install from GitHub…" },
+  { kind: "action", id: "update", label: "Update packs…" },
+  { kind: "action", id: "remove", label: "Remove a pack…" },
+];
+
+// The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
+const permissionTag = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
+
+/** One agent's row: a bullet on the current one, its label, its permission tag, then its description. */
+function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string) {
+  const parts = [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents)];
+  const tag = permissionTag(agent);
+  if (tag) parts.push(`  ${tag}`);
+  if (agent.description) parts.push(`  ${agent.description}`);
+  return parts.join("");
 }
 
 export const AgentsDialogContent = ({ 
-  currentMode, 
-  onSelectMode 
+  agents, 
+  currentId,
+  onSelectAgent,
+  onPacksChanged = () => {},
 }: AgentsDialogContentProps) => {
   const dialog = useDialog();
+  // An unreadable packs.json hides every pack agent without a word otherwise.
+  const [problem] = useState(() => lockProblem());
+
+  const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
 
   const handleSelect = useCallback(
-    (nextMode: ModeType) => {
-      onSelectMode(nextMode);
-      dialog.close();
+    (row: Row) => {
+      if (row.kind === "agent") {
+        onSelectAgent(row.agent.id);
+        dialog.close();
+      } else if (row.id === "install") {
+        dialog.open({ title: "Install from GitHub", children: <PackInstallDialogContent onChanged={onPacksChanged} /> });
+      } else {
+        const title = row.id === "update" ? "Update a pack" : "Remove a pack";
+        dialog.open({ title, children: <PackPickerDialogContent action={row.id} onChanged={onPacksChanged} /> });
+      }
     },
-    [onSelectMode, dialog],
+    [onSelectAgent, onPacksChanged, dialog],
   );
 
+  const label = (row: Row) => (row.kind === "agent" ? agentLabel(row.agent, agents) : row.label);
+
   return (
-    <DialogSearchList
-      items={AVAILABLE_MODES}
-      onSelect={handleSelect}
-      filterFn={(item, query) => getModeLabel(item).toLowerCase().includes(query.toLowerCase())}
-      renderItem={(item, isSelected) => (
-        <text selectable={false} fg={isSelected ? "black" : "white"}>
-          {item === currentMode ? " • " : "   "}
-          {getModeLabel(item)}
+    <box flexDirection="column" gap={1}>
+      {problem && (
+        <text fg="yellow" wrapMode="word" width="100%">
+          {`packs.json could not be read: ${problem}; pack agents are hidden`}
         </text>
       )}
-      getKey={(item) => item}
-      placeholder="Search agents"
-      emptyText="No matching agents"
-    />
+      <DialogSearchList
+        items={rows}
+        onSelect={handleSelect}
+        filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
+        renderItem={(row, isSelected) => (
+          <text selectable={false} fg={isSelected ? "black" : "white"}>
+            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId) : `   ${row.label}`}
+          </text>
+        )}
+        getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
+        placeholder="Search agents"
+        emptyText="No matching agents"
+      />
+    </box>
   );
 };

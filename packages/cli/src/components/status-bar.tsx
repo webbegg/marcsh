@@ -5,6 +5,7 @@ import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 import { modelForEngine } from "../lib/models";
+import { agentLabel } from "../lib/agents";
 import { PI_VERSION } from "../lib/engine/pi-version";
 
 /** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
@@ -18,13 +19,13 @@ type Props = {
 };
 
 export function StatusBar({ engine, hint }: Props) {
-  const { mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
+  const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
   const rowRef = useRef<BoxRenderable>(null);
   const [width, setWidth] = useState<number | null>(null);
 
-  const modeText = mode === Mode.PLAN ? "Plan" : "Build";
+  const modeText = agentLabel(agent, agents);
   const modelText =
     engineId === "pi" && piModelStatus === "none"
       ? "no model · run /login"

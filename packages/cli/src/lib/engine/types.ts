@@ -48,6 +48,10 @@ export type TurnRequest = {
   cwd: string;
   mode: ModeType;
   model: string;
+  /** The selected agent's prompt: added to the engine's own system prompt for this turn, never in place of it. */
+  systemPromptAppend?: string;
+  /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
+  packPluginPath?: string;
   resumeRef?: string;
   /** Aborting stops the turn. */
   signal: AbortSignal;

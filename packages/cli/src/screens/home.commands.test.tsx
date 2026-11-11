@@ -64,10 +64,11 @@ describe("slash menu on a fresh start (S13a)", () => {
     expect(text).not.toContain("No matching commands");
     expect(text).toContain("/marcsh:feature");
     expect(text).toContain("<feature-name>");
-    // The row clips long descriptions, so only the start is checked.
-    expect(text).toContain("Create or resume the feature");
+    // The row clips long descriptions (the longest name sets the column), so only the start is checked.
+    expect(text).toContain("Create or resume the");
+    expect(text).toContain("/marcsh:agent-workflows");
     expect(text).toContain("/marcsh:workflow");
-    expect(text).toContain("Use this for any request to change code");
+    expect(text).toContain("Use this for any request to change");
     expect(queryCalls).toBe(0);
   });
 
