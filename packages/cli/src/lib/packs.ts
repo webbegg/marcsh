@@ -328,9 +328,11 @@ function declaredKeys(text: string): { hooks: boolean; allowedTools: boolean } {
   const lines = text.replace(/\r\n?/g, "\n").trimStart().split("\n");
   if (!lines[0]!.startsWith("---")) return { hooks: false, allowedTools: false };
   if (lines[0]!.trim() !== "---") throw new Error("the opening --- line has other text on it");
-  const end = lines.findIndex((line, index) => index > 0 && (line.startsWith("---") || line.trim() === "..."));
+  const end = lines.findIndex((line, index) => index > 0 && line.startsWith("---"));
   if (end < 0) throw new Error("it is never closed");
-  if (lines[end]!.trim() !== "---" && lines[end]!.trim() !== "...") throw new Error("the closing --- line has other text on it");
+  if (lines[end]!.trim() !== "---") throw new Error("the closing --- line has other text on it");
+  // YAML ends a document at `...`, but the engines' readers disagree on what comes after it, so it could hide a key.
+  if (lines.slice(1, end).some((line) => line.trim() === "...")) throw new Error("a ... line ends the YAML early");
 
   const yaml = lines.slice(1, end).join("\n");
   let parsed: unknown;
@@ -365,10 +367,15 @@ function readParts(src: string): Parts {
     if (found.hooks) throw rejected(`${printable(file)} declares hooks, which marcsh never runs`);
     if (found.allowedTools) warnings.push(`${file} pre-approves tools (allowed-tools)`);
   }
-  // A skill is a folder with a SKILL.md (any case); a command is any .md under commands/, named by its path.
+  // A skill is a folder with a SKILL.md (any case), or a .md directly in skills/ (pi loads those too); a command is any .md
+  // under commands/, named by its path.
   const skills = files
     .filter((file) => file.startsWith("skills/") && basename(file).toLowerCase() === "skill.md")
     .map((file) => relative("skills", dirname(file)) || ".");
+  const rootSkills = files
+    .filter((file) => dirname(file) === "skills" && file.toLowerCase().endsWith(".md") && basename(file).toLowerCase() !== "skill.md")
+    .map((file) => basename(file).slice(0, -3));
+  skills.push(...rootSkills);
   const commands = files.filter((file) => file.startsWith("commands/") && file.toLowerCase().endsWith(".md")).map((file) => relative("commands", file).slice(0, -3));
   return { files, skills: skills.sort(), commands: commands.sort(), warnings };
 }

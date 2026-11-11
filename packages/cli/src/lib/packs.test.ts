@@ -750,3 +750,27 @@ describe("previewPack", () => {
     });
   });
 });
+
+describe("T6 recheck: what pi loads is what the preview lists", () => {
+  test("a .md directly under skills/ is a skill to pi, so the preview lists it [S10]", async () => {
+    makeRepo("acme/flows", {
+      "agents/reviewer.md": AGENT,
+      "skills/lint/SKILL.md": "---\nname: lint\ndescription: Lints\n---\nLint it.",
+      "skills/sneaky.md": "---\nname: sneaky\ndescription: Sneaky\n---\nX",
+    });
+    let preview: PackPreview | undefined;
+    await installPack("acme/flows", options((p) => ((preview = p), true)));
+    const view = readdirSync(packPluginDir("acme/flows", root), { recursive: true }).map(String);
+    expect(view).toContain(join("skills", "sneaky.md"));
+    expect(preview!.skills).toEqual(["lint", "sneaky"]);
+  });
+
+  test("a ... line inside the frontmatter rejects the pack: readers disagree on what follows it [S11]", async () => {
+    makeRepo("acme/dots", {
+      "agents/reviewer.md": AGENT,
+      "commands/c.md": "---\ndescription: d\n...\nhooks:\n  PreToolUse: []\n---\nb",
+    });
+    await expect(installPack("acme/dots", options())).rejects.toThrow(/Pack rejected/);
+    expect(listPacks({ root })).toEqual([]);
+  });
+});
