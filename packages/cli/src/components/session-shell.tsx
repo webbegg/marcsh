@@ -14,8 +14,6 @@ type Props = {
   cwd?: string;
   /** The engine the session runs on, shown next to the model; defaults to the one new sessions start on. */
   engine?: string;
-  /** Text the input mounts with (see InputBar). */
-  initialDraft?: string;
   /** The input takes keys but never sends (see InputBar). */
   inputTypeOnly?: boolean;
 };
@@ -28,7 +26,6 @@ export function SessionShell({
   interruptible = false,
   cwd,
   engine,
-  initialDraft,
   inputTypeOnly = false,
 }: Props) {
   const { mode } = usePromptConfig();
@@ -52,7 +49,6 @@ export function SessionShell({
           disabled={inputDisabled}
           cwd={cwd}
           engine={engine}
-          initialDraft={initialDraft}
           typeOnly={inputTypeOnly}
         />
       </box>

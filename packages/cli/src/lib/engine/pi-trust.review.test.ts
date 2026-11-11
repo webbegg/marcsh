@@ -10,6 +10,7 @@ import {
   resolveProjectTrust,
   reviewProject,
   sameReview,
+  unreadableResources,
   type ProjectTrustAsk,
   type TrustAnswer,
 } from "./pi-trust";
@@ -171,6 +172,37 @@ describe("the review record (S1)", () => {
 
     expect(resources).toHaveLength(1);
     expect(resources[0]).toMatchObject({ path: ".pi/skills/s/", unreadable: true });
+  });
+
+  // R4-003: the caps count every listed entry and every file, not only the children of folders, so tiny top-level files cannot make a review unbounded.
+  test("many tiny top-level files are unreadable past the cap, so trust is impossible", () => {
+    for (let i = 0; i < 1100; i++) write(join(project, ".pi", "extensions", `e${String(i).padStart(4, "0")}.ts`), "x");
+
+    const { resources } = reviewProject(project);
+
+    expect(resources).toHaveLength(1100);
+    expect(unreadableResources(resources).length).toBeGreaterThan(0);
+    expect(resources.filter((resource) => !resource.unreadable)).toHaveLength(1000);
+    expect(unreadableResources(resources)[0]).toMatchObject({ detail: expect.stringContaining("more than 1000 files to review") });
+  });
+
+  test("entries of different kinds share the one cap, and a folder's files count as well", () => {
+    for (let i = 0; i < 600; i++) write(join(project, ".pi", "extensions", `e${i}.ts`), "x");
+    for (let i = 0; i < 300; i++) write(join(project, ".pi", "skills", "s", `f${i}.md`), "x");
+    expect(unreadableResources(reviewProject(project).resources)).toHaveLength(0);
+
+    for (let i = 0; i < 200; i++) write(join(project, ".pi", "prompts", `p${i}.md`), "x");
+
+    expect(unreadableResources(reviewProject(project).resources).length).toBeGreaterThan(0);
+  });
+
+  test("a project just under the cap is still reviewed in full", () => {
+    for (let i = 0; i < 900; i++) write(join(project, ".pi", "extensions", `e${i}.ts`), "x");
+
+    const { resources, record: reviewed } = reviewProject(project);
+
+    expect(unreadableResources(resources)).toHaveLength(0);
+    expect(reviewed).toHaveLength(900);
   });
 
   test("an unreadable child (no permission) makes its entry unreadable", () => {

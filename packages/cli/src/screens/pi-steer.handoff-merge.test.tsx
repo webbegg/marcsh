@@ -102,20 +102,8 @@ describe("the next bar merges the hand-off with what it already holds", () => {
     expect(frame()).toContain("hello world!");
   });
 
-  test("a router-state draft that is the same text is not duplicated", async () => {
-    const router = await open([
-      { path: "/", element: <Page /> },
-      { path: "sessions/:id", element: <Session /> },
-    ]);
-    const session = getStorage().createSession({ title: "chat", cwd: process.cwd(), engine: "claude" });
-    await type("same text");
-    await go(router, `/sessions/${session.id}`, { draft: "same text" });
-    await settle(100);
-
-    expect(occurrences(frame(), "same text")).toBe(1);
-  });
-
-  test("a router-state draft comes first, then the hand-off", async () => {
+  // The hand-off is the only way typed text moves between screens: a `draft` in router state (the removed channel) is ignored.
+  test("only the hand-off carries text: a router-state draft is ignored and the typed text arrives once", async () => {
     const router = await open([
       { path: "/", element: <Page /> },
       { path: "sessions/:id", element: <Session /> },
@@ -125,7 +113,8 @@ describe("the next bar merges the hand-off with what it already holds", () => {
     await go(router, `/sessions/${session.id}`, { draft: "head " });
     await settle(100);
 
-    expect(frame()).toContain("head tail");
+    expect(occurrences(frame(), "tail")).toBe(1);
+    expect(frame()).not.toContain("head");
   });
 });
 

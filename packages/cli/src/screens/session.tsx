@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import { type ModeType } from "../lib/modes";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
@@ -23,6 +23,7 @@ import { getEngine, unknownEngine, warmUpEngineCommands } from "../lib/engine";
 import type { NoticeLevel } from "../lib/engine/types";
 import { modelForEngine } from "../lib/models";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { giveBackText } from "../lib/prompt-lock";
 
 const sessionLocationSchema = z.object({
   initialPrompt: z
@@ -32,8 +33,6 @@ const sessionLocationSchema = z.object({
       model: z.string(),
     })
     .optional(),
-  // Text typed on the new-session screen, to be carried into the input.
-  draft: z.string().optional(),
 });
 
 function ChatMessage(
@@ -64,14 +63,14 @@ function ChatMessage(
 function SessionChat({ 
   session,
   initialPrompt,
-  draft,
 }: { 
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string };
-  draft?: string;
 }) {
   const { mode, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
+  const renderer = useRenderer();
+  const mountedRef = useRef(true);
   // A session keeps the engine it was created with; one this build does not know only reports that.
   const engine = useMemo(
     () => getEngine(session.engine) ?? unknownEngine(session.engine),
@@ -85,8 +84,10 @@ function SessionChat({
         const text = stripControlChars(message);
         toast.show({ variant: level === "error" ? "error" : "info", message: level === "warning" ? `Warning: ${text}` : text });
       },
+      // Text the engine did not take goes back to the input on screen; once this session is left there is no input of its own to return it to.
+      restore: (text: string) => mountedRef.current && giveBackText(renderer, text),
     }),
-    [toast],
+    [toast, renderer],
   );
   const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest } = useChat(session, engine, chatOptions);
   const hasSubmittedInitialPromptRef = useRef(false);
@@ -95,7 +96,6 @@ function SessionChat({
     textEntryRef.current = active;
   }, []);
   const busy = status === "submitted" || status === "streaming";
-  const mountedRef = useRef(true);
   // A pi turn waits for the model check (a login or logout can change which models exist) before it starts.
   const [choosingModel, setChoosingModel] = useState(false);
 
@@ -168,8 +168,7 @@ function SessionChat({
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
-        initialDraft={draft}
-        onSubmit={(text) => (busy ? steer(text) : send(text, mode, model))}
+        onSubmit={(text) => send(text, mode, model)}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
@@ -205,9 +204,9 @@ export function Session() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const { initialPrompt, draft } = useMemo(() => {
+  const { initialPrompt } = useMemo(() => {
     const parsed = sessionLocationSchema.safeParse(location.state);
-    return parsed.success ? parsed.data : { initialPrompt: undefined, draft: undefined };
+    return parsed.success ? parsed.data : { initialPrompt: undefined };
   }, [location.state]);
 
   const { session, loadError } = useMemo(() => {
@@ -237,7 +236,6 @@ export function Session() {
       key={session.id} 
       session={session} 
       initialPrompt={initialPrompt}
-      draft={draft}
     />
   );
 };

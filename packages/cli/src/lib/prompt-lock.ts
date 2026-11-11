@@ -11,14 +11,25 @@ export const LOCKED_LINE = "you were typing: press ↓ to answer";
 /** A key typed in the input this recently means the user is composing. */
 export const COMPOSING_MS = 2000;
 
-type Composing = { lastKeyAt: number; draft: boolean; input: object | null; handedOff: string };
+/** A hand-off nobody took this long after it was made is stale and is dropped: it must not land in an unrelated session. */
+export const HAND_OFF_MS = 5000;
+
+type Composing = {
+  lastKeyAt: number;
+  draft: boolean;
+  takesKeys: boolean;
+  input: object | null;
+  handedOff: string;
+  handedOffAt: number;
+  giveBack: ((text: string) => boolean) | null;
+};
 
 // One state per screen (renderer), so nothing carries over between screens.
 const states = new WeakMap<object, Composing>();
 
 const stateOf = (owner: object): Composing => {
   let state = states.get(owner);
-  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false, input: null, handedOff: "" }));
+  if (!state) states.set(owner, (state = { lastKeyAt: -Infinity, draft: false, takesKeys: true, input: null, handedOff: "", handedOffAt: 0, giveBack: null }));
   return state;
 };
 
@@ -38,6 +49,14 @@ export function setDraft(owner: object, hasDraft: boolean) {
 }
 
 /**
+ * Whether the input can take keys right now. A draft in one that cannot (a Claude session's input is off for the whole turn, so a
+ * draft carried into it) is not the user composing; recent keys still are. Takes keys until told otherwise.
+ */
+export function setInputTakesKeys(owner: object, takesKeys: boolean) {
+  stateOf(owner).takesKeys = takesKeys;
+}
+
+/**
  * An input bar mounted, already holding text or not. Keys can reach a new bar before its mount effects run (the hand-off
  * from the home screen), so the draft comes from the bar's content and the recent keys stay. The returned `detach` (its
  * unmount) clears the draft only if no newer bar attached since: an old bar unmounting late must not wipe the new one's.
@@ -53,6 +72,7 @@ export function attachInput(owner: object, hasDraft: boolean): () => void {
     if (state.input !== input) return;
     state.input = null;
     state.draft = false;
+    state.takesKeys = true;
   };
 }
 
@@ -60,28 +80,60 @@ export function attachInput(owner: object, hasDraft: boolean): () => void {
  * The unsent text of a bar that is going away (any bar: home, new-session, session), for the bar that comes next. A screen
  * stays mounted a few ms after it navigates, and keys typed in that gap land in its bar: it hands its text over when it unmounts,
  * so none is lost. A bar that sent its text emptied its input first, so only what was typed after is handed over. An empty text
- * clears an earlier hand-off.
+ * clears an earlier hand-off. It is the only way text moves between screens' bars.
  */
-export function handOffDraft(owner: object, text: string) {
-  stateOf(owner).handedOff = text;
+export function handOffDraft(owner: object, text: string, now = Date.now()) {
+  const state = stateOf(owner);
+  state.handedOff = text;
+  state.handedOffAt = now;
 }
 
 /**
- * What the previous bar handed off, once: the next bar takes it when it mounts, appended to the `carried` draft it already
- * has (unless that already starts the hand-off); the bar puts the keys its textarea already holds after the result. Just the
- * `carried` draft when there is no hand-off.
+ * What the previous bar handed off, once: the next bar takes it when it mounts and puts the keys its textarea already holds after
+ * it. Empty when there is no hand-off, or when it is older than `HAND_OFF_MS` (dropped for good).
  */
-export function takeHandOffDraft(owner: object, carried = ""): string {
+export function takeHandOffDraft(owner: object, now = Date.now()): string {
   const state = stateOf(owner);
   const text = state.handedOff;
   state.handedOff = "";
-  if (text.length === 0) return carried;
-  return text.startsWith(carried) ? text : carried + text;
+  return now - state.handedOffAt > HAND_OFF_MS ? "" : text;
+}
+
+/**
+ * The input bar on screen listens for text that has to go back to it. Returns the stop function, which only stops this
+ * listener: a bar that unmounts late must not silence the one that replaced it.
+ */
+export function onGivenBack(owner: object, listener: (text: string) => boolean): () => void {
+  const state = stateOf(owner);
+  state.giveBack = listener;
+  return () => {
+    if (state.giveBack === listener) state.giveBack = null;
+  };
+}
+
+/**
+ * Text the engine did not take (a steer it refused, a turn that ended before it was sent) goes back to the input on screen. Returns
+ * whether an input took it; when none did the caller must show the text itself, since nothing keeps it.
+ */
+export function giveBackText(owner: object, text: string): boolean {
+  return stateOf(owner).giveBack?.(text) === true;
+}
+
+/**
+ * `returned` put ahead of what the input holds, on its own line, so nothing in the input is replaced. `block` is what earlier
+ * give-backs put at the front (the previous result's `block`): the next one goes after it, so several keep the order they were typed
+ * in and stay ahead of what was typed since. A block the user has edited no longer counts; everything held then stays after the text.
+ */
+export function mergeGivenBack(returned: string, held: string, block = ""): { text: string; block: string } {
+  const intact = block !== "" && (held === block || held.startsWith(`${block}\n`));
+  const rest = intact ? held.slice(block.length + 1) : held;
+  const front = intact ? `${block}\n${returned}` : returned;
+  return { text: rest ? `${front}\n${rest}` : front, block: front };
 }
 
 export function isComposing(owner: object, now = Date.now()): boolean {
   const state = stateOf(owner);
-  return state.draft || now - state.lastKeyAt < COMPOSING_MS;
+  return (state.draft && state.takesKeys) || now - state.lastKeyAt < COMPOSING_MS;
 }
 
 /**

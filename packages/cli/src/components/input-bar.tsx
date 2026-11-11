@@ -25,7 +25,7 @@ import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
-import { attachInput, clearKeyActivity, handOffDraft, noteKeyActivity, setDraft, takeHandOffDraft } from "../lib/prompt-lock";
+import { attachInput, clearKeyActivity, handOffDraft, mergeGivenBack, noteKeyActivity, onGivenBack, setDraft, setInputTakesKeys, takeHandOffDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
 const MAX_FALLBACK_MENTION_CANDIDATES = 32;
@@ -269,8 +269,6 @@ type Props = {
   cwd?: string;
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
   engine?: string;
-  /** Text the bar mounts with (a draft carried over from the screen before). */
-  initialDraft?: string;
   /** Takes keys but never sends: Enter and the `/` commands do nothing, the text stays (the new-session screen, where there is no prompt yet). */
   typeOnly?: boolean;
 };
@@ -305,13 +303,15 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, initialDraft, typeOnly = false }: Props) {
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false }: Props) {
   const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
   const activeMentionRef = useRef<MentionMatch | null>(null);
   const mentionScrollRef = useRef<ScrollBoxRenderable>(null);
+  // What text the engine did not take put at the front of the input (see `mergeGivenBack`); forgotten once the input is empty.
+  const givenBackRef = useRef("");
 
   const renderer = useRenderer();
   const navigate = useNavigate();
@@ -388,6 +388,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = textarea.plainText;
 
     setDraft(renderer, text.length > 0);
+    if (text.length === 0) givenBackRef.current = "";
     handleContentChange(textarea.plainText);
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu, renderer]);
@@ -405,15 +406,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     };
   }, [renderer]);
 
-  // Takes the hand-off once, ahead of what the textarea already holds (the router-state draft it mounted with is not repeated, and keys
-  // that reached it first stay after the hand-off), and leaves the cursor at the end.
+  // Takes the hand-off once, ahead of what the textarea already holds (keys that reached it first stay after the hand-off), and
+  // leaves the cursor at the end.
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    const carried = initialDraft ?? "";
     const held = textarea.plainText;
-    const typed = held.startsWith(carried) ? held.slice(carried.length) : held;
-    const text = takeHandOffDraft(renderer, carried) + typed;
+    const text = takeHandOffDraft(renderer) + held;
     if (text === held) return;
     textarea.setText(text);
     textarea.cursorOffset = text.length;
@@ -425,6 +424,26 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
   useEffect(() => {
     return attachInput(renderer, (textareaRef.current?.plainText.length ?? 0) > 0);
+  }, [renderer]);
+
+  // A Claude session's input is off for the whole turn, so a draft it still holds (one carried over) is not the user composing and
+  // must not lock the prompts that open then. A pi session's input takes keys whenever no prompt is open: its draft always counts.
+  useEffect(() => {
+    setInputTakesKeys(renderer, !disabled || engineId === "pi");
+  }, [renderer, disabled, engineId]);
+
+  // Text the engine did not take (a refused steer, a turn that ended before it was sent) comes back here, ahead of what is typed now.
+  useEffect(() => {
+    return onGivenBack(renderer, (returned) => {
+      const textarea = textareaRef.current;
+      if (!textarea) return false;
+      const { text, block } = mergeGivenBack(returned, textarea.plainText, givenBackRef.current);
+      textarea.setText(text);
+      textarea.cursorOffset = text.length;
+      givenBackRef.current = block;
+      setDraft(renderer, true);
+      return true;
+    });
   }, [renderer]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
@@ -732,7 +751,6 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
               !disabled && 
               (isTopLayer("base") || isTopLayer("command") || isTopLayer("mention"))
             }
-            initialValue={initialDraft}
             keyBindings={TEXTAREA_KEY_BINDINGS}
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}

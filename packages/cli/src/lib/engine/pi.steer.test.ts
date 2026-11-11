@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -222,15 +222,16 @@ describe("a pi turn takes steers and follow-ups (S4)", () => {
     expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
   }, 20000);
 
-  test("a follow-up sent before the model is asked and then interrupted never runs", async () => {
+  test("a follow-up sent before the model is asked and then interrupted never runs, and is refused so it can be given back", async () => {
     const first = gated("first answer");
     const second = recording("never asked");
     const { engine, faux, model } = await setup([first.step, second.step]);
 
     const running = begin(engine, model);
-    await running.turn.followUp!("too early");
+    const tooEarly = running.turn.followUp!("too early");
     running.turn.interrupt();
     first.release();
+    await expect(tooEarly).rejects.toThrow("interrupted");
     await running.turn.done;
     await sleep(100);
 
@@ -284,5 +285,149 @@ describe("a pi turn takes steers and follow-ups (S4)", () => {
 
     expect(second.contexts[0]).toEqual(["hello", "after the answer"]);
     expect(delivered(running.events)).toEqual([{ kind: "followUp", text: "after the answer" }]);
+  }, 20000);
+});
+
+// R1-002 / R4-001: text typed before pi got the prompt is shown as pending, and given back (its promise rejects) when the turn ends without sending it.
+describe("text typed before pi has the prompt (S4)", () => {
+  test("is shown as pending at once, steers and follow-ups apart, in the order typed", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    const one = running.turn.steer!("steer one");
+    const two = running.turn.followUp!("then this");
+    const three = running.turn.steer!("steer two");
+
+    expect(queues(running.events).at(-1)).toEqual({ steering: ["steer one", "steer two"], followUp: ["then this"] });
+    await first.started;
+    await Promise.all([one, two, three]);
+    first.release();
+    await running.turn.done;
+
+    expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
+    expect(delivered(running.events).map((d) => d.text).sort()).toEqual(["steer one", "steer two", "then this"]);
+  }, 20000);
+
+  test("an interrupt before pi has the prompt refuses it with the full text still the caller's, and clears the pending list", async () => {
+    const first = recording("never asked");
+    const { engine, model } = await setup([first.step]);
+
+    const running = begin(engine, model);
+    const outcomes = Promise.allSettled([running.turn.steer!("a long steer that must not be cut"), running.turn.followUp!("and a follow-up")]);
+    expect(queues(running.events).at(-1)).toEqual({ steering: ["a long steer that must not be cut"], followUp: ["and a follow-up"] });
+    running.turn.interrupt();
+    const results = await outcomes;
+    await running.turn.done;
+
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect((results[0] as PromiseRejectedResult).reason.message).toContain("interrupted");
+    expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
+    expect(first.contexts).toEqual([]);
+  }, 20000);
+
+  test("a turn that cannot start (unknown model) refuses it, so it is not lost with the failed turn", async () => {
+    const { engine } = await setup([]);
+
+    const running = begin(engine, "faux/not-a-model");
+    const outcome = Promise.allSettled([running.turn.steer!("typed while it was starting")]);
+    await running.turn.done;
+    const [result] = await outcome;
+
+    expect(result!.status).toBe("rejected");
+    expect((result as PromiseRejectedResult).reason.message).toContain("ended before the message was sent");
+    expect(running.events.some((e) => e.type === "error" && e.message.includes("Unknown pi model"))).toBe(true);
+    expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
+  }, 20000);
+
+  test("a text pi refuses when it takes it (an extension command) is refused with pi's reason, and is not left pending", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "probe-cmd.ts"),
+      `export default function (pi: any) { pi.registerCommand("probe-cmd", { description: "probe", handler: async () => {} }); }\n`,
+    );
+    const first = gated("first answer");
+    const { engine, model } = await setup([first.step]);
+
+    const running = begin(engine, model);
+    const refused = Promise.allSettled([running.turn.steer!("/probe-cmd now")]);
+    await first.started;
+    const [result] = await refused;
+    first.release();
+    await running.turn.done;
+
+    expect(result!.status).toBe("rejected");
+    expect((result as PromiseRejectedResult).reason.message).toContain('Extension command "/probe-cmd" cannot be queued');
+    expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
+  }, 20000);
+});
+
+// R3-002: a steer or follow-up expands the plugin's /marcsh:... like a prompt does, and the transcript keeps what was typed.
+describe("the plugin's commands in a steer or follow-up (S4)", () => {
+  const typed = "/marcsh:feature my-feature";
+  const expandedHas = "Create or resume the feature doc named `my-feature`.";
+
+  test("a mid-turn steer is expanded like an idle prompt", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await first.started;
+    await running.turn.steer!(typed);
+    first.release();
+    await running.turn.done;
+
+    const seen = second.contexts[0]!;
+    expect(seen[0]).toBe("hello");
+    expect(seen[1]).toContain(expandedHas);
+    expect(seen[1]).not.toContain("$ARGUMENTS");
+    expect(seen[1]).not.toContain(typed);
+  }, 20000);
+
+  test("the host sees what the user typed as pending and as delivered, not the expansion", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await first.started;
+    await running.turn.steer!(typed);
+    expect(queues(running.events).at(-1)).toEqual({ steering: [typed], followUp: [] });
+    first.release();
+    await running.turn.done;
+
+    expect(delivered(running.events)).toEqual([{ kind: "steer", text: typed }]);
+    expect(queues(running.events).at(-1)).toEqual({ steering: [], followUp: [] });
+  }, 20000);
+
+  test("a follow-up is expanded too, and so is one typed before the model was asked", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await running.turn.followUp!(typed);
+    await first.started;
+    first.release();
+    await running.turn.done;
+
+    expect(second.contexts[0]![1]).toContain(expandedHas);
+    expect(delivered(running.events)).toEqual([{ kind: "followUp", text: typed }]);
+  }, 20000);
+
+  test("text that is not a plugin command goes to pi as typed", async () => {
+    const first = gated("first answer");
+    const second = recording("second answer");
+    const { engine, model } = await setup([first.step, second.step]);
+
+    const running = begin(engine, model);
+    await first.started;
+    await running.turn.steer!("/marcsh:no-such-thing x");
+    first.release();
+    await running.turn.done;
+
+    expect(second.contexts[0]).toEqual(["hello", "/marcsh:no-such-thing x"]);
   }, 20000);
 });
