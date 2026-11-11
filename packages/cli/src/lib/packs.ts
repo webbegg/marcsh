@@ -70,6 +70,14 @@ export type PackPreview = {
 type Confirm = (preview: PackPreview) => boolean | Promise<boolean>;
 type RootOption = { root?: string };
 
+/** What a pack may hold, counted over the checked-out tree without `.git`: entries (files and folders) and bytes of regular files. */
+export type PackLimits = { maxEntries: number; maxBytes: number };
+type LimitsOption = { limits?: Partial<PackLimits> };
+type SignalOption = { signal?: AbortSignal };
+
+export const MAX_PACK_ENTRIES = 5000;
+export const MAX_PACK_BYTES = 50 * 1024 * 1024;
+
 const FETCH_TIMEOUT_MS = 120_000;
 const FORMS = "Use owner/repo, owner/repo@ref or https://github.com/owner/repo";
 
@@ -130,32 +138,49 @@ export function packAgentsDir(id: string, root = packsRoot()) {
 
 const lockPath = (root: string) => join(root, "packs.json");
 
+const cancelled = () => new PackError("Cancelled");
+
 /** A lock entry's url and ref are held to the rules an install applies, every time they are read: they end up on git's command line. */
 const isSafeEntry = (item: PackEntry) => URL_FORM.test(item.url) && (item.ref === undefined || (typeof item.ref === "string" && isRef(item.ref)));
 
-function readLock(root: string, strict: boolean): PackEntry[] {
+type LockRead = { entries: PackEntry[]; unsafe?: PackEntry; problem?: string };
+
+/** The lockfile, and why it cannot be used when it cannot. The reason never quotes the file: it is short and safe to show. */
+function loadLock(root: string): LockRead {
   let text: string;
   try {
     text = readFileSync(lockPath(root), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || !strict) return [];
-    throw new PackError(`${lockPath(root)} cannot be read; fix or delete it`);
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? { entries: [] } : { entries: [], problem: `read error ${code ?? ""}`.trim() };
   }
+  let parsed: { packs?: unknown } | null;
   try {
-    const parsed = JSON.parse(text) as { packs?: unknown };
-    if (!Array.isArray(parsed.packs)) throw new Error("no packs list");
-    const entries = parsed.packs.filter(
-      (item): item is PackEntry =>
-        !!item && isPackId(item.id) && typeof item.url === "string" && typeof item.commit === "string" && typeof item.installedAt === "string",
-    );
-    const unsafe = entries.find((item) => !isSafeEntry(item));
-    // Listing skips an entry git must not be handed; a command that would use or rewrite the lockfile stops instead of dropping it.
-    if (unsafe && strict) throw new PackError(`${lockPath(root)}: the entry for ${unsafe.id} has a url or ref that is not valid; fix or delete it`);
-    return entries.filter(isSafeEntry);
-  } catch (error) {
-    if (strict) throw error instanceof PackError ? error : new PackError(`${lockPath(root)} cannot be read; fix or delete it`);
-    return [];
+    parsed = JSON.parse(text);
+  } catch {
+    return { entries: [], problem: "not valid JSON" };
   }
+  if (!parsed || !Array.isArray(parsed.packs)) return { entries: [], problem: "no packs list" };
+  const entries = parsed.packs.filter(
+    (item): item is PackEntry =>
+      !!item && isPackId(item.id) && typeof item.url === "string" && typeof item.commit === "string" && typeof item.installedAt === "string",
+  );
+  const unsafe = entries.find((item) => !isSafeEntry(item));
+  return { entries: entries.filter(isSafeEntry), ...(unsafe ? { unsafe } : {}) };
+}
+
+function readLock(root: string, strict: boolean): PackEntry[] {
+  const { entries, unsafe, problem } = loadLock(root);
+  if (!strict) return entries;
+  if (problem) throw new PackError(`${lockPath(root)} cannot be read (${problem}); fix or delete it`);
+  // Listing skips an entry git must not be handed; a command that would use or rewrite the lockfile stops instead of dropping it.
+  if (unsafe) throw new PackError(`${lockPath(root)}: the entry for ${unsafe.id} has a url or ref that is not valid; fix or delete it`);
+  return entries;
+}
+
+/** Why `packs.json` exists but cannot be read (every pack agent is hidden until it is fixed or deleted), or null. */
+export function lockProblem(root = packsRoot()): string | null {
+  return loadLock(root).problem ?? null;
 }
 
 function writeLock(root: string, packs: PackEntry[]) {
@@ -177,7 +202,17 @@ export function listPacks({ root = packsRoot() }: RootOption = {}): PackEntry[] 
 
 // ---- git ----
 
-function git(cwd: string, args: string[], { url, timeoutMs }: { url: string; timeoutMs: number }): Promise<string> {
+/** SIGKILL to git and to whatever it started (a fetch runs helper programs): git has its own process group for that. */
+function killTree(child: ReturnType<typeof spawn>) {
+  try {
+    if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+function git(cwd: string, args: string[], { url, timeoutMs, signal }: { url: string; timeoutMs: number } & SignalOption): Promise<string> {
   const env: Record<string, string | undefined> = {
     ...process.env,
     GIT_TERMINAL_PROMPT: "0",
@@ -195,22 +230,36 @@ function git(cwd: string, args: string[], { url, timeoutMs }: { url: string; tim
     "-c", "submodule.recurse=false",
     "-c", "advice.detachedHead=false",
   ];
-  return new Promise((done, fail) => {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(cancelled());
     // An argv array, never a shell string: nothing in the URL or ref is interpreted.
-    const child = spawn("git", [...hardened, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs, killSignal: "SIGKILL" });
+    const child = spawn("git", [...hardened, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    // Cancelling and timing out do not wait for git to exit: a program it started may hold its pipes open a while.
+    const onAbort = () => {
+      killTree(child);
+      reject(cancelled());
+    };
+    const timer = setTimeout(() => {
+      killTree(child);
+      fail(new PackError(`git ${args[0]} failed: timed out after ${Math.round(timeoutMs / 1000)} s`));
+    }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const settle = () => (clearTimeout(timer), signal?.removeEventListener("abort", onAbort));
+    const done = (text: string) => (settle(), resolve(text));
+    const fail = (error: PackError) => (settle(), reject(error));
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
     child.stderr.on("data", (chunk) => (err += chunk));
     child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
-    child.on("close", (code, signal) => {
+    child.on("close", (code) => {
       if (code === 0) return done(out.trim());
       // GitHub answers a missing or private repo by asking for a login, which is off: say what that means.
       if (/could not read Username|Authentication failed|Repository not found/.test(err)) {
         return fail(new PackError(`${printable(url)} was not found, or it is private: marcsh installs public repositories only`));
       }
       // The server's own words reach the toast: cleaned, and only the end of them (git puts the reason last).
-      const why = signal ? `timed out after ${Math.round(timeoutMs / 1000)} s` : printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
+      const why = printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
       fail(new PackError(`git ${args[0]} failed: ${why}`));
     });
   });
@@ -247,7 +296,8 @@ export async function fetchPack({
   ref,
   root = packsRoot(),
   timeoutMs = FETCH_TIMEOUT_MS,
-}: { url: string; ref?: string } & RootOption & { timeoutMs?: number }): Promise<Fetched> {
+  signal,
+}: { url: string; ref?: string } & RootOption & SignalOption & { timeoutMs?: number }): Promise<Fetched> {
   if (!URL_FORM.test(url) || (ref !== undefined && !isRef(ref))) throw new PackError("Pack rejected: the repository URL or ref is not valid");
   const stagingRoot = join(root, ".staging");
   mkdirSync(stagingRoot, { recursive: true });
@@ -256,7 +306,7 @@ export async function fetchPack({
   const src = join(staging, "src");
   try {
     mkdirSync(src);
-    const run = (...args: string[]) => git(src, args, { url, timeoutMs });
+    const run = (...args: string[]) => git(src, args, { url, timeoutMs, signal });
     await run("init", "-q", "--template=");
     // After `--`, so neither can be taken for an option.
     await run("fetch", "-q", "--depth", "1", "--no-tags", "--no-recurse-submodules", "--", url, ref ?? "HEAD");
@@ -413,11 +463,19 @@ function agentFiles(src: string) {
     .sort();
 }
 
-function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string[]) {
+type Tally = { entries: number; bytes: number };
+
+/** Walks the clone without reading a file. Counts what it passes (not `.git`) and stops, with what it has counted so far, once a limit is crossed. */
+function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string[], limits: PackLimits, tally: Tally) {
   for (const item of listDir(dir)) {
     if (dir === clone && item.name === ".git") continue;
     const path = join(dir, item.name);
-    if (item.isDirectory()) walkForLinks(clone, path, cloneReal, bad);
+    tally.entries++;
+    if (item.isFile()) tally.bytes += lstatSync(path).size;
+    if (tally.entries > limits.maxEntries || tally.bytes > limits.maxBytes) {
+      throw rejected(`the repository is larger than marcsh accepts (${tally.entries} files / ${(tally.bytes / 1024 / 1024).toFixed(1)} MB)`);
+    }
+    if (item.isDirectory()) walkForLinks(clone, path, cloneReal, bad, limits, tally);
     else if (item.isSymbolicLink()) {
       let target: string;
       try {
@@ -432,12 +490,13 @@ function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string
 }
 
 /**
- * Throws unless the clone is safe to keep: no symlink leaves it, `agents/`, `skills/` and `commands/` hold no links, it has a primary
+ * Throws unless the clone is safe to keep: it is within the size limits (counted before any file is read), no symlink leaves it, `agents/`, `skills/` and `commands/` hold no links, it has a primary
  * agent, no agent file is huge, no skill or command declares hooks. Returns what the view is built from.
  */
-export function scanPack(src: string): Parts {
+export function scanPack(src: string, limits: Partial<PackLimits> = {}): Parts {
   const outside: string[] = [];
-  walkForLinks(src, src, realpathSync(src), outside);
+  const cap: PackLimits = { maxEntries: MAX_PACK_ENTRIES, maxBytes: MAX_PACK_BYTES, ...limits };
+  walkForLinks(src, src, realpathSync(src), outside, cap, { entries: 0, bytes: 0 });
   if (outside.length > 0) {
     throw new PackError(`Pack rejected: ${printable(outside[0]!)} is a symlink that points outside the pack${outside.length > 1 ? ` (and ${outside.length - 1} more)` : ""}`);
   }
@@ -531,20 +590,23 @@ const discard = (path: string) => rmSync(path, { recursive: true, force: true })
 
 export type InstallResult = { status: "installed"; pack: PackEntry; preview: PackPreview } | { status: "cancelled" };
 
-/** Fetches the pack, scans and previews it, and installs it only if `confirm` says yes. */
+/**
+ * Fetches the pack, scans and previews it, and installs it only if `confirm` says yes. Aborting `signal` while git runs stops git and
+ * rejects with `Cancelled`; once the fetch is done the answer to `confirm` decides.
+ */
 export async function installPack(
   text: string,
-  { confirm, root = packsRoot(), urlBase }: { confirm: Confirm; urlBase?: string } & RootOption,
+  { confirm, root = packsRoot(), urlBase, signal, limits }: { confirm: Confirm; urlBase?: string } & RootOption & SignalOption & LimitsOption,
 ): Promise<InstallResult> {
   const spec = parsePackSpec(text, { urlBase });
   const existing = readLock(root, true);
   if (existing.some((pack) => pack.id === spec.id)) throw new PackError(`${spec.id} is already installed; use update to move it to a newer commit`);
   const target = packDir(spec.id, root);
-  if (existsSync(target)) throw new PackError(`${target} exists but is not an installed pack; remove it first`);
+  if (existsSync(target)) throw new PackError(`${target} exists but is not an installed pack; run /agents remove ${spec.id} to clear it`);
 
-  const { staging, src, commit } = await fetchPack({ url: spec.url, ref: spec.ref, root });
+  const { staging, src, commit } = await fetchPack({ url: spec.url, ref: spec.ref, root, signal });
   try {
-    const parts = scanPack(src);
+    const parts = scanPack(src, limits);
     const preview = previewPack(src, { id: spec.id, commit }, parts);
     // The view is copied from what was just read, before the user is asked.
     writePluginView(staging, spec.id, parts);
@@ -574,20 +636,23 @@ export type UpdateResult =
   | { status: "up-to-date"; pack: PackEntry }
   | { status: "cancelled" };
 
-/** Fetches the commit the pack's ref (else HEAD) points at now; if it differs, previews old → new and swaps it in on consent. */
+/**
+ * Fetches the commit the pack's ref (else HEAD) points at now; if it differs, previews old → new and swaps it in on consent.
+ * Aborting `signal` while git runs rejects with `Cancelled` and leaves the installed pack as it was.
+ */
 export async function updatePack(
   id: string,
-  { confirm, root = packsRoot() }: { confirm: Confirm } & RootOption,
+  { confirm, root = packsRoot(), signal, limits }: { confirm: Confirm } & RootOption & SignalOption & LimitsOption,
 ): Promise<UpdateResult> {
   assertPackId(id);
   const current = readLock(root, true).find((pack) => pack.id === id);
   if (!current) throw new PackError(`${id} is not installed`);
 
-  const { staging, src, commit } = await fetchPack({ url: current.url, ref: current.ref, root });
+  const { staging, src, commit } = await fetchPack({ url: current.url, ref: current.ref, root, signal });
   const retired = join(root, ".staging", `old-${basename(staging)}`);
   try {
     if (commit === current.commit) return { status: "up-to-date", pack: current };
-    const parts = scanPack(src);
+    const parts = scanPack(src, limits);
     const preview = { ...previewPack(src, { id, commit }, parts), previousCommit: current.commit };
     writePluginView(staging, id, parts);
     if (!(await confirm(preview))) return { status: "cancelled" };
@@ -624,16 +689,47 @@ export async function updatePack(
   }
 }
 
-/** Deletes the pack's directory and its lock entry. */
-export async function removePack(id: string, { root = packsRoot() }: RootOption = {}): Promise<void> {
+const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+export type RemoveResult = { status: "removed" } | { status: "removed-leftover" };
+
+/** Whether `<root>/<owner>/<repo>` exists without a lock entry: a crash between the rename and the lock write leaves one. */
+export function hasLeftover(id: string, { root = packsRoot() }: RootOption = {}): boolean {
   assertPackId(id);
-  changeLock(root, (packs) => {
-    if (!packs.some((pack) => pack.id === id)) throw new PackError(`${id} is not installed`);
-    return packs.filter((pack) => pack.id !== id);
-  });
-  discard(packDir(id, root));
+  // On a case-insensitive disk another spelling of an installed id names the installed folder, which is not a leftover.
+  if (listPacks({ root }).some((pack) => sameId(pack.id, id))) return false;
+  try {
+    lstatSync(packDir(id, root));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deletes the pack's directory and its lock entry. A folder with no lock entry (see `hasLeftover`) is deleted too and reported as
+ * `removed-leftover`: only that exact path under the root, and never through a link.
+ */
+export async function removePack(id: string, { root = packsRoot() }: RootOption = {}): Promise<RemoveResult> {
+  assertPackId(id);
+  const target = packDir(id, root);
+  const packs = readLock(root, true);
+  const installed = packs.some((pack) => pack.id === id);
+  const spelled = packs.find((pack) => sameId(pack.id, id));
+  if (!installed && spelled) throw new PackError(`${id} is not installed; did you mean ${spelled.id}?`);
+  if (!installed) {
+    if (!hasLeftover(id, { root })) throw new PackError(`${id} is not installed`);
+    if (lstatSync(dirname(target)).isSymbolicLink()) throw new PackError(`${dirname(target)} is a link; remove ${target} by hand`);
+  } else {
+    changeLock(root, (packs) => {
+      if (!packs.some((pack) => pack.id === id)) throw new PackError(`${id} is not installed`);
+      return packs.filter((pack) => pack.id !== id);
+    });
+  }
+  discard(target);
   try {
     // The owner's folder goes with its last pack; rmdir refuses a folder that still holds one.
-    rmdirSync(dirname(packDir(id, root)));
+    rmdirSync(dirname(target));
   } catch {}
+  return { status: installed ? "removed" : "removed-leftover" };
 }

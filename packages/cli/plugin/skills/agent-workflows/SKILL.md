@@ -66,6 +66,7 @@ commands/*.md                   slash commands
 - Any symlink in `skills/` or `commands/`, or a symlinked `agents/` folder. Only real folders and regular files. (A symlinked file inside `agents/` is not rejected but is silently never loaded.)
 - A file in `skills/` or `commands/` over 1 MB.
 - An agent file over 256 KB.
+- A repository over 5,000 entries (files and folders) or 50 MB of files, counted on the checked-out tree without `.git`. Keep a pack to prompts, skills and commands; do not commit assets, binaries or `node_modules`.
 - An agent file whose frontmatter is never closed (an opening `---` with no closing `---`).
 - No primary agent in `agents/*.md` (only subagents, or none).
 - `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested).
@@ -81,7 +82,7 @@ Not a rejection, but shown as a warning in the preview: `allowed-tools` in a ski
 3. **Test it.** Tell the user to press Tab or open `/agents` (it reads the files again, so no restart) and select the agent. A warning toast on selection means a field was ignored: fix it. Run a real request, then adjust the prompt. An edit applies from the next turn of the same conversation.
 4. **Iterate** until the agent behaves. Stop here if the user only needs it for themselves.
 5. **Promote to a pack (optional).** Create a repo with `agents/<name>.md` and any `skills/` and `commands/`. Run the checklist below. The user commits and pushes it to GitHub; do not push for them.
-6. **Install.** `/agents install owner/repo[@ref]` (or `https://github.com/owner/repo`). marcsh fetches it, shows a preview (agents, skills, commands, what is not used, warnings), and installs only after the user accepts. The pack is pinned to the commit they saw.
+6. **Install.** `/agents install owner/repo[@ref]` (or `https://github.com/owner/repo`). marcsh fetches it, shows a preview (agents, skills, commands, what is not used, warnings), and installs only after the user accepts. The pack is pinned to the commit they saw. Esc cancels the install while it is fetching and stops git; nothing is kept.
 7. **Update.** After pushing changes, `/agents update owner/repo` (or `/agents update` to pick one). It shows old → new commit and the new contents, and swaps only on accept. Updates are never automatic. With `@ref` the pack follows that branch or tag; a commit ref never moves.
 8. **Remove.** `/agents remove owner/repo` deletes the pack and its entry after confirmation. Personal agents are removed by deleting the file.
 
@@ -94,7 +95,7 @@ Check each item on the files; report any that fails and fix it first.
 - [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`.
 - [ ] `model`, if present, fits the engine: `provider/id` for pi, a `claude-*` name or alias (`opus`, `sonnet`, `haiku`...) for Claude.
 - [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
-- [ ] No file in `skills/` or `commands/` over 1 MB.
+- [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries).
 - [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.
 - [ ] Every frontmatter opens and closes with a bare `---` line and parses as YAML.
 - [ ] No `allowed-tools`, or the user knows why it is there.

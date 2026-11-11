@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -120,6 +120,35 @@ describe("selecting agents (S1, S9)", () => {
     // The built-ins stay readable: Plan says what it is, Build needs no tag.
     expect(listed).toContain("Plan (read-only) Reads and plans");
     expect(listed).toContain("Build Edits files and runs commands");
+  });
+
+  test("/agents says when packs.json cannot be read, as a warning that is not a row [R4-003]", async () => {
+    const lock = join(process.env.MARCSH_PACKS_DIR!, "packs.json");
+    mkdirSync(process.env.MARCSH_PACKS_DIR!, { recursive: true });
+    writeFileSync(lock, "{not json SECRET");
+    try {
+      await openHome();
+      await type("/agents");
+      await enter();
+      const listed = frame();
+      expect(listed).toContain("packs.json could not be read: not valid JSON; pack agents are hidden");
+      expect(listed).not.toContain("SECRET");
+      // The list is as before, and Enter on the first row still selects Build rather than the warning.
+      expect(listed).toContain("Install from GitHub…");
+      await enter();
+      expect(getAgentId()).toBe("build");
+      expect(frame()).not.toContain("packs.json could not be read");
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
+  test("/agents shows no packs.json warning when there is no lockfile or it is fine", async () => {
+    expect(existsSync(join(process.env.MARCSH_PACKS_DIR!, "packs.json"))).toBe(false);
+    await openHome();
+    await type("/agents");
+    await enter();
+    expect(frame()).not.toContain("could not be read");
   });
 
   test("an agent with fields marcsh cannot apply is selectable and warns in one line (S7)", async () => {

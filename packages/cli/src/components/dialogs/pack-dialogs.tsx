@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { TextAttributes, type InputRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useDialog, type DialogContextValue } from "../../providers/dialog";
@@ -6,11 +6,12 @@ import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
-import { installPack, listPacks, parsePackSpec, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
+import { hasLeftover, installPack, listPacks, parsePackSpec, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
 
 // The `/agents` flows for packs (GitHub repos with agents, skills and commands): install, update, remove. Each step is a dialog
 // that replaces the one before it. Nothing is installed or swapped before the preview is accepted, and a dialog that is closed
-// (Esc) without an answer declines.
+// (Esc) without an answer declines. Esc on the dialog shown while git runs stops git. A flow closes only a dialog it opened and
+// that is still showing: the dialog provider has one slot and closes whatever is in it, so the flow tracks its own.
 
 const ERROR_TOAST_MS = 8000;
 const HOOKS_NOTE = "Pack hooks and MCP servers are not run.";
@@ -81,9 +82,56 @@ function Choice({ options, onChoose }: { options: string[]; onChoose: (index: nu
   );
 }
 
+/** A dialog a flow opened. `gone` is set when it leaves the screen, closed by the user or replaced by another dialog. */
+type Shown = { gone: boolean };
+
+/** One run of a flow (install, update or remove): the dialogs it opened and the signal that stops its git. */
+type Run = {
+  signal: AbortSignal;
+  /** Stops git (Esc on the working dialog). Does nothing once the fetch is done: the preview replacing that dialog is not a cancel. */
+  abort: () => void;
+  /** The fetch is done and the preview is next. */
+  fetched: () => void;
+  /** Replaces whatever dialog is open with a new one of this run. */
+  open: (title: string, render: (shown: Shown) => ReactNode) => void;
+  /** Closes the run's last dialog, unless it is already gone: then another dialog (or none) is showing and it is not ours to close. */
+  close: () => void;
+};
+
+let dialogKey = 0;
+
+function startRun(flow: Flow): Run {
+  const controller = new AbortController();
+  let last: Shown = { gone: true };
+  let done = false;
+  return {
+    signal: controller.signal,
+    abort: () => {
+      if (!done) controller.abort();
+    },
+    fetched: () => {
+      done = true;
+    },
+    open(title, render) {
+      last = { gone: false };
+      // A key of its own: a dialog of the same kind opened by another flow is a new one, not an update of this.
+      flow.dialog.open({ title, children: <Fragment key={++dialogKey}>{render(last)}</Fragment> });
+    },
+    close() {
+      if (!last.gone) flow.dialog.close();
+    },
+  };
+}
+
 /** The question a dialog closed without an answer leaves behind is a no. */
-function Question({ lines, options, onAnswer }: { lines: string[]; options: string[]; onAnswer: (yes: boolean) => void }) {
-  useEffect(() => () => onAnswer(false), [onAnswer]);
+function Question({ lines, options, shown, onAnswer }: { lines: string[]; options: string[]; shown: Shown; onAnswer: (yes: boolean) => void }) {
+  useEffect(
+    () => () => {
+      shown.gone = true;
+      onAnswer(false);
+    },
+    [shown, onAnswer],
+  );
   return (
     <box flexDirection="column" gap={1}>
       <box flexDirection="column">
@@ -98,71 +146,80 @@ function Question({ lines, options, onAnswer }: { lines: string[]; options: stri
   );
 }
 
-/** Shown while git runs; closing it (Esc) stops the flow before the preview. */
-function Working({ message, gone }: { message: string; gone: { value: boolean } }) {
+/** Shown while git runs. Leaving the screen (Esc) aborts the run, which stops git. */
+function Working({ message, shown, abort }: { message: string; shown: Shown; abort: () => void }) {
   useEffect(
     () => () => {
-      gone.value = true;
+      shown.gone = true;
+      abort();
     },
-    [gone],
+    [shown, abort],
   );
   return <text attributes={TextAttributes.DIM}>{message}</text>;
 }
 
-function ask(flow: Flow, title: string, lines: string[], yes: string): Promise<boolean> {
+function ask(run: Run, title: string, lines: string[], yes: string): Promise<boolean> {
   return new Promise((resolve) => {
-    flow.dialog.open({ title, children: <Question lines={lines} options={["Cancel", yes]} onAnswer={resolve} /> });
+    run.open(title, (shown) => <Question lines={lines} options={["Cancel", yes]} shown={shown} onAnswer={resolve} />);
   });
 }
 
-/** Opens the preview as the answer to `installPack`/`updatePack`'s `confirm`, unless the working dialog was already closed. */
-function confirmWith(flow: Flow, title: string, yes: string, gone: { value: boolean }) {
+/** Opens the preview as the answer to `installPack`/`updatePack`'s `confirm`, unless the run was already cancelled. */
+function confirmWith(run: Run, title: string, yes: string) {
   return async (preview: PackPreview) => {
-    if (gone.value) return false;
-    return ask(flow, title, previewLines(preview), yes);
+    if (run.signal.aborted) return false;
+    run.fetched();
+    return ask(run, title, previewLines(preview), yes);
   };
 }
 
 async function runInstall(flow: Flow, text: string) {
-  const gone = { value: false };
-  flow.dialog.open({ title: "Install pack", children: <Working message={`Fetching ${text}…`} gone={gone} /> });
+  const run = startRun(flow);
+  run.open("Install pack", (shown) => <Working message={`Fetching ${text}…`} shown={shown} abort={run.abort} />);
   try {
-    const result = await installPack(text, { confirm: confirmWith(flow, "Install pack", "Install", gone) });
-    flow.dialog.close();
+    const result = await installPack(text, { confirm: confirmWith(run, "Install pack", "Install"), signal: run.signal });
+    run.close();
     if (result.status === "cancelled") return flow.toast.show({ variant: "info", message: "Install cancelled" });
     flow.onChanged();
     const count = result.preview.agents.length;
     flow.toast.show({ variant: "success", message: `Installed ${result.pack.id} (${count} agent${count === 1 ? "" : "s"})` });
   } catch (error) {
-    flow.dialog.close();
+    run.close();
+    if (run.signal.aborted) return flow.toast.show({ variant: "info", message: "Install cancelled" });
     failure(flow, error);
   }
 }
 
 async function runUpdate(flow: Flow, pack: PackEntry) {
-  const gone = { value: false };
-  flow.dialog.open({ title: "Update pack", children: <Working message={`Checking ${pack.id} for updates…`} gone={gone} /> });
+  const run = startRun(flow);
+  run.open("Update pack", (shown) => <Working message={`Checking ${pack.id} for updates…`} shown={shown} abort={run.abort} />);
   try {
-    const result = await updatePack(pack.id, { confirm: confirmWith(flow, "Update pack", "Update", gone) });
-    flow.dialog.close();
+    const result = await updatePack(pack.id, { confirm: confirmWith(run, "Update pack", "Update"), signal: run.signal });
+    run.close();
     if (result.status === "cancelled") return flow.toast.show({ variant: "info", message: "Update cancelled" });
     if (result.status === "up-to-date") return flow.toast.show({ variant: "info", message: `${pack.id} is up to date` });
     flow.onChanged();
     flow.toast.show({ variant: "success", message: `Updated ${pack.id} to ${shortSha(result.pack.commit)}` });
   } catch (error) {
-    flow.dialog.close();
+    run.close();
+    if (run.signal.aborted) return flow.toast.show({ variant: "info", message: "Update cancelled" });
     failure(flow, error);
   }
 }
 
-async function runRemove(flow: Flow, pack: PackEntry) {
-  const yes = await ask(flow, "Remove pack", [`Remove ${pack.id} (${shortSha(pack.commit)})?`, "Its agents, skills and commands are deleted from ~/.marcsh/packs."], "Remove");
-  flow.dialog.close();
+/** `commit` is the installed pack's; without it the folder is a leftover that has no lock entry. */
+async function runRemove(flow: Flow, id: string, commit?: string) {
+  const run = startRun(flow);
+  const lines = commit
+    ? [`Remove ${id} (${shortSha(commit)})?`, "Its agents, skills and commands are deleted from ~/.marcsh/packs."]
+    : [`Remove the leftover folder of ${id}?`, "packs.json has no entry for it, so none of its agents are loaded. The folder is deleted from ~/.marcsh/packs."];
+  const yes = await ask(run, "Remove pack", lines, "Remove");
+  run.close();
   if (!yes) return;
   try {
-    await removePack(pack.id);
+    const result = await removePack(id);
     flow.onChanged();
-    flow.toast.show({ variant: "success", message: `Removed ${pack.id}` });
+    flow.toast.show({ variant: "success", message: result.status === "removed-leftover" ? `Removed the leftover folder of ${id}` : `Removed ${id}` });
   } catch (error) {
     failure(flow, error);
   }
@@ -201,8 +258,12 @@ export function runPackCommand(args: string, flow: Flow): Promise<void> | void {
     return usage(error instanceof Error ? error.message : String(error));
   }
   const pack = listPacks().find((item) => item.id === id);
-  if (!pack) return failure(flow, `${id} is not installed`);
-  return verb === "update" ? runUpdate(flow, pack) : runRemove(flow, pack);
+  if (!pack) {
+    // A folder under the root with no lock entry cannot be installed over or updated, but it can be removed.
+    if (verb === "remove" && hasLeftover(id)) return runRemove(flow, id);
+    return failure(flow, `${id} is not installed`);
+  }
+  return verb === "update" ? runUpdate(flow, pack) : runRemove(flow, pack.id, pack.commit);
 }
 
 function TextField({ placeholder, onSubmit }: { placeholder: string; onSubmit: (value: string) => void }) {
@@ -240,7 +301,7 @@ export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
   return (
     <DialogSearchList
       items={packs}
-      onSelect={(pack) => void (action === "update" ? runUpdate(flow, pack) : runRemove(flow, pack))}
+      onSelect={(pack) => void (action === "update" ? runUpdate(flow, pack) : runRemove(flow, pack.id, pack.commit))}
       filterFn={(pack, query) => pack.id.includes(query.toLowerCase())}
       renderItem={(pack, isSelected) => (
         <box flexDirection="row" gap={1} overflow="hidden">
