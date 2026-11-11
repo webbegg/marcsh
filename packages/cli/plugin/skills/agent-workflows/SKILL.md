@@ -1,0 +1,100 @@
+---
+name: agent-workflows
+description: Use this when the user wants to create, edit, share or install their own agent or workflow for marcsh (a custom role selectable with Tab or /agents), as a personal file or as a GitHub pack.
+---
+
+# Author an agent workflow
+
+An agent is a markdown file: a role prompt plus a permission level. The user picks it with Tab or `/agents`. Build and Plan are built in and cannot be overridden or removed.
+
+## Two levels
+
+- **Personal agent**: one file in `~/.marcsh/agents/<name>.md`. Global, instant, nothing to install. Start here.
+- **Pack**: a GitHub repo with agents, and optionally skills and commands, that others install with `/agents install owner/repo[@ref]`. Promote a personal agent to a pack only when the user wants to share it or bundle skills with it.
+
+Agents load from `~/.marcsh` only, never from the project.
+
+## The agent file
+
+```markdown
+---
+name: Reviewer
+description: Reads the diff and reports risks; changes nothing
+mode: primary
+permission: read-only
+---
+You are the Reviewer. Your lane is review: read the change and report what could break.
+
+- Read the diff and the code around it before judging.
+- Report findings as a list: file, line, the risk, a suggested fix.
+- Never edit files or run commands that change anything.
+- End with one line: the riskiest item, or "no findings".
+```
+
+Frontmatter (flat `key: value` lines):
+
+| Field | Values | Notes |
+| --- | --- | --- |
+| `name` | text | Shown in the status line and menus. Defaults to the file name. |
+| `description` | text | One line shown in `/agents`. |
+| `mode` | `primary` or `all` | Selectable. `subagent` is never selectable: the file is skipped. Omitted means selectable. |
+| `permission` | `read-only` or `build` | `read-only` behaves like Plan (reads, changes nothing). `build` behaves like Build (asks before writing or running). Omitted means `build`. |
+| `model` | optional | pi takes `provider/id`; Claude takes names without `/`. A model the engine cannot use is ignored with a warning and the session model is used. Leave it out unless the role needs one. |
+
+The body is appended to the engine's own system prompt, never in place of it. Write only the role: do not repeat what the engine already knows.
+
+Any other field (`tools`, `temperature`, ...) is read but not applied; selecting the agent shows a one-line warning. A value that is not valid for `mode` or `permission` is ignored the same way. Per-agent tool lists are not supported.
+
+## Pack layout
+
+```
+agents/*.md                     required: at least one selectable agent
+skills/<name>/SKILL.md          skills, in the Claude format (name, description)
+skills/*.md                     a skill can also be a single file
+commands/*.md                   slash commands
+.claude-plugin/plugin.json      optional manifest
+```
+
+- Skills and commands load only while one of the pack's agents is selected. Build and Plan keep marcsh's own plugin. So a skill must be reachable from the agent prompt: say in the prompt when to use which skill.
+- marcsh never runs hooks (`hooks/`, or `hooks` in `plugin.json`) or MCP servers (`.mcp.json`, `mcpServers`). Do not rely on them.
+- Agent IDs are `owner/repo/<file stem>` (personal agents: `user/<file stem>`). The menus show the short `name`; when two agents share a name (any case) they show `owner/repo/Name`. Built-in names always stay short, so avoid naming an agent Build or Plan.
+- Pack IDs are lowercase `owner/repo`.
+
+### What makes marcsh reject a pack
+
+- A symlink pointing outside the pack, anywhere.
+- Any symlink in `skills/` or `commands/`, or a symlinked `agents/` folder. Only real folders and regular files. (A symlinked file inside `agents/` is not rejected but is silently never loaded.)
+- A file in `skills/` or `commands/` over 1 MB.
+- An agent file over 256 KB.
+- No primary agent in `agents/*.md` (only subagents, or none).
+- `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested).
+- A `...` line inside a skill or command frontmatter.
+- Frontmatter that is not clean: an opening or closing `---` line with other text on it, no closing `---`, or YAML that does not parse (quote a `description` that contains `: `).
+
+Not a rejection, but shown as a warning in the preview: `allowed-tools` in a skill or command frontmatter pre-approves tools. Remove it unless the skill needs it.
+
+## Workflow with the user
+
+1. **Draft the prompt together.** Ask for the lane or role (what the agent does and does not do), the permission (`read-only` if it must never change anything, otherwise `build`), the steps it follows, and which skill to use when. Propose a draft; do not invent requirements.
+2. **Write the file** to `~/.marcsh/agents/<name>.md` (lowercase file name, no spaces). Keep the prompt short and imperative.
+3. **Test it.** Tell the user to press Tab or open `/agents` (it reads the files again, so no restart) and select the agent. A warning toast on selection means a field was ignored: fix it. Run a real request, then adjust the prompt. An edit applies from the next turn of the same conversation.
+4. **Iterate** until the agent behaves. Stop here if the user only needs it for themselves.
+5. **Promote to a pack (optional).** Create a repo with `agents/<name>.md` and any `skills/` and `commands/`. Run the checklist below. The user commits and pushes it to GitHub; do not push for them.
+6. **Install.** `/agents install owner/repo[@ref]` (or `https://github.com/owner/repo`). marcsh fetches it, shows a preview (agents, skills, commands, what is not used, warnings), and installs only after the user accepts. The pack is pinned to the commit they saw.
+7. **Update.** After pushing changes, `/agents update owner/repo` (or `/agents update` to pick one). It shows old → new commit and the new contents, and swaps only on accept. Updates are never automatic. With `@ref` the pack follows that branch or tag; a commit ref never moves.
+8. **Remove.** `/agents remove owner/repo` deletes the pack and its entry after confirmation. Personal agents are removed by deleting the file.
+
+## Checklist before saying a pack is ready
+
+Check each item on the files; report any that fails and fix it first.
+
+- [ ] `agents/` has at least one agent without `mode: subagent`, and each agent file is under 256 KB.
+- [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`.
+- [ ] `model`, if present, fits the engine: `provider/id` for pi, no `/` for Claude.
+- [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
+- [ ] No file in `skills/` or `commands/` over 1 MB.
+- [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.
+- [ ] Every frontmatter opens and closes with a bare `---` line and parses as YAML.
+- [ ] No `allowed-tools`, or the user knows why it is there.
+- [ ] Each agent prompt names the skills and commands it expects to use.
+- [ ] No hooks or MCP servers are needed for the workflow to work.

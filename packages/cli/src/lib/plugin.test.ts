@@ -85,6 +85,7 @@ describe("readPluginEntries", () => {
 
     expect(entries.map((entry) => [entry.name, entry.kind, entry.id])).toEqual([
       ["marcsh:feature", "command", "feature"],
+      ["marcsh:agent-workflows", "skill", "agent-workflows"],
       ["marcsh:workflow", "skill", "workflow"],
     ]);
   });
@@ -94,6 +95,7 @@ describe("readPluginEntries", () => {
 
     expect(readPluginEntries(path).map((entry) => entry.file)).toEqual([
       join(path, "commands", "feature.md"),
+      join(path, "skills", "agent-workflows", "SKILL.md"),
       join(path, "skills", "workflow", "SKILL.md"),
     ]);
   });
