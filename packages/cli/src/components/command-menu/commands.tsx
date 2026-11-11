@@ -96,7 +96,8 @@ export const COMMANDS: Command[] = [
     action: (ctx) => {
       ctx.dialog.open({
         title: "Select Agent",
-        children: <AgentsDialogContent currentMode={ctx.mode} onSelectMode={ctx.setMode} />,
+        // Read the files again: an agent added since start is listed without a restart.
+        children: <AgentsDialogContent agents={ctx.reloadAgents()} currentId={ctx.agentId} onSelectAgent={ctx.selectAgent} />,
       })
     },
   },

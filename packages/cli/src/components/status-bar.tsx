@@ -3,6 +3,7 @@ import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 import { modelForEngine } from "../lib/models";
+import { agentLabel } from "../lib/agents";
 
 type Props = {
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
@@ -10,7 +11,7 @@ type Props = {
 };
 
 export function StatusBar({ engine }: Props) {
-  const { mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
+  const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
 
@@ -18,7 +19,7 @@ export function StatusBar({ engine }: Props) {
     <box flexDirection="row" gap={1}>
       
       <text fg={mode === Mode.PLAN ? colors.planMode : colors.primary}>
-        {mode === Mode.PLAN ? "Plan" : "Build"}
+        {agentLabel(agent, agents)}
       </text>
 
       <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>

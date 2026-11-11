@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getDefaultEngine, getPiModel, preferencesPath, readPreferences, setDefaultEngine, setPiModel, updatePreferences } from "./preferences";
+import {
+  getAgentId,
+  getDefaultEngine,
+  getPiModel,
+  preferencesPath,
+  readPreferences,
+  setAgentId,
+  setDefaultEngine,
+  setPiModel,
+  updatePreferences,
+} from "./preferences";
 
 let dir: string;
 let path: string;
@@ -20,6 +30,24 @@ const writeRaw = (text: string) => {
   mkdirSync(join(dir, "nested"), { recursive: true });
   writeFileSync(path, text, "utf8");
 };
+
+describe("agent preference", () => {
+  test("is unset when there is no preferences file", () => {
+    expect(getAgentId(path)).toBeUndefined();
+  });
+
+  test("a change is persisted and read back, keeping the other preferences", () => {
+    setDefaultEngine("claude", path);
+    setAgentId("user/reviewer", path);
+    expect(getAgentId(path)).toBe("user/reviewer");
+    expect(getDefaultEngine(path)).toBe("claude");
+  });
+
+  test("a stored value that is not a string is ignored", () => {
+    writeRaw(JSON.stringify({ agent: 42 }));
+    expect(getAgentId(path)).toBeUndefined();
+  });
+});
 
 describe("default engine preference", () => {
   test("is pi when there is no preferences file", () => {

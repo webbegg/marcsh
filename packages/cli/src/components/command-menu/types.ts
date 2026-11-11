@@ -1,5 +1,5 @@
 import type { DialogContextValue } from "../../providers/dialog";
-import type { ModeType } from "../../lib/modes";
+import type { Agent } from "../../lib/agents";
 import type { SupportedChatModelId } from "../../lib/models";
 import type { EngineId } from "../../lib/engine";
 import type { ToastContextValue } from "../../providers/toast";
@@ -20,8 +20,12 @@ export type CommandContext = {
   /** Re-checks the pi model against the models that have credentials now (after a login or logout). */
   refreshPiModel: () => Promise<string>;
   navigate: (path: string) => void;
-  mode: ModeType;
-  setMode: (mode: ModeType) => void;
+  /** The selected agent's ID. */
+  agentId: string;
+  /** Reads the agent files again and resolves the list `/agents` shows. */
+  reloadAgents: () => Agent[];
+  /** Selects an agent by ID and keeps the choice. */
+  selectAgent: (id: string) => void;
   setModel: (model: SupportedChatModelId) => void;
 };
 

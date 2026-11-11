@@ -1,12 +1,15 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
-import { Mode, type ModeType } from "../../lib/modes";
+import type { ModeType } from "../../lib/modes";
+import { findAgent, loadAgents, nextAgent, type Agent } from "../../lib/agents";
 import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
 import { getPiRuntime, type EngineId } from "../../lib/engine";
 import { listAvailablePiModels, pickPiModel } from "../../lib/engine/pi-models";
 import {
+  getAgentId,
   getDefaultEngine,
   getPiModel,
+  setAgentId,
   setDefaultEngine as persistDefaultEngine,
   setPiModel as persistPiModel,
 } from "../../lib/preferences";
@@ -19,9 +22,18 @@ import {
 export type PiModelStatus = "pending" | "ready" | "none" | "unavailable";
 
 type PromptConfigContextValue = {
+  /** Build, Plan, then the user's own agents; Tab cycles them in this order. */
+  agents: Agent[];
+  /** The selected agent: its permission profile is `mode`, its prompt and model go with every turn. */
+  agent: Agent;
+  /** The selected agent's permission profile. */
   mode: ModeType;
-  toggleMode: () => void;
-  setMode: (mode: ModeType) => void;
+  /** Selects the agent with this ID (Build when it is gone) and keeps the choice; resolves the selected agent. */
+  selectAgent: (id: string) => Agent;
+  /** Selects the agent after the current one, wrapping around; resolves the selected agent. */
+  cycleAgent: () => Agent;
+  /** Reads the agent files again (one may have been added or removed) and resolves the new list. */
+  reloadAgents: () => Agent[];
   model: SupportedChatModelId;
   setModel: (model: SupportedChatModelId) => void;
   /** The engine new sessions start on; an open session keeps the one it was created with. */
@@ -63,7 +75,30 @@ type PromptConfigProviderProps = {
 };
 
 export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
-  const [mode, setMode] = useState<ModeType>(Mode.BUILD);
+  const [agents, setAgents] = useState<Agent[]>(() => loadAgents());
+  const [agentId, setAgentIdState] = useState(() => findAgent(agents, getAgentId()).id);
+  const agent = findAgent(agents, agentId);
+  // Tab can fire twice before a render: the next agent is computed from what was selected last, not from the render.
+  const agentsRef = useRef(agents);
+  const agentIdRef = useRef(agentId);
+
+  const selectAgent = useCallback((id: string) => {
+    const next = findAgent(agentsRef.current, id);
+    agentIdRef.current = next.id;
+    setAgentIdState(next.id);
+    setAgentId(next.id);
+    return next;
+  }, []);
+
+  const cycleAgent = useCallback(() => selectAgent(nextAgent(agentsRef.current, agentIdRef.current).id), [selectAgent]);
+
+  const reloadAgents = useCallback(() => {
+    const loaded = loadAgents();
+    agentsRef.current = loaded;
+    setAgents(loaded);
+    return loaded;
+  }, []);
+
   const [model, setModel] = useState<SupportedChatModelId>(DEFAULT_CHAT_MODEL_ID);
 
   const [defaultEngine, setDefaultEngineState] = useState<EngineId>(() => getDefaultEngine());
@@ -119,16 +154,15 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     if (defaultEngine === "pi") void refreshPiModel();
   }, [defaultEngine, refreshPiModel]);
 
-  const toggleMode = useCallback(() => {
-    setMode((m) => (m === Mode.BUILD ? Mode.PLAN : Mode.BUILD));
-  }, []);
-
   return (
     <PromptConfigContext.Provider 
       value={{ 
-        mode, 
-        toggleMode, 
-        setMode, 
+        agents,
+        agent,
+        mode: agent.mode,
+        selectAgent,
+        cycleAgent,
+        reloadAgents,
         model, 
         setModel,
         defaultEngine,

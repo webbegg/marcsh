@@ -21,6 +21,7 @@ import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
+import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
@@ -278,7 +279,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
 ];
 
 export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
-  const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -289,6 +290,11 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
+  const warnAboutAgent = useCallback((agent: Agent) => {
+    const warnings = agentWarnings(agent, engineId);
+    if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
+  }, [engineId, toast]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
 
@@ -416,14 +422,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         setPiModel,
         refreshPiModel,
         navigate,
-        mode,
-        setMode,
+        agentId: agent.id,
+        reloadAgents,
+        selectAgent: (id) => warnAboutAgent(selectAgent(id)),
         setModel,
       });
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, mode, setMode, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
@@ -517,7 +524,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!isTopLayer("base")) return;
     if (key.name === "tab") {
       key.preventDefault();
-      toggleMode();
+      warnAboutAgent(cycleAgent());
     }
   });
 
