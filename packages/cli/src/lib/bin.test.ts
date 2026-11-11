@@ -4,14 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Bun loads `.env` from the current directory on its own, so a project the user opens could set MARCSH_PACKS_DIR, MARCSH_AGENTS_DIR,
-// MARCSH_PACK_URL_BASE and every other variable marcsh reads. The launcher must start Bun without that.
+// MARCSH_PACK_URL_BASE and every other variable marcsh reads; it also reads that directory's bunfig.toml, whose `preload` runs
+// the project's code before marcsh. The launcher must start Bun without either.
 
 const bin = join(import.meta.dir, "..", "..", "bin", "marcsh");
 
 /** The interpreter command the launcher's first line asks the OS for, e.g. ["bun", "--no-env-file"]. */
 function interpreter() {
   const first = readFileSync(bin, "utf8").split("\n")[0]!;
-  const match = /^#!\/usr\/bin\/env(?:\s+-S)?\s+(.+)$/.exec(first);
+  // `-S` is what lets env pass more than one argument on Linux.
+  const match = /^#!\/usr\/bin\/env\s+-S\s+(.+)$/.exec(first);
   expect(match).not.toBeNull();
   const argv = match![1]!.trim().split(/\s+/);
   // The shebang finds `bun` on PATH; the test runs under the same Bun.
@@ -40,5 +42,18 @@ describe("bin/marcsh", () => {
 
     expect(run.exitCode).toBe(0);
     expect(run.stdout.toString().trim()).toBe("unset");
+  });
+
+  test("does not run a preload from the bunfig.toml of the directory it is started in", () => {
+    writeFileSync(join(project, "bunfig.toml"), 'preload = ["./evil.ts"]\n');
+    writeFileSync(join(project, "evil.ts"), 'console.log("PRELOAD RAN");\n');
+    const probe = join(dir, "probe.ts");
+    writeFileSync(probe, 'console.log("marcsh");\n');
+
+    const [command, ...args] = interpreter();
+    const run = Bun.spawnSync([command!, ...args, probe], { cwd: project });
+
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString().trim()).toBe("marcsh");
   });
 });

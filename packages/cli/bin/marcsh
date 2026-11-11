@@ -1,2 +1,2 @@
-#!/usr/bin/env -S bun --no-env-file
+#!/usr/bin/env -S bun --no-env-file --config=/dev/null
 await import("../src/index.tsx");
