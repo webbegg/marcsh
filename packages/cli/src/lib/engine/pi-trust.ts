@@ -476,8 +476,9 @@ export type ReviewRecord = StoredReview;
 /** The listing together with the record of it, both from one pass over the project. */
 export type ProjectReview = { resources: ProjectResource[]; record: ReviewRecord };
 
-// The most one review reads across a project. A folder past these is unreadable (so never trusted), not hashed in part:
-// a change in the part that was not read would go unseen.
+// The most one review reads across a project. An entry past these is unreadable (so never trusted), not hashed in part:
+// a change in the part that was not read would go unseen. The entry count covers every listed entry and every file and folder
+// inside them, however small, so the work and the stored record stay bounded.
 const MAX_REVIEW_ENTRIES = 1000;
 const MAX_REVIEW_BYTES = 16 * 1024 * 1024;
 const MAX_REVIEW_DEPTH = 8;
@@ -538,8 +539,18 @@ export function reviewProject(cwd: string): ProjectReview {
     return digest;
   };
   const hashed = listResources(cwd).map((raw): { resource: ProjectResource; digest: string } => {
+    // Each listed entry counts once here; what is inside a folder is counted as the folder is read.
+    budget.entries += 1;
     if (raw.unreadable) return { resource: raw, digest: "unreadable" };
-    const found: Digest = raw.digest !== undefined ? { digest: raw.digest } : raw.source !== undefined ? digestOf(raw.source, raw.skipGit) : { digest: "none" };
+    // Past the cap nothing more is read: the entry is unreadable, as a folder past it is.
+    const found: Digest =
+      budget.entries > MAX_REVIEW_ENTRIES
+        ? { unreadable: `more than ${MAX_REVIEW_ENTRIES} files to review` }
+        : raw.digest !== undefined
+          ? { digest: raw.digest }
+          : raw.source !== undefined
+            ? digestOf(raw.source, raw.skipGit)
+            : { digest: "none" };
     if ("unreadable" in found) return { resource: unreadableEntry(raw.path, `${found.at === undefined ? "" : `${found.at}: `}${found.unreadable}`), digest: "unreadable" };
     return { resource: raw, digest: found.digest };
   });

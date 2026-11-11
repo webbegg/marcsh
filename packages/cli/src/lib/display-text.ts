@@ -8,7 +8,7 @@ export const escapedLines = (text: string): string[] => text.split("\n").map(esc
 // What can act on the terminal or reorder text: C0 controls other than newline and tab, DEL, C1 controls, bidi overrides and
 // isolates, the zero-width space and the BOM. Joiners (emoji sequences, Persian, Hindi), the soft hyphen and directional marks
 // are ordinary text and stay.
-const TERMINAL_UNSAFE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​‪-‮⁦-⁩﻿]/g;
+const TERMINAL_UNSAFE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 const visibleEscape = (char: string) =>
   char === "\r" ? "\\r" : `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`;
 

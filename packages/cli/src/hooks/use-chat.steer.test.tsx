@@ -12,6 +12,8 @@ import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type N
 let latest: ReturnType<typeof useChat>;
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 let notices: Array<{ message: string; level: NoticeLevel }> = [];
+// What the screen would do with a text the engine did not take; unset = the chat has nowhere to put it back.
+let restore: ((text: string) => boolean) | undefined;
 const settle = (ms = 20) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 
 type Script = {
@@ -22,6 +24,9 @@ type Script = {
   emit: (event: EngineEvent) => void;
   finish: () => void;
   failSteer?: string | Error;
+  failFollowUp?: string | Error;
+  /** Steers wait (like a text typed before the engine has the prompt) until the turn is interrupted, which refuses them. */
+  holdSteers?: boolean;
 };
 
 // A pi-like engine: its turn runs until the test finishes it, takes steer/followUp, and reports what the test makes it emit.
@@ -31,6 +36,7 @@ function steerableEngine(withSteer = true) {
     id: "fake",
     startTurn(_request: TurnRequest, host: TurnHost): EngineTurn {
       const ended = Promise.withResolvers<void>();
+      const held: Array<(error: Error) => void> = [];
       const script: Script = {
         host,
         steered: [],
@@ -46,15 +52,18 @@ function steerableEngine(withSteer = true) {
         done: ended.promise,
         interrupt() {
           script.interrupted++;
+          for (const refuse of held.splice(0)) refuse(new Error("The turn was interrupted before the message was sent."));
           ended.resolve();
         },
       };
       if (withSteer) {
         turn.steer = async (text) => {
+          if (script.holdSteers) return new Promise<void>((_, reject) => held.push(reject));
           if (script.failSteer) throw typeof script.failSteer === "string" ? new Error(script.failSteer) : script.failSteer;
           script.steered.push(text);
         };
         turn.followUp = async (text) => {
+          if (script.failFollowUp) throw typeof script.failFollowUp === "string" ? new Error(script.failFollowUp) : script.failFollowUp;
           script.followedUp.push(text);
         };
       }
@@ -66,12 +75,13 @@ function steerableEngine(withSteer = true) {
 }
 
 function Probe({ engine, id }: { engine: Engine; id: string }) {
-  latest = useChat(getStorage().getSession(id)!, engine, { notify: (message, level) => notices.push({ message, level }) });
+  latest = useChat(getStorage().getSession(id)!, engine, { notify: (message, level) => notices.push({ message, level }), restore: restore && ((text) => restore!(text)) });
   return <text>probe</text>;
 }
 
-async function open(engine: Engine) {
+async function open(engine: Engine, giveBack?: (text: string) => boolean) {
   notices = [];
+  restore = giveBack;
   const id = getStorage().createSession({ title: "t", cwd: "/tmp/x" }).id;
   screen = await testRender(<Probe engine={engine} id={id} />, { width: 40, height: 5 });
   await settle();
@@ -289,10 +299,92 @@ describe("typing during a turn (S4)", () => {
     latest.steer("/x");
     await settle();
 
-    expect(notices).toEqual([{ message: 'Extension command "/x" cannot be queued.', level: "warning" }]);
+    // Nowhere to put it back: the notice carries the whole text.
+    expect(notices).toEqual([{ message: 'Extension command "/x" cannot be queued. Your message was not sent: /x', level: "warning" }]);
     expect(latest.error).toBeNull();
     scripts[0]!.finish();
     await running;
+  });
+});
+
+// R1-002 / R3-001 / R4-002: a steer or follow-up the engine rejects (any error) puts the full text back; typed text is never silently lost.
+describe("a text the engine does not take is given back (S4)", () => {
+  const LONG = "please also check the auth module, the session store and the retry logic before you touch anything else in the repository";
+
+  test("a rejected steer goes back to the input whole, with a short reason", async () => {
+    const { engine, scripts } = steerableEngine();
+    const given: string[] = [];
+    await open(engine, (text) => (given.push(text), true));
+    const running = start("go");
+    await settle();
+    scripts[0]!.failSteer = 'Extension command "/x" cannot be queued.';
+
+    expect(latest.steer(`/x ${LONG}`)).toBe(true);
+    await settle();
+
+    expect(given).toEqual([`/x ${LONG}`]);
+    expect(notices).toEqual([{ message: 'Extension command "/x" cannot be queued. Your message is back in the input.', level: "warning" }]);
+    expect(latest.error).toBeNull();
+    scripts[0]!.finish();
+    await running;
+  });
+
+  test("any error counts, not only a closed turn, and a follow-up is given back too", async () => {
+    const { engine, scripts } = steerableEngine();
+    const given: string[] = [];
+    await open(engine, (text) => (given.push(text), true));
+    const running = start("go");
+    await settle();
+    scripts[0]!.failSteer = new TypeError("socket hang up");
+    scripts[0]!.failFollowUp = new TurnClosedError();
+
+    latest.steer(LONG);
+    latest.followUp(`${LONG} again`);
+    await settle();
+
+    expect(given).toEqual([LONG, `${LONG} again`]);
+    expect(notices.map((n) => n.message)).toEqual([
+      "socket hang up Your message is back in the input.",
+      "The turn is already over, so the message was not sent. Your message is back in the input.",
+    ]);
+    scripts[0]!.finish();
+    await running;
+  });
+
+  test("when nothing can take the text back, the notice carries all of it", async () => {
+    const { engine, scripts } = steerableEngine();
+    await open(engine, () => false);
+    const running = start("go");
+    await settle();
+    scripts[0]!.failSteer = new TurnClosedError();
+
+    latest.steer(LONG);
+    await settle();
+
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.message).toContain(LONG);
+    expect(notices[0]!.message).not.toContain("…");
+    scripts[0]!.finish();
+    await running;
+  });
+
+  test("a text given back by an interrupt (the engine refuses what it never sent) reaches the input too", async () => {
+    const { engine, scripts } = steerableEngine();
+    const given: string[] = [];
+    await open(engine, (text) => (given.push(text), true));
+    const running = start("go");
+    await settle();
+    scripts[0]!.holdSteers = true;
+
+    expect(latest.steer(LONG)).toBe(true);
+    await settle();
+    expect(given).toEqual([]);
+    act(() => latest.interrupt());
+    await running;
+    await settle();
+
+    expect(given).toEqual([LONG]);
+    expect(notices[0]!.message).toContain("interrupted");
   });
 });
 

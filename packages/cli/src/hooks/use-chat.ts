@@ -4,7 +4,7 @@ import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
-import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
+import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
 import { getStorage, type StoredSession } from "../lib/storage";
@@ -72,6 +72,11 @@ export type PendingRequest = PermissionRequest | QuestionRequest | SelectRequest
 export type ChatOptions = {
   /** Shows a message from the engine that needs no answer (a toast). */
   notify?: (message: string, level: NoticeLevel) => void;
+  /**
+   * Puts a text the engine did not take back into the input the user typed it in (merged with what is there). Returns false when
+   * nothing could take it, and the notice then carries the whole text.
+   */
+  restore?: (text: string) => boolean;
 };
 
 /** Cancels a request the user never answered. */
@@ -117,6 +122,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const pendingRequestsRef = useRef(new Set<PendingRequest>());
   const notifyRef = useRef(options.notify);
   notifyRef.current = options.notify;
+  const restoreRef = useRef(options.restore);
+  restoreRef.current = options.restore;
 
   const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
     messagesRef.current = update(messagesRef.current);
@@ -324,14 +331,17 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
 
   // Typing during a turn: only an engine whose turn takes it (and only until it is interrupted or has settled) gets the text.
   // Returns whether the text was handed over; the caller keeps a refused text where the user typed it. An engine that
-  // refuses afterwards (it settled in between) is reported with the text, so it is never lost silently.
+  // refuses afterwards (it settled in between, rejected the text, or the turn ended before it was sent) gets the text put back in
+  // the input, whatever the error was, and the reason is shown; typed text is never lost silently or cut.
+  // A text only reaches the engine's queue from here, so this is the one place a refusal has to be handled.
   const sendToTurn = useCallback((kind: "steer" | "followUp", text: string) => {
     const turn = turnRef.current;
     const send = kind === "steer" ? turn?.steer : turn?.followUp;
     if (!turn || !send || interruptedRef.current || inputClosedRef.current) return false;
     send.call(turn, text).catch((err: unknown) => {
-      const message = err instanceof TurnClosedError ? `${err.message} ("${text.length > 60 ? `${text.slice(0, 60)}…` : text}")` : err instanceof Error ? err.message : String(err);
-      notifyRef.current?.(message, "warning");
+      const reason = err instanceof Error ? err.message : String(err);
+      const restored = restoreRef.current?.(text) === true;
+      notifyRef.current?.(restored ? `${reason} Your message is back in the input.` : `${reason} Your message was not sent: ${text}`, "warning");
     });
     return true;
   }, []);
