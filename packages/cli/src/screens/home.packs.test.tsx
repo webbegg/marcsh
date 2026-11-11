@@ -215,6 +215,88 @@ describe("/agents installs packs from GitHub (S10)", () => {
     expect(listPacks()).toEqual([]);
   });
 
+  test("/agents install owner/repo, typed, installs after the preview instead of being ignored", async () => {
+    await openHome();
+    await type("/agents install acme/flows");
+    await enter();
+    await waitForFrame("Pack hooks and MCP servers are not run.");
+    expect(frame()).toContain("acme/flows @ ");
+    // Nothing is installed before the answer.
+    expect(listPacks()).toEqual([]);
+    await down();
+    await enter();
+    await waitForFrame("Installed acme/flows");
+    expect(listPacks().map((pack) => pack.id)).toEqual(["acme/flows"]);
+  });
+
+  test("/agents install owner/repo@ref, typed, previews it, and cancelling installs nothing", async () => {
+    await openHome();
+    await type("/agents install acme/flows@main");
+    await enter();
+    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await enter();
+    await waitForFrame("Install cancelled");
+    expect(listPacks()).toEqual([]);
+  });
+
+  test("/agents update and /agents remove, typed with a pack ID, reach their flows", async () => {
+    await openHome();
+    await installFixture();
+
+    await type("/agents update acme/flows");
+    await enter();
+    await waitForFrame("acme/flows is up to date");
+
+    await type("/agents remove acme/flows");
+    await enter();
+    await waitForFrame("Remove acme/flows");
+    // Cancel is selected first: a bare Enter removes nothing.
+    await enter();
+    await settle(100);
+    expect(listPacks()).toHaveLength(1);
+
+    await type("/agents remove acme/flows");
+    await enter();
+    await waitForFrame("Remove acme/flows");
+    await down();
+    await enter();
+    await waitForFrame("Removed acme/flows");
+    expect(listPacks()).toEqual([]);
+  });
+
+  test("/agents update with no ID opens the same picker as the row; plain /agents is the dialog as before", async () => {
+    await openHome();
+    await installFixture();
+
+    await type("/agents update");
+    await enter();
+    await waitForFrame("Search packs");
+    expect(frame()).toContain("acme/flows");
+    await escape();
+
+    await type("/agents");
+    await enter();
+    expect(frame()).toContain("Install from GitHub…");
+  });
+
+  test("bad arguments are an error toast with the usage line, and nothing is fetched", async () => {
+    await openHome();
+    for (const [args, message] of [
+      ["install", "Usage: /agents install"],
+      ["frobnicate acme/flows", "Usage: /agents install"],
+      ["install acme/flows extra", "Usage: /agents install"],
+      ["remove", "Usage: /agents install"],
+      ["install ../evil", "Cannot install"],
+      ["remove acme/flows", "acme/flows is not installed"],
+    ] as const) {
+      await type(`/agents ${args}`);
+      await enter();
+      await waitForFrame(message);
+    }
+    expect(listPacks()).toEqual([]);
+    expect(existsSync(join(process.env.MARCSH_PACKS_DIR!, ".staging"))).toBe(false);
+  });
+
   test("update says up to date; remove asks first, then the pack and its agent are gone", async () => {
     await openHome();
     await installFixture();

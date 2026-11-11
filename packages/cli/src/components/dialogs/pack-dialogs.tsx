@@ -6,7 +6,7 @@ import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
-import { installPack, listPacks, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
+import { installPack, listPacks, parsePackSpec, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
 
 // The `/agents` flows for packs (GitHub repos with agents, skills and commands): install, update, remove. Each step is a dialog
 // that replaces the one before it. Nothing is installed or swapped before the preview is accepted, and a dialog that is closed
@@ -166,6 +166,43 @@ async function runRemove(flow: Flow, pack: PackEntry) {
   } catch (error) {
     failure(flow, error);
   }
+}
+
+const USAGE = "Usage: /agents install <owner/repo[@ref]> | update [<owner/repo>] | remove <owner/repo>";
+
+/**
+ * `/agents install <owner/repo[@ref]>`, `/agents update [<owner/repo>]` and `/agents remove <owner/repo>`, typed instead of picked:
+ * the same flows the dialog's rows open (preview and consent included). Anything else is an error toast with the usage line.
+ */
+export function runPackCommand(args: string, flow: Flow): Promise<void> | void {
+  const [verb, operand, ...extra] = args.trim().split(/\s+/);
+  const usage = (why?: string) => failure(flow, why ? `${why} ${USAGE}` : USAGE);
+  if (extra.length > 0 || (verb !== "install" && verb !== "update" && verb !== "remove")) return usage();
+  if (verb === "install") {
+    if (!operand) return usage();
+    try {
+      parsePackSpec(operand);
+    } catch (error) {
+      return usage(error instanceof Error ? error.message : String(error));
+    }
+    return runInstall(flow, operand);
+  }
+  if (!operand) {
+    if (verb === "remove") return usage();
+    flow.dialog.open({ title: "Update a pack", children: <PackPickerDialogContent action="update" onChanged={flow.onChanged} /> });
+    return;
+  }
+  let id: string;
+  try {
+    const spec = parsePackSpec(operand);
+    if (spec.ref !== undefined) return usage(`${operand} names a ref; ${verb} takes owner/repo.`);
+    id = spec.id;
+  } catch (error) {
+    return usage(error instanceof Error ? error.message : String(error));
+  }
+  const pack = listPacks().find((item) => item.id === id);
+  if (!pack) return failure(flow, `${id} is not installed`);
+  return verb === "update" ? runUpdate(flow, pack) : runRemove(flow, pack);
 }
 
 function TextField({ placeholder, onSubmit }: { placeholder: string; onSubmit: (value: string) => void }) {

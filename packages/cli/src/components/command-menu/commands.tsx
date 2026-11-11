@@ -13,6 +13,7 @@ import {
   ThemeDialogContent,
   TrustDialogContent,
 } from "../dialogs";
+import { runPackCommand } from "../dialogs/pack-dialogs";
 import type { Command, CommandContext } from "./types";
 
 const failureText = (error: unknown) => redactSecrets(error instanceof Error ? error.message : String(error));
@@ -94,6 +95,8 @@ export const COMMANDS: Command[] = [
     description: "Switch agents",
     value: "/agents",
     action: (ctx) => {
+      // `/agents install|update|remove …` goes straight to the pack flow the dialog's rows open.
+      if (ctx.args) return runPackCommand(ctx.args, { dialog: ctx.dialog, toast: ctx.toast, onChanged: () => void ctx.reloadAgents() });
       ctx.dialog.open({
         title: "Select Agent",
         // Read the files again: an agent added since start is listed without a restart.

@@ -167,7 +167,7 @@ describe("loadAgents with packs", () => {
         return { packs: [] };
       }
     })();
-    lock.packs.push({ id, url: "u", commit: "c", installedAt: "t" });
+    lock.packs.push({ id, url: `https://github.com/${id}.git`, commit: "c", installedAt: "t" });
     writeFileSync(lockFile, JSON.stringify(lock));
   };
 
@@ -221,6 +221,16 @@ describe("loadAgents with packs", () => {
     expect(agent.name).toBe("Evil]0;pwn");
     expect(agent.description).toBe("d[2J");
     expect(agent.model).toBe("m[31m");
+  });
+
+  test("bidi controls and zero-width characters in a pack agent's text are removed [A6]", () => {
+    // U+202E, U+200B, U+2066, U+2069, U+FEFF, U+200F
+    const [rlo, zwsp, lri, pdi, bom, rlm] = [0x202e, 0x200b, 0x2066, 0x2069, 0xfeff, 0x200f].map((code) => String.fromCharCode(code));
+    install("acme/flows", { "a.md": `---\nname: "Re${rlo}view${zwsp}"\ndescription: "d${lri}x${pdi}${bom}"\nmodel: "m${rlm}o"\n---\nP` });
+    const agent = loadAgents(dir, packs).find((item) => item.pack === "acme/flows")!;
+    expect(agent.name).toBe("Review");
+    expect(agent.description).toBe("dx");
+    expect(agent.model).toBe("mo");
   });
 
   test("the same name in two packs is labelled with its pack", () => {

@@ -402,7 +402,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   }, [syncMentionMenu]);
 
   const handleCommand = useCallback((
-    command: Command | undefined
+    command: Command | undefined,
+    args = "",
   ) => {
     const textarea = textareaRef.current;
     if (!textarea || !command) return;
@@ -411,6 +412,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     if (command.action) {
       command.action({
+        args,
         exit: () => void quitApp(renderer),
         dialog,
         toast,
@@ -452,7 +454,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     // marcsh's own commands win; any other /name (with or without arguments) goes to Claude Code verbatim
     const ownNames = COMMANDS.map((command) => command.name);
     if (slashInputKind(text, ownNames) === "marcsh") {
-      handleCommand(COMMANDS.find((command) => command.value === text.split(/\s/)[0]));
+      const name = text.split(/\s/)[0]!;
+      handleCommand(COMMANDS.find((command) => command.value === name), text.slice(name.length).trim());
       return;
     }
 

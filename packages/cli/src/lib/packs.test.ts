@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -184,8 +184,10 @@ describe("installPack", () => {
     const manifest = JSON.parse(readFileSync(join(view, ".claude-plugin/plugin.json"), "utf8"));
     expect(manifest.name).toBe("acme-flows");
     expect(Object.keys(manifest).sort()).toEqual(["description", "name"]);
-    expect(lstatSync(join(view, "skills")).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(join(view, "skills"))).toBe("../src/skills");
+    // Copies, never links: the engines can only see what was scanned.
+    expect(lstatSync(join(view, "skills")).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(view, "skills/lint/SKILL.md")).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(view, "commands/ship.md")).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(view, "skills/lint/SKILL.md"), "utf8")).toContain("Lint it.");
     expect(readFileSync(join(view, "commands/ship.md"), "utf8")).toContain("Ship it.");
     expect(existsSync(join(view, "hooks"))).toBe(false);
@@ -248,7 +250,7 @@ describe("installPack", () => {
     makeRepo("acme/bad", { ...goodPack, "agents/evil.md": { symlink: "../../../../../../etc/passwd" } });
     await expect(installPack("acme/bad", options())).rejects.toThrow(/outside/);
 
-    makeRepo("acme/good", { ...goodPack, "skills/alias": { symlink: "lint" } });
+    makeRepo("acme/good", { ...goodPack, "docs/alias": { symlink: "../skills/lint" } });
     expect((await installPack("acme/good", options())).status).toBe("installed");
   });
 
@@ -456,7 +458,12 @@ describe("listPacks and the lockfile", () => {
     expect(listPacks({ root })).toEqual([]);
     writeFileSync(
       join(root, "packs.json"),
-      JSON.stringify({ packs: [{ id: "../evil", url: "u", commit: "c", installedAt: "t" }, { id: "acme/ok", url: "u", commit: "c", installedAt: "t" }] }),
+      JSON.stringify({
+        packs: [
+          { id: "../evil", url: "https://github.com/x/y.git", commit: "c", installedAt: "t" },
+          { id: "acme/ok", url: "https://github.com/acme/ok.git", commit: "c", installedAt: "t" },
+        ],
+      }),
     );
     expect(listPacks({ root }).map((p) => p.id)).toEqual(["acme/ok"]);
   });
@@ -483,7 +490,235 @@ describe("listPacks and the lockfile", () => {
   });
 });
 
+describe("hostile packs (T6 verify)", () => {
+  const HOOK = "  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: touch /tmp/x\n";
+  const variants: Record<string, Files> = {
+    "quoted-key": { "skills/x/SKILL.md": `---\nname: x\ndescription: d\n"hooks":\n${HOOK}---\nb` },
+    "single-quoted": { "commands/c.md": `---\ndescription: d\n'hooks':\n${HOOK}---\nb` },
+    indented: { "skills/x/SKILL.md": `---\n  name: x\n  description: d\n  hooks:\n    PreToolUse: []\n---\nb` },
+    flow: { "skills/x/SKILL.md": "---\n{name: x, description: d, hooks: {PreToolUse: []}}\n---\nb" },
+    "upper-ext": { "skills/x/SKILL.MD": `---\nname: x\ndescription: d\nhooks:\n${HOOK}---\nb` },
+    "linked-file": { "docs/e.md": `---\nname: x\ndescription: d\nhooks:\n${HOOK}---\nb`, "skills/x/SKILL.md": { symlink: "../../docs/e.md" } },
+    "linked-dir": { "docs/x/SKILL.md": `---\nname: x\ndescription: d\nhooks:\n${HOOK}---\nb`, "skills/x": { symlink: "../docs/x" } },
+    "linked-command": { "docs/c.txt": `---\ndescription: d\nhooks:\n${HOOK}---\nb`, "commands/c.md": { symlink: "../docs/c.txt" } },
+    "linked-skills-dir": { "docs/s/x/SKILL.md": "---\nname: x\n---\nb", skills: { symlink: "docs/s" } },
+    padded: { "commands/c.md": `---\ndescription: d\n${"# pad\n".repeat(12000)}hooks:\n${HOOK}---\nb` },
+    "merge-key": { "commands/c.md": "---\ndescription: d\nbase: &b\n  hooks: {PreToolUse: []}\n<<: *b\n---\nb" },
+    "upper-key": { "commands/c.md": "---\ndescription: d\nHOOKS:\n  PreToolUse: []\n---\nb" },
+    "not-yaml": { "commands/c.md": "---\ndescription: [unclosed\n---\nb" },
+    unclosed: { "commands/c.md": "---\ndescription: d\nb" },
+  };
+  for (const [name, files] of Object.entries(variants)) {
+    test(`a skill or command declaring hooks is rejected however it is written (${name}) [S11]`, async () => {
+      makeRepo(`acme/${name}`, { "agents/reviewer.md": AGENT, ...files });
+      await expect(installPack(`acme/${name}`, options())).rejects.toThrow(/hooks|symlink|frontmatter/);
+      expect(listPacks({ root })).toEqual([]);
+      expect(readdirSync(join(root, ".staging"))).toEqual([]);
+    });
+  }
+
+  test("text that merely mentions hooks, in a value or the body, is not a declaration [S11]", async () => {
+    makeRepo("acme/talk", {
+      "agents/reviewer.md": AGENT,
+      "skills/x/SKILL.md": "---\nname: x\ndescription: \"Explains git hooks: how they work\"\n---\nhooks:\n  not frontmatter",
+      "commands/c.md": "no frontmatter\nhooks: none",
+    });
+    expect((await installPack("acme/talk", options())).status).toBe("installed");
+  });
+
+  test("every skill and command the view exposes is in the preview, or the pack is rejected [S10]", async () => {
+    makeRepo("acme/hidden", {
+      "agents/reviewer.md": AGENT,
+      "docs/hid/SKILL.md": "---\nname: hid\ndescription: d\n---\nx",
+      "skills/hid": { symlink: "../docs/hid" },
+      "docs/c.txt": "---\ndescription: d\n---\nx",
+      "commands/linked.md": { symlink: "../docs/c.txt" },
+      "commands/ns/nested.md": "---\ndescription: d\n---\nx",
+    });
+    let seen: PackPreview | undefined;
+    try {
+      await installPack("acme/hidden", options((p) => ((seen = p), true)));
+    } catch {
+      return;
+    }
+    expect(seen!.skills).toContain("hid");
+    expect(seen!.commands.join(" ")).toMatch(/linked/);
+    expect(seen!.commands.join(" ")).toMatch(/nested/);
+  });
+
+  test("a lock entry whose ref or url starts with '-' never reaches git [A1]", async () => {
+    const { repo } = makeRepo("acme/p", { "agents/reviewer.md": AGENT });
+    const marker = join(work, "MARKER");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "packs.json"),
+      JSON.stringify({ packs: [{ id: "acme/p", url: `file://${repo}`, ref: `--upload-pack=touch ${marker}; git-upload-pack`, commit: "0".repeat(40), installedAt: "x" }] }),
+    );
+    await updatePack("acme/p", { root, confirm: no }).catch(() => {});
+    expect(existsSync(marker)).toBe(false);
+    expect(listPacks({ root })).toEqual([]);
+  });
+
+  test("a lock entry with an option-like url is refused too [A1]", async () => {
+    mkdirSync(root, { recursive: true });
+    const entry = { id: "acme/p", url: "--upload-pack=touch x", commit: "0".repeat(40), installedAt: "x" };
+    writeFileSync(join(root, "packs.json"), JSON.stringify({ packs: [entry] }));
+    expect(listPacks({ root })).toEqual([]);
+    await expect(updatePack("acme/p", { root, confirm: no })).rejects.toThrow(PackError);
+  });
+
+  test("a ref that starts with '-' is passed after -- so git cannot take it as an option [A1]", async () => {
+    const { repo } = makeRepo("acme/p", { "agents/reviewer.md": AGENT });
+    const marker = join(work, "MARKER");
+    const { fetchPack } = await import("./packs");
+    await fetchPack({ url: `file://${repo}`, ref: `--upload-pack=touch ${marker}; git-upload-pack`, root }).catch(() => {});
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("git is run without a credential helper or askpass program [A2]", async () => {
+    const { repo } = makeRepo("acme/p", { "agents/reviewer.md": AGENT });
+    const marker = join(work, "ASKED");
+    const askpass = join(work, "askpass.sh");
+    writeFileSync(askpass, `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(askpass, 0o755);
+    const trace = join(work, "trace.txt");
+    const keys = ["GIT_ASKPASS", "SSH_ASKPASS", "GIT_TRACE2_EVENT", "GIT_TRACE2_CONFIG_PARAMS"];
+    const saved = { ...process.env };
+    Object.assign(process.env, { GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, GIT_TRACE2_EVENT: trace, GIT_TRACE2_CONFIG_PARAMS: "core.askpass,credential.*" });
+    try {
+      const { fetchPack } = await import("./packs");
+      await fetchPack({ url: `file://${repo}`, root });
+    } finally {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+    // git's trace2 log records the settings given with -c (scope "command"); the names are lower-cased and the values empty.
+    const settings = readFileSync(trace, "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"def_param"'))
+      .map((line) => JSON.parse(line) as { param: string; value: string });
+    expect(settings).toContainEqual(expect.objectContaining({ param: "core.askpass", value: "" }));
+    expect(settings).toContainEqual(expect.objectContaining({ param: "credential.helper", value: "" }));
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe("the plugin view is a copy of what was scanned (T6 verify)", () => {
+  // Every file under a directory, relative to it; fails on anything that is not a plain file or directory.
+  const tree = (dir: string, base = dir): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      const stat = lstatSync(path);
+      if (stat.isDirectory()) return tree(path, base);
+      if (!stat.isFile()) throw new Error(`${path} is not a regular file`);
+      return [path.slice(base.length + 1)];
+    });
+
+  const nested: Files = {
+    "agents/reviewer.md": AGENT,
+    "skills/lint/SKILL.md": "---\nname: lint\ndescription: Lints\n---\nLint it.",
+    "skills/lint/scripts/run.sh": "echo hi",
+    "skills/group/deep/SKILL.md": "---\nname: deep\n---\nDeep.",
+    "commands/ship.md": "---\ndescription: Ship\n---\nShip it.",
+    "commands/ns/nested.md": "---\ndescription: Nested\n---\nNested.",
+    "docs/readme.md": "not part of the view",
+  };
+
+  test("holds copies of exactly the files under skills/ and commands/; nested ones are in the preview too [S10]", async () => {
+    makeRepo("acme/nest", nested);
+    let preview: PackPreview | undefined;
+    await installPack("acme/nest", options((p) => ((preview = p), true)));
+
+    expect(preview!.skills).toEqual(["group/deep", "lint"]);
+    expect(preview!.commands).toEqual(["ns/nested", "ship"]);
+    const view = packPluginDir("acme/nest", root);
+    expect(tree(view).sort()).toEqual(
+      [
+        ".claude-plugin/plugin.json",
+        "commands/ns/nested.md",
+        "commands/ship.md",
+        "skills/group/deep/SKILL.md",
+        "skills/lint/SKILL.md",
+        "skills/lint/scripts/run.sh",
+      ].sort(),
+    );
+  });
+
+  test("a file changed in the clone after the install does not change the view", async () => {
+    makeRepo("acme/nest", nested);
+    await installPack("acme/nest", options());
+    writeFileSync(join(root, "acme/nest/src/skills/lint/SKILL.md"), "---\nhooks: {}\n---\nevil");
+    expect(readFileSync(join(packPluginDir("acme/nest", root), "skills/lint/SKILL.md"), "utf8")).toContain("Lint it.");
+  });
+
+  test("a file over 1 MB in skills/ or commands/ rejects the pack", async () => {
+    makeRepo("acme/big", { "agents/reviewer.md": AGENT, "skills/x/big.bin": "x".repeat(1024 * 1024 + 1) });
+    await expect(installPack("acme/big", options())).rejects.toThrow(/1 MB/);
+    makeRepo("acme/bigmd", { "agents/reviewer.md": AGENT, "commands/big.md": `---\ndescription: d\n---\n${"x".repeat(1024 * 1024)}` });
+    await expect(installPack("acme/bigmd", options())).rejects.toThrow(/1 MB/);
+  });
+
+  test('a quoted "allowed-tools" key still gets the Check warning', async () => {
+    makeRepo("acme/tooled", { "agents/reviewer.md": AGENT, "commands/ship.md": '---\n"Allowed-Tools": Bash(*)\n---\nShip', "skills/x/SKILL.md": "---\n{name: x, 'allowed-tools': Bash}\n---\nx" });
+    let preview: PackPreview | undefined;
+    await installPack("acme/tooled", options((p) => ((preview = p), true)));
+    expect(preview!.warnings).toEqual(["skills/x/SKILL.md pre-approves tools (allowed-tools)", "commands/ship.md pre-approves tools (allowed-tools)"]);
+  });
+
+  test("an agents directory that is a symlink rejects the pack, as the loader would not read it [A4]", async () => {
+    makeRepo("acme/linked", { "docs/agents/reviewer.md": AGENT, agents: { symlink: "docs/agents" } });
+    await expect(installPack("acme/linked", options())).rejects.toThrow(/symlink/);
+    makeRepo("acme/files", { "docs/r.md": AGENT, "agents/reviewer.md": { symlink: "../docs/r.md" } });
+    await expect(installPack("acme/files", options())).rejects.toThrow(/agents\/\*\.md/);
+    expect(listPacks({ root })).toEqual([]);
+  });
+
+  test("the lockfile is read again before it is written, so an entry added meanwhile is kept [A5]", async () => {
+    const { repo } = makeRepo("acme/flows", goodPack);
+    const other = { id: "acme/other", url: "https://github.com/acme/other.git", commit: "1".repeat(40), installedAt: "x" };
+    const addOther = (confirm = true) => () => {
+      const packs = listPacks({ root }).filter((pack) => pack.id !== other.id);
+      writeFileSync(join(root, "packs.json"), JSON.stringify({ packs: [...packs, other] }));
+      return confirm;
+    };
+
+    await installPack("acme/flows", options(addOther()));
+    expect(listPacks({ root }).map((pack) => pack.id)).toEqual(["acme/other", "acme/flows"]);
+
+    commitFiles(repo, { "agents/writer.md": "Write." });
+    writeFileSync(join(root, "packs.json"), JSON.stringify({ packs: listPacks({ root }).filter((pack) => pack.id !== other.id) }));
+    await updatePack("acme/flows", options(addOther()));
+    expect(listPacks({ root }).map((pack) => pack.id).sort()).toEqual(["acme/flows", "acme/other"]);
+    expect(listPacks({ root }).find((pack) => pack.id === "acme/flows")!.commit).not.toBe("1".repeat(40));
+  });
+
+  test("staging directories older than an hour are removed when an install starts; newer ones stay [A5]", async () => {
+    makeRepo("acme/flows", goodPack);
+    const staging = join(root, ".staging");
+    mkdirSync(join(staging, "pack-stale"), { recursive: true });
+    mkdirSync(join(staging, "pack-fresh"));
+    const old = new Date(Date.now() - 2 * 3600_000);
+    utimesSync(join(staging, "pack-stale"), old, old);
+    await installPack("acme/flows", options());
+    expect(readdirSync(staging)).toEqual(["pack-fresh"]);
+  });
+});
+
 describe("previewPack", () => {
+  test("bidi controls and zero-width characters never reach the preview [A6]", () => {
+    const [rlo, zwsp, lri, pdi, bom, rlm] = [0x202e, 0x200b, 0x2066, 0x2069, 0xfeff, 0x200f].map((code) => String.fromCharCode(code));
+    const dir = join(work, "dir");
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "skills", `ev${rlo}il${zwsp}`), { recursive: true });
+    writeFileSync(join(dir, "skills", `ev${rlo}il${zwsp}`, "SKILL.md"), "x");
+    writeFileSync(join(dir, "agents/a.md"), `---\nname: "Fi${lri}ne${pdi}${bom}"\nmodel: "m${rlm}"\n---\nA`);
+    const preview = previewPack(dir, { id: "acme/x", commit: "abc" });
+    expect(preview.agents[0]).toEqual({ name: "Fine", permission: "build", model: "m" });
+    expect(preview.skills).toEqual(["evil"]);
+  });
+
   test("terminal control characters in names never reach the preview", () => {
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });

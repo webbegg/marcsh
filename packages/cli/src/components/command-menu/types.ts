@@ -5,6 +5,8 @@ import type { EngineId } from "../../lib/engine";
 import type { ToastContextValue } from "../../providers/toast";
 
 export type CommandContext = {
+  /** What was typed after the command's name (`/agents install acme/flows` → `install acme/flows`), trimmed; empty when picked from the menu. */
+  args: string;
   exit: () => void;
   dialog: DialogContextValue;
   toast: ToastContextValue;
