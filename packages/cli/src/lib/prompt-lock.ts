@@ -57,9 +57,10 @@ export function attachInput(owner: object, hasDraft: boolean): () => void {
 }
 
 /**
- * The text of a bar that is going away, for the bar that comes next. The new-session screen stays mounted a few ms after it
- * navigates, and keys typed in that gap land in its bar: it hands its text over when it unmounts, so none is lost. An empty
- * text clears an earlier hand-off.
+ * The unsent text of a bar that is going away (any bar: home, new-session, session), for the bar that comes next. A screen
+ * stays mounted a few ms after it navigates, and keys typed in that gap land in its bar: it hands its text over when it unmounts,
+ * so none is lost. A bar that sent its text emptied its input first, so only what was typed after is handed over. An empty text
+ * clears an earlier hand-off.
  */
 export function handOffDraft(owner: object, text: string) {
   stateOf(owner).handedOff = text;
@@ -67,7 +68,8 @@ export function handOffDraft(owner: object, text: string) {
 
 /**
  * What the previous bar handed off, once: the next bar takes it when it mounts, appended to the `carried` draft it already
- * has (unless that already starts the hand-off). "" when there is none.
+ * has (unless that already starts the hand-off); the bar puts the keys its textarea already holds after the result. Just the
+ * `carried` draft when there is no hand-off.
  */
 export function takeHandOffDraft(owner: object, carried = ""): string {
   const state = stateOf(owner);

@@ -92,24 +92,25 @@ function gated(content: () => Parameters<typeof fauxAssistantMessage>[0], option
 }
 
 // A real pi engine on pi's faux provider (no network).
-async function openPiSession(responses: FauxResponseStep[]) {
-  const faux = fauxProvider({ models: [{ id: "faux-1" }], tokensPerSecond: 3000, tokenSize: { min: 1, max: 1 } });
+async function openPiSession(responses: FauxResponseStep[], options: { width?: number; modelId?: string } = {}) {
+  const modelId = options.modelId ?? "faux-1";
+  const faux = fauxProvider({ models: [{ id: modelId }], tokensPerSecond: 3000, tokenSize: { min: 1, max: 1 } });
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
-  const model = modelRuntime.getModel("faux", "faux-1")!;
+  const model = modelRuntime.getModel("faux", modelId)!;
   modelRuntime.getAvailable = async () => [model];
   faux.setResponses(responses);
   engines.set("pi", createPiEngine({ agentDir, modelRuntime }));
-  return { faux, session: await openScreen() };
+  return { faux, session: await openScreen(options.width) };
 }
 
-async function openScreen() {
+async function openScreen(width = 110) {
   const session = getStorage().createSession({ title: "pi chat", cwd, engine: "pi" });
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
     { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "opus" } } }] },
   );
-  screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 40 });
+  screen = await testRender(<RouterProvider router={router} />, { width, height: 40 });
   await settle();
   return session;
 }
@@ -131,6 +132,25 @@ describe("typing during a pi turn (S4)", () => {
 
     await type("keep going");
     expect(frame()).toContain("keep going");
+    first.release();
+  }, 30000);
+
+  // At 80 columns the line `Build › faux/fake-model-12345 · pi v1.5.0 · enter steers · alt+enter queues` wrapped: the hint drops what does not fit, and the engine stays whole.
+  test("at 80 columns the status line stays on one row during a turn, engine label intact", async () => {
+    const first = gated(() => [fauxText("first answer")]);
+    await openPiSession([first.step], { width: 80, modelId: "fake-model-12345" });
+    await first.started;
+    await settle();
+
+    const rows = screen!.captureCharFrame().split("\n");
+    // The input's status line (the transcript shows a `Build › model` label too).
+    const status = rows.findLastIndex((row) => row.includes("Build ›"));
+    expect(status).toBeGreaterThanOrEqual(0);
+    expect(rows[status]).toContain("faux/fake-model-12345 · pi v1.5.0");
+    expect(rows[status]).toMatch(/steer/);
+    expect(rows[status]).toMatch(/queue/);
+    // Nothing of the line spilled onto the row below it.
+    expect(rows[status + 1]).not.toMatch(/queue|steer/);
     first.release();
   }, 30000);
 
