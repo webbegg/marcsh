@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
@@ -42,16 +43,17 @@ export function agentsDir() {
   return process.env.MARCSH_AGENTS_DIR?.trim() || join(homedir(), ".marcsh", "agents");
 }
 
-type Frontmatter = { fields: Map<string, string | null>; body: string };
+type Frontmatter = { fields: Map<string, string | null>; body: string; unclosed: boolean };
 
 // A small reader for flat frontmatter: `key: value` lines, quoted values, and `|`/`>` blocks. An indented block under a key
 // is a nested map or list, which marcsh never applies, so it is recorded as null.
 function readFrontmatter(text: string): Frontmatter {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const fields = new Map<string, string | null>();
-  if (lines[0]?.trim() !== "---") return { fields, body: text };
+  if (lines[0]?.trim() !== "---") return { fields, body: text, unclosed: false };
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
-  if (end < 0) return { fields, body: text };
+  // An opening line with no closing one: the whole file stays the prompt, and the caller reports it.
+  if (end < 0) return { fields, body: text, unclosed: true };
 
   let key: string | undefined;
   let block: { style: string; lines: string[] } | undefined;
@@ -73,19 +75,23 @@ function readFrontmatter(text: string): Frontmatter {
     }
   }
   closeBlock();
-  return { fields, body: lines.slice(end + 1).join("\n") };
+  return { fields, body: lines.slice(end + 1).join("\n"), unclosed: false };
 }
 
 const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model"]);
 
 function slug(text: string) {
-  return text.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return text.toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
 }
+
+/** The ID part of an agent file: its slug, else (a name with no letters or digits) a short hash of the file name, which is stable. */
+const idPart = (stem: string, file: string) => slug(stem) || createHash("sha1").update(file).digest("hex").slice(0, 8);
 
 /** Parses one agent file; null when it is a subagent (not selectable). */
 export function parseAgentFile(text: string, { pack, file }: { pack: string; file: string }): Agent | null {
-  const { fields, body } = readFrontmatter(text);
+  const { fields, body, unclosed } = readFrontmatter(text);
   const ignored = [...fields.keys()].filter((key) => !KNOWN_FIELDS.has(key));
+  if (unclosed) ignored.push("frontmatter");
 
   const kind = fields.get("mode");
   if (kind === "subagent") return null;
@@ -98,7 +104,7 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
   const field = (key: string) => fields.get(key)?.trim() || undefined;
   const prompt = body.trim();
   return {
-    id: `${pack}/${slug(stem)}`,
+    id: `${pack}/${idPart(stem, file)}`,
     name: field("name") ?? stem,
     description: field("description"),
     mode: permission === "read-only" ? Mode.PLAN : Mode.BUILD,
@@ -161,7 +167,14 @@ export function loadAgents(dir = agentsDir(), packsDir = packsRoot()): Agent[] {
       const pluginDir = packPluginDir(pack.id, packsDir);
       return readAgentDir(agentsPath, pack.id, { untrusted: true }).map((agent) => ({ ...agent, pluginDir }));
     });
-  return [...BUILTIN_AGENTS, ...user, ...packs];
+  // Two files can slug to the same ID ("My Agent.md", "my-agent.md"), which would trap Tab and repeat a key. Files are sorted, so the
+  // first one keeps the ID.
+  const taken = new Set<string>();
+  return [...BUILTIN_AGENTS, ...user, ...packs].filter((agent) => {
+    if (taken.has(agent.id)) return false;
+    taken.add(agent.id);
+    return true;
+  });
 }
 
 /** The agent with this ID, else Build. */
@@ -184,10 +197,13 @@ export function agentLabel(agent: Agent, agents: readonly Agent[]): string {
 }
 
 const PI_MODEL_REF = /^[^/\s]+\/\S+$/;
+// Claude Code's model aliases, with the optional `[1m]`-style suffix.
+const CLAUDE_ALIAS = /^(?:default|opus|sonnet|haiku|opusplan)(?:\[[^\]\s/]*\])?$/i;
 
-/** Whether `engineId` can use the agent's model: pi takes "provider/id", Claude takes its own names. */
+/** Whether `engineId` can use the agent's model: pi takes "provider/id", Claude takes `claude-*` names and its aliases. */
 export function agentModelFits(model: string, engineId: string) {
-  return engineId === "pi" ? PI_MODEL_REF.test(model) : !model.includes("/");
+  if (engineId === "pi") return PI_MODEL_REF.test(model);
+  return !model.includes("/") && (/^claude/i.test(model) || CLAUDE_ALIAS.test(model));
 }
 
 /** One line per part of the agent that the engine will not apply; shown when the agent is selected. */

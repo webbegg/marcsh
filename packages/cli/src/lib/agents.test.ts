@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   BUILTIN_AGENTS,
   agentLabel,
+  agentModelFits,
   agentWarnings,
   agentsDir,
   findAgent,
@@ -94,6 +95,23 @@ describe("parseAgentFile", () => {
     expect(parseAgentFile("Body", { pack: "user", file: "My Agent.md" })?.id).toBe("user/my-agent");
   });
 
+  test("the ID keeps Unicode letters and digits, and falls back to a stable hash when nothing is left", () => {
+    const japanese = parseAgentFile("Body", { pack: "user", file: "日本語.md" });
+    expect(japanese?.id).toBe("user/日本語");
+    const symbols = parseAgentFile("Body", { pack: "user", file: "★★.md" });
+    expect(symbols?.id).toMatch(/^user\/[0-9a-f]{8}$/);
+    expect(parseAgentFile("Other", { pack: "user", file: "★★.md" })?.id).toBe(symbols!.id);
+    expect(parseAgentFile("Other", { pack: "user", file: "☆☆.md" })?.id).not.toBe(symbols!.id);
+  });
+
+  test("a frontmatter that is never closed is reported as ignored and the file still loads as Build [R3-002]", () => {
+    const agent = parseAgentFile("---\nname: Open\npermission: read-only\nBody without a closing line", { pack: "user", file: "open.md" });
+    expect(agent?.ignored).toEqual(["frontmatter"]);
+    expect(agent?.mode).toBe(Mode.BUILD);
+    expect(agent?.name).toBe("open");
+    expect(agentWarnings(agent!, "claude")).toEqual(["open: ignored frontmatter"]);
+  });
+
   test("CRLF files parse the same", () => {
     const agent = parseAgentFile("---\r\nname: Win\r\npermission: read-only\r\n---\r\nBody\r\n", { pack: "user", file: "w.md" });
     expect(agent?.name).toBe("Win");
@@ -116,6 +134,30 @@ describe("loadAgents", () => {
     writeFileSync(join(dir, "notes.txt"), "not an agent");
     mkdirSync(join(dir, "nested.md"));
     expect(loadAgents(dir).map((agent) => agent.id)).toEqual(["build", "plan", "user/a", "user/b"]);
+  });
+
+  test("a later file whose ID is already taken is skipped, so Tab reaches every agent [R3-001]", () => {
+    writeFileSync(join(dir, "My Agent.md"), "---\nname: First\n---\nA");
+    writeFileSync(join(dir, "my-agent.md"), "---\nname: Second\n---\nB");
+    writeFileSync(join(dir, "zeta.md"), "---\nname: Zeta\n---\nZ");
+    const agents = loadAgents(dir);
+    const ids = agents.map((agent) => agent.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(agents.filter((agent) => agent.id === "user/my-agent").map((agent) => agent.name)).toEqual(["First"]);
+
+    let current = "build";
+    const visited: string[] = [];
+    for (let step = 0; step < agents.length; step++) {
+      current = nextAgent(agents, current).id;
+      visited.push(current);
+    }
+    expect(visited).toContain("user/zeta");
+    expect(visited.at(-1)).toBe("build");
+  });
+
+  test("a file with a non-ASCII name gets a usable ID [R3-001]", () => {
+    writeFileSync(join(dir, "日本語.md"), "---\nname: Nihongo\n---\nN");
+    expect(loadAgents(dir).map((agent) => agent.id)).toEqual(["build", "plan", "user/日本語"]);
   });
 
   test("a missing directory gives only the built-ins", () => {
@@ -233,6 +275,20 @@ describe("loadAgents with packs", () => {
     expect(agent.model).toBe("mo");
   });
 
+  test("every Unicode format character is removed from a pack agent's name, so Plan cannot be impersonated [R1-002]", () => {
+    // U+2060 word joiner, U+00AD soft hyphen, U+061C Arabic letter mark, U+E0041 tag letter A
+    const [wj, shy, alm, tag] = [0x2060, 0x00ad, 0x061c, 0xe0041].map((code) => String.fromCodePoint(code));
+    install("acme/flows", {
+      "a.md": `---\nname: "Plan${wj}"\ndescription: "d${shy}x${alm}${tag}"\nmodel: "m${tag}o"\n---\nP`,
+    });
+    const agents = loadAgents(dir, packs);
+    const agent = agents.find((item) => item.pack === "acme/flows")!;
+    expect(agent.name).toBe("Plan");
+    expect(agent.description).toBe("dx");
+    expect(agent.model).toBe("mo");
+    expect(agentLabel(agent, agents)).toBe("acme/flows/Plan");
+  });
+
   test("the same name in two packs is labelled with its pack", () => {
     install("acme/flows", { "r.md": "---\nname: Review\n---\nA" });
     install("zed/flows", { "r.md": "---\nname: Review\n---\nB" });
@@ -281,6 +337,24 @@ describe("agent list helpers", () => {
     expect(agentLabel(other, agents)).toBe("acme/review");
     expect(agentLabel(solo, agents)).toBe("Solo");
     expect(agentLabel(agents[agents.length - 1]!, agents)).toBe("user/Build");
+  });
+});
+
+describe("agentModelFits on Claude [R3-003]", () => {
+  test("only Claude names and Claude Code aliases fit", () => {
+    for (const model of ["opus", "haiku", "sonnet", "default", "opusplan", "Opus", "claude-sonnet-5-5", "Claude-Opus-5-5", "sonnet[1m]", "opus[1m]"]) {
+      expect(agentModelFits(model, "claude")).toBe(true);
+    }
+    for (const model of ["gpt-4o", "gemini-2.5-pro", "openai/gpt-5", "anthropic/claude-sonnet-5-5", "sonnets", "mysonnet"]) {
+      expect(agentModelFits(model, "claude")).toBe(false);
+    }
+  });
+
+  test("a foreign model warns on Claude and a Claude one does not", () => {
+    const make = (model: string) => parseAgentFile(`---\nname: M\nmodel: ${model}\n---\nP`, { pack: "user", file: "m.md" })!;
+    expect(agentWarnings(make("gpt-4o"), "claude")).toEqual(['M: model "gpt-4o" is ignored on claude; the session model is used']);
+    expect(agentWarnings(make("gemini-2.5-pro"), "claude")).toEqual(['M: model "gemini-2.5-pro" is ignored on claude; the session model is used']);
+    expect(agentWarnings(make("sonnet[1m]"), "claude")).toEqual([]);
   });
 });
 

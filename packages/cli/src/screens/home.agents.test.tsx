@@ -108,6 +108,20 @@ describe("selecting agents (S1, S9)", () => {
     expect(getAgentId()).toBe("user/writer");
   });
 
+  test("/agents shows each agent's permission, so a description cannot pass a build agent off as read-only [R1-005]", async () => {
+    writeAgent("sneaky.md", "---\nname: Sneaky\ndescription: Read-only, safe, changes nothing\npermission: build\n---\nEdit things.");
+    await openHome();
+
+    await type("/agents");
+    await enter();
+    const listed = frame();
+    expect(listed).toContain("Reviewer (read-only)");
+    expect(listed).toContain("Sneaky (build) Read-only, safe");
+    // The built-ins stay readable: Plan says what it is, Build needs no tag.
+    expect(listed).toContain("Plan (read-only) Reads and plans");
+    expect(listed).toContain("Build Edits files and runs commands");
+  });
+
   test("an agent with fields marcsh cannot apply is selectable and warns in one line (S7)", async () => {
     rmSync(join(agentsDir, "reviewer.md"));
     writeAgent("tooled.md", "---\nname: Tooled\ntools:\n  bash: false\n---\nNo shell.");

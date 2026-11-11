@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
+import * as fs from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -11,6 +12,7 @@ import {
   packsRoot,
   parsePackSpec,
   previewPack,
+  printable,
   removePack,
   updatePack,
   type PackPreview,
@@ -694,15 +696,18 @@ describe("the plugin view is a copy of what was scanned (T6 verify)", () => {
     expect(listPacks({ root }).find((pack) => pack.id === "acme/flows")!.commit).not.toBe("1".repeat(40));
   });
 
-  test("staging directories older than an hour are removed when an install starts; newer ones stay [A5]", async () => {
+  test("staging directories older than a day are removed when an install starts; newer ones stay [A5, R4-001]", async () => {
     makeRepo("acme/flows", goodPack);
     const staging = join(root, ".staging");
     mkdirSync(join(staging, "pack-stale"), { recursive: true });
+    mkdirSync(join(staging, "pack-hours"));
     mkdirSync(join(staging, "pack-fresh"));
-    const old = new Date(Date.now() - 2 * 3600_000);
+    const old = new Date(Date.now() - 48 * 3600_000);
+    const hours = new Date(Date.now() - 5 * 3600_000);
     utimesSync(join(staging, "pack-stale"), old, old);
+    utimesSync(join(staging, "pack-hours"), hours, hours);
     await installPack("acme/flows", options());
-    expect(readdirSync(staging)).toEqual(["pack-fresh"]);
+    expect(readdirSync(staging).sort()).toEqual(["pack-fresh", "pack-hours"]);
   });
 });
 
@@ -772,5 +777,132 @@ describe("T6 recheck: what pi loads is what the preview lists", () => {
     });
     await expect(installPack("acme/dots", options())).rejects.toThrow(/Pack rejected/);
     expect(listPacks({ root })).toEqual([]);
+  });
+});
+
+describe("review corrections", () => {
+  const message = async (run: Promise<unknown>) => {
+    try {
+      await run;
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error("expected a rejection");
+  };
+  const ESC = String.fromCharCode(27);
+
+  test("printable removes every Unicode format character and every control character [R1-002]", () => {
+    // U+2060 word joiner, U+00AD soft hyphen, U+061C Arabic letter mark, U+E0041 tag letter A, U+200B, U+202E, U+FEFF
+    const format = [0x2060, 0x00ad, 0x061c, 0xe0041, 0x200b, 0x202e, 0xfeff].map((code) => String.fromCodePoint(code)).join("");
+    expect(printable(`Pl${format}an`)).toBe("Plan");
+    expect(printable(`a${ESC}[2Jb\u0007c`)).toBe("a[2Jbc");
+    expect(printable("日本語 ok ✓")).toBe("日本語 ok ✓");
+  });
+
+  test("a repo's symlink name is cleaned in the rejection message [R1-003]", async () => {
+    makeRepo("acme/linky", { "agents/reviewer.md": AGENT, [`skills/lin${ESC}[2Jk`]: { symlink: "/etc" } });
+    const text = await message(installPack("acme/linky", options()));
+    expect(text).toMatch(/lin\[2Jk is a symlink/);
+    expect(text).not.toContain(ESC);
+  });
+
+  test("an oversized agent file's name is cleaned in the rejection message [R1-003]", async () => {
+    makeRepo("acme/big", { "agents/reviewer.md": AGENT, [`agents/big${ESC}[2J.md`]: "x".repeat(300 * 1024) });
+    const text = await message(installPack("acme/big", options()));
+    expect(text).toMatch(/agents\/big\[2J\.md is larger/);
+    expect(text).not.toContain(ESC);
+  });
+
+  test("git's stderr is cleaned and capped before it reaches the message [R4-006]", async () => {
+    const bin = join(work, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '${ESC.replace(ESC, "\\033")}[31mboom ' >&2\nhead -c 3000 /dev/zero | tr '\\0' 'x' >&2\nprintf ' THE-END' >&2\nexit 1\n`);
+    chmodSync(join(bin, "git"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      const text = await message(installPack("acme/flows", options()));
+      expect(text).toStartWith("git init failed: ");
+      expect(text).not.toContain(ESC);
+      expect(text).toEndWith("THE-END");
+      expect(text.length).toBeLessThanOrEqual("git init failed: ".length + 500);
+      expect(text).not.toContain("boom");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
+  test("a repo GitHub will not serve without a login says it is missing or private, not 'could not read Username'", async () => {
+    const bin = join(work, "bin");
+    mkdirSync(bin);
+    // GitHub answers a missing or private repo with 401; with prompts off, git ends with this line.
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nfor a in "$@"; do if [ "$a" = fetch ]; then echo "fatal: could not read Username for 'https://github.com': terminal prompts disabled" >&2; exit 128; fi; done\nexit 0\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      const text = await message(installPack("acme/typo", options()));
+      expect(text).toContain("acme/typo");
+      expect(text).toContain("not found, or it is private");
+      expect(text).not.toContain("Username");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
+  test("a pack agent whose frontmatter is never closed is rejected [R3-002]", async () => {
+    makeRepo("acme/open", { "agents/reviewer.md": AGENT, "agents/open.md": "---\nname: Open\npermission: read-only\nNo closing line" });
+    await expect(installPack("acme/open", options())).rejects.toThrow(/Pack rejected: agents\/open\.md.*never closed/);
+    expect(listPacks({ root })).toEqual([]);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+
+  const deleteStaging = () => {
+    for (const name of readdirSync(join(root, ".staging"))) if (name.startsWith("pack-")) rmSync(join(root, ".staging", name), { recursive: true, force: true });
+    return true;
+  };
+
+  test("an update whose second rename fails puts the old pack back [R4-001]", async () => {
+    const { repo, sha } = makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    commitFiles(repo, { "agents/writer.md": "Write." });
+
+    await expect(updatePack("acme/flows", options(deleteStaging))).rejects.toThrow();
+
+    expect(listPacks({ root })[0]!.commit).toBe(sha);
+    expect(readFileSync(join(root, "acme/flows/src/agents/reviewer.md"), "utf8")).toBe(AGENT);
+    expect(existsSync(join(root, "acme/flows/src/agents/writer.md"))).toBe(false);
+    expect(existsSync(join(packPluginDir("acme/flows", root), ".claude-plugin/plugin.json"))).toBe(true);
+    expect(readdirSync(join(root, ".staging"))).toEqual([]);
+  });
+
+  test("the retired pack is given a fresh mtime so a concurrent stale cleanup cannot take it [R4-001]", async () => {
+    const { repo } = makeRepo("acme/flows", goodPack);
+    await installPack("acme/flows", options());
+    commitFiles(repo, { "agents/writer.md": "Write." });
+    const old = new Date(Date.now() - 72 * 3600_000);
+    utimesSync(join(root, "acme", "flows"), old, old);
+
+    const real = fs.renameSync;
+    const seen: { retiredAge?: number; stagingAge?: number } = {};
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: string, to: string) => {
+      if (to === join(root, "acme", "flows") && from.includes(`${join(root, ".staging")}/pack-`)) {
+        const retired = readdirSync(join(root, ".staging")).find((name) => name.startsWith("old-pack-"))!;
+        seen.retiredAge = Date.now() - statSync(join(root, ".staging", retired)).mtimeMs;
+        seen.stagingAge = Date.now() - statSync(from).mtimeMs;
+      }
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      expect((await updatePack("acme/flows", options())).status).toBe("updated");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen.retiredAge).toBeDefined();
+    expect(seen.retiredAge!).toBeLessThan(60_000);
+    expect(seen.stagingAge!).toBeLessThan(60_000);
   });
 });
