@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -176,9 +176,16 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   // The plugin's `commands/*.md` become prompt templates (`/feature`) and its `skills/*/SKILL.md` skills (`/skill:workflow`),
   // read where they are, so the `/` menu lists them (as `marcsh:feature` and `marcsh:workflow`). Typing those names is
   // answered by `expandPluginInvocation`, not by pi, so a user's own `feature` or `workflow` cannot take their place.
-  const pluginResources = pluginPath
-    ? { additionalPromptTemplatePaths: [join(pluginPath, "commands")], additionalSkillPaths: [join(pluginPath, "skills")] }
-    : {};
+  // A pack agent's view (only its skills and commands, see packs.ts) is added for the turns that agent answers, never to warm-up.
+  const resourcesFor = (packView?: string) => {
+    const templates = pluginPath ? [join(pluginPath, "commands")] : [];
+    const skills = pluginPath ? [join(pluginPath, "skills")] : [];
+    for (const [list, part] of [[templates, "commands"], [skills, "skills"]] as const) {
+      if (packView && existsSync(join(packView, part))) list.push(join(packView, part));
+    }
+    return templates.length > 0 || skills.length > 0 ? { additionalPromptTemplatePaths: templates, additionalSkillPaths: skills } : {};
+  };
+  const pluginResources = resourcesFor();
   // An engine given another agent dir (tests) points pi's lazy readers at it; see AGENT_DIR_ENV.
   process.env[AGENT_DIR_ENV] = agentDir;
   // Before pi writes anything there: its settings (the device id), logins, models and sessions.
@@ -201,7 +208,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     let session: AgentSession | undefined;
     let aborted = signal.aborted;
@@ -257,7 +264,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         cwd,
         agentDir,
         settingsManager,
-        ...pluginResources,
+        ...resourcesFor(packPluginPath),
         // Added to whatever APPEND_SYSTEM.md pi found; `appendSystemPrompt` would replace it. A fresh loader per turn is why a switched agent applies from the next turn.
         ...(systemPromptAppend ? { appendSystemPromptOverride: (base: string[]) => [...base, systemPromptAppend] } : {}),
         extensionFactories: [

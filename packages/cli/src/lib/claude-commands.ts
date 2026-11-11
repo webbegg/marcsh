@@ -77,7 +77,7 @@ export function mergeCommands<T extends { name: string }>(
 }
 
 /**
- * How a submitted text is handled: `marcsh` runs marcsh's own command (arguments are ignored),
+ * How a submitted text is handled: `marcsh` runs marcsh's own command (the text after its name goes to the command's action as `args`),
  * `claude` is sent to `query()` verbatim as a Claude Code command or skill, `text` is a normal prompt.
  */
 export function slashInputKind(input: string, ownNames: string[]): "marcsh" | "claude" | "text" {

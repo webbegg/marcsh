@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -139,6 +139,117 @@ describe("loadAgents", () => {
     } finally {
       if (saved === undefined) delete process.env.MARCSH_AGENTS_DIR;
       else process.env.MARCSH_AGENTS_DIR = saved;
+    }
+  });
+});
+
+describe("loadAgents with packs", () => {
+  let dir: string;
+  let packs: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-agents-"));
+    packs = join(dir, "packs");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // An installed pack: a lock entry and the files under <packs>/<owner>/<repo>/src.
+  const install = (id: string, files: Record<string, string>, locked = true) => {
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(join(packs, id, "src", "agents"), { recursive: true });
+      writeFileSync(join(packs, id, "src", "agents", file), text);
+    }
+    if (!locked) return;
+    const lockFile = join(packs, "packs.json");
+    const lock = (() => {
+      try {
+        return JSON.parse(readFileSync(lockFile, "utf8"));
+      } catch {
+        return { packs: [] };
+      }
+    })();
+    lock.packs.push({ id, url: `https://github.com/${id}.git`, commit: "c", installedAt: "t" });
+    writeFileSync(lockFile, JSON.stringify(lock));
+  };
+
+  test("an installed pack's primary agents follow the built-ins and the user's, with ID owner/repo/<stem> and its plugin view", () => {
+    writeFileSync(join(dir, "u.md"), "---\nname: Mine\n---\nM");
+    install("zed/flows", { "b.md": "---\nname: Beta\n---\nB" });
+    install("acme/flows", { "a.md": "---\nname: Alpha\npermission: read-only\n---\nA", "sub.md": "---\nmode: subagent\n---\nS" });
+
+    const agents = loadAgents(dir, packs);
+
+    expect(agents.map((agent) => agent.id)).toEqual(["build", "plan", "user/u", "acme/flows/a", "zed/flows/b"]);
+    const alpha = agents.find((agent) => agent.id === "acme/flows/a")!;
+    expect(alpha).toMatchObject({ name: "Alpha", pack: "acme/flows", mode: Mode.PLAN, prompt: "A" });
+    expect(alpha.pluginDir).toBe(join(packs, "acme", "flows", "plugin"));
+    expect(agents.find((agent) => agent.id === "user/u")!.pluginDir).toBeUndefined();
+    expect(agents[0]!.pluginDir).toBeUndefined();
+  });
+
+  test("a pack that is not in the lockfile is not loaded", () => {
+    install("acme/stray", { "a.md": "A" }, false);
+    expect(loadAgents(dir, packs).map((agent) => agent.id)).toEqual(["build", "plan"]);
+  });
+
+  test("a symlinked agent file is skipped, so a pack cannot read a file outside itself", () => {
+    install("acme/flows", { "ok.md": "OK" });
+    mkdirSync(join(dir, "elsewhere"));
+    const secret = join(dir, "elsewhere", "secret.md");
+    writeFileSync(secret, "---\nname: Leak\n---\nsecret");
+    symlinkSync(secret, join(packs, "acme", "flows", "src", "agents", "leak.md"));
+    expect(loadAgents(dir, packs).map((agent) => agent.id)).toEqual(["build", "plan", "acme/flows/ok"]);
+  });
+
+  test("a symlinked agents directory is not followed", () => {
+    install("acme/flows", { "ok.md": "OK" });
+    const outside = join(dir, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "leak.md"), "Leak");
+    rmSync(join(packs, "acme", "flows", "src", "agents"), { recursive: true });
+    symlinkSync(outside, join(packs, "acme", "flows", "src", "agents"));
+    expect(loadAgents(dir, packs).map((agent) => agent.id)).toEqual(["build", "plan"]);
+  });
+
+  test("an agent file over 256 KB is skipped", () => {
+    install("acme/flows", { "ok.md": "OK", "huge.md": "x".repeat(256 * 1024 + 1) });
+    expect(loadAgents(dir, packs).map((agent) => agent.id)).toEqual(["build", "plan", "acme/flows/ok"]);
+  });
+
+  test("terminal control characters in a pack agent's text are removed; the user's own are left alone", () => {
+    install("acme/flows", { "a.md": "---\nname: \"Evil\u001b]0;pwn\u0007\"\ndescription: \"d\u001b[2J\"\nmodel: m\u001b[31m\n---\nP" });
+    const agent = loadAgents(dir, packs).find((item) => item.pack === "acme/flows")!;
+    expect(agent.name).toBe("Evil]0;pwn");
+    expect(agent.description).toBe("d[2J");
+    expect(agent.model).toBe("m[31m");
+  });
+
+  test("bidi controls and zero-width characters in a pack agent's text are removed [A6]", () => {
+    // U+202E, U+200B, U+2066, U+2069, U+FEFF, U+200F
+    const [rlo, zwsp, lri, pdi, bom, rlm] = [0x202e, 0x200b, 0x2066, 0x2069, 0xfeff, 0x200f].map((code) => String.fromCharCode(code));
+    install("acme/flows", { "a.md": `---\nname: "Re${rlo}view${zwsp}"\ndescription: "d${lri}x${pdi}${bom}"\nmodel: "m${rlm}o"\n---\nP` });
+    const agent = loadAgents(dir, packs).find((item) => item.pack === "acme/flows")!;
+    expect(agent.name).toBe("Review");
+    expect(agent.description).toBe("dx");
+    expect(agent.model).toBe("mo");
+  });
+
+  test("the same name in two packs is labelled with its pack", () => {
+    install("acme/flows", { "r.md": "---\nname: Review\n---\nA" });
+    install("zed/flows", { "r.md": "---\nname: Review\n---\nB" });
+    const agents = loadAgents(dir, packs);
+    expect(agentLabel(agents[2]!, agents)).toBe("acme/flows/Review");
+    expect(agentLabel(agents[3]!, agents)).toBe("zed/flows/Review");
+  });
+
+  test("MARCSH_PACKS_DIR is the default root", () => {
+    const saved = process.env.MARCSH_PACKS_DIR;
+    try {
+      process.env.MARCSH_PACKS_DIR = packs;
+      install("acme/flows", { "a.md": "A" });
+      expect(loadAgents(dir).map((agent) => agent.id)).toEqual(["build", "plan", "acme/flows/a"]);
+    } finally {
+      if (saved === undefined) delete process.env.MARCSH_PACKS_DIR;
+      else process.env.MARCSH_PACKS_DIR = saved;
     }
   });
 });

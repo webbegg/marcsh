@@ -1,4 +1,6 @@
 import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
@@ -26,7 +28,7 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
@@ -58,6 +60,9 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, si
   let chat: Query | null = null;
   const done = (async () => {
     const pluginPath = marcshPluginPath();
+    // The pack's view has only skills and commands (no hooks, MCP or agents); a view that is gone is left out.
+    const packPath = packPluginPath && existsSync(join(packPluginPath, ".claude-plugin", "plugin.json")) ? packPluginPath : null;
+    const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])].map((path) => ({ type: "local" as const, path }));
     try {
       chat = query({
         prompt,
@@ -70,7 +75,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, si
           systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
           settingSources: ["user", "project", "local"],
           canUseTool,
-          ...(pluginPath ? { plugins: [{ type: "local" as const, path: pluginPath }] } : {}),
+          ...(plugins.length > 0 ? { plugins } : {}),
         },
       });
 
