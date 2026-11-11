@@ -3,6 +3,10 @@ import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 import { modelForEngine } from "../lib/models";
+import { PI_VERSION } from "../lib/engine/pi-version";
+
+/** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
+const engineLabel = (engineId: string) => (engineId === "pi" ? `pi v${PI_VERSION}` : engineId);
 
 type Props = {
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
@@ -33,10 +37,10 @@ export function StatusBar({ engine, hint }: Props) {
       ) : engineId === "pi" && piModelStatus === "pending" ? null : (
         <text>{modelForEngine(engineId, model, piModel)}</text>
       )}
-      {/* Claude sessions look as they always did; only another engine is named. */}
-      {engineId === "claude" || (engineId === "pi" && piModelStatus === "unavailable") ? null : (
+      {/* "pi unavailable" already names the engine. */}
+      {engineId === "pi" && piModelStatus === "unavailable" ? null : (
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
-          · {engineId}
+          · {engineLabel(engineId)}
         </text>
       )}
       {hint ? (
