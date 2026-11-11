@@ -15,11 +15,11 @@ import {
   packsRoot,
   parsePackSpec,
   previewPack,
-  printable,
   removePack,
   updatePack,
   type PackPreview,
 } from "./packs";
+import { printable } from "./safe-text";
 
 const AGENT = "---\nname: Reviewer\ndescription: Reviews\npermission: read-only\nmodel: openai/gpt-5\n---\nReview only.";
 

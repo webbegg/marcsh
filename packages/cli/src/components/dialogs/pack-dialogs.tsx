@@ -1,12 +1,14 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { TextAttributes, type InputRenderable } from "@opentui/core";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useDialog, type DialogContextValue } from "../../providers/dialog";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
-import { hasLeftover, installPack, listPacks, parsePackSpec, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
+import { TextField } from "./text-field";
+import { parsePackCommand } from "../../lib/pack-command";
+import { hasLeftover, installPack, listPacks, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
 
 // The `/agents` flows for packs (GitHub repos with agents, skills and commands): install, update, remove. Each step is a dialog
 // that replaces the one before it. Nothing is installed or swapped before the preview is accepted, and a dialog that is closed
@@ -225,58 +227,32 @@ async function runRemove(flow: Flow, id: string, commit?: string) {
   }
 }
 
-const USAGE = "Usage: /agents install <owner/repo[@ref]> | update [<owner/repo>] | remove <owner/repo>";
-
 /**
  * `/agents install <owner/repo[@ref]>`, `/agents update [<owner/repo>]` and `/agents remove <owner/repo>`, typed instead of picked:
  * the same flows the dialog's rows open (preview and consent included). Anything else is an error toast with the usage line.
  */
 export function runPackCommand(args: string, flow: Flow): Promise<void> | void {
-  const [verb, operand, ...extra] = args.trim().split(/\s+/);
-  const usage = (why?: string) => failure(flow, why ? `${why} ${USAGE}` : USAGE);
-  if (extra.length > 0 || (verb !== "install" && verb !== "update" && verb !== "remove")) return usage();
-  if (verb === "install") {
-    if (!operand) return usage();
-    try {
-      parsePackSpec(operand);
-    } catch (error) {
-      return usage(error instanceof Error ? error.message : String(error));
+  const command = parsePackCommand(args);
+  switch (command.kind) {
+    case "usage":
+      return failure(flow, command.message);
+    case "install":
+      return runInstall(flow, command.spec);
+    case "picker":
+      flow.dialog.open({ title: "Update a pack", children: <PackPickerDialogContent action={command.action} onChanged={flow.onChanged} /> });
+      return;
+    case "update":
+    case "remove": {
+      const { id } = command;
+      const pack = listPacks().find((item) => item.id === id);
+      if (!pack) {
+        // A folder under the root with no lock entry cannot be installed over or updated, but it can be removed.
+        if (command.kind === "remove" && hasLeftover(id)) return runRemove(flow, id);
+        return failure(flow, `${id} is not installed`);
+      }
+      return command.kind === "update" ? runUpdate(flow, pack) : runRemove(flow, pack.id, pack.commit);
     }
-    return runInstall(flow, operand);
   }
-  if (!operand) {
-    if (verb === "remove") return usage();
-    flow.dialog.open({ title: "Update a pack", children: <PackPickerDialogContent action="update" onChanged={flow.onChanged} /> });
-    return;
-  }
-  let id: string;
-  try {
-    const spec = parsePackSpec(operand);
-    if (spec.ref !== undefined) return usage(`${operand} names a ref; ${verb} takes owner/repo.`);
-    id = spec.id;
-  } catch (error) {
-    return usage(error instanceof Error ? error.message : String(error));
-  }
-  const pack = listPacks().find((item) => item.id === id);
-  if (!pack) {
-    // A folder under the root with no lock entry cannot be installed over or updated, but it can be removed.
-    if (verb === "remove" && hasLeftover(id)) return runRemove(flow, id);
-    return failure(flow, `${id} is not installed`);
-  }
-  return verb === "update" ? runUpdate(flow, pack) : runRemove(flow, pack.id, pack.commit);
-}
-
-function TextField({ placeholder, onSubmit }: { placeholder: string; onSubmit: (value: string) => void }) {
-  const inputRef = useRef<InputRenderable>(null);
-  const { isTopLayer } = useKeyboardLayer();
-
-  useKeyboard((key) => {
-    if (!isTopLayer("dialog") || (key.name !== "return" && key.name !== "enter")) return;
-    const value = inputRef.current?.value.trim();
-    if (value) onSubmit(value);
-  });
-
-  return <input ref={inputRef} focused placeholder={placeholder} />;
 }
 
 /** "Install from GitHub…": asks for `owner/repo[@ref]`, shows what the pack holds, installs it on consent. */

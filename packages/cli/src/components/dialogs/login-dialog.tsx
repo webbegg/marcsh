@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TextAttributes, type InputRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { TextAttributes } from "@opentui/core";
 import { useDialog } from "../../providers/dialog";
-import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useToast } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { MaskedInput } from "../masked-input";
+import { TextField } from "./text-field";
 import {
   listLoginProviders,
   runLogin,
@@ -215,19 +214,6 @@ function NoticeView({ notice }: { notice: LoginNotice }) {
     case "progress":
       return <text attributes={TextAttributes.DIM} wrapMode="word" width="100%">{notice.message}</text>;
   }
-}
-
-function TextField({ placeholder, onSubmit }: { placeholder: string; onSubmit: (value: string) => void }) {
-  const inputRef = useRef<InputRenderable>(null);
-  const { isTopLayer } = useKeyboardLayer();
-
-  useKeyboard((key) => {
-    if (!isTopLayer("dialog") || (key.name !== "return" && key.name !== "enter")) return;
-    const value = inputRef.current?.value.trim();
-    if (value) onSubmit(value);
-  });
-
-  return <input ref={inputRef} focused placeholder={placeholder} />;
 }
 
 function PromptView({ active: { prompt, answer } }: { active: ActivePrompt }) {
