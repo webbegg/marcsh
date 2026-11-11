@@ -81,7 +81,8 @@ const type = async (text: string) => {
   await settle(60);
 };
 // Joins word-wrapped lines (and the prompt's left border) back into one string.
-const collapse = (frame: string) => frame.replace(/[│\s]+/g, " ");
+// Also drops the approval prompt's `┊` gutter, which starts every row of tool-supplied text.
+const collapse = (frame: string) => frame.replace(/[│┊\s]+/g, " ");
 const showPrompt = async () => {
   await act(async () => releaseAsk());
   lastActivityAt = Date.now();
@@ -345,7 +346,7 @@ describe("session approvals (S7)", () => {
     await openSession("BUILD", {}, { command });
     await act(async () => screen!.resize(40, 50));
     await showPrompt();
-    expect(screen!.captureCharFrame().replace(/[│┃\s]+/g, "")).toContain(command.replace(/\s+/g, ""));
+    expect(screen!.captureCharFrame().replace(/[│┃┊\s]+/g, "")).toContain(command.replace(/\s+/g, ""));
     await press("n");
   });
 

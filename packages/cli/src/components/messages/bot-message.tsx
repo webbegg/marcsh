@@ -3,6 +3,7 @@ import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
 import type { MessagePart } from "../../lib/chat-types";
 import { Mode, type ModeType } from "../../lib/modes";
+import { escapeTranscriptText as safe } from "../../lib/display-text";
 import { TextAttributes } from "@opentui/core";
 
 type ToolPart = Extract<MessagePart, { type: "tool" }>;
@@ -108,7 +109,7 @@ export function BotMessage({
                   paddingX={2}
                 >
                   <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.thinking}>Thinking:</em> {part.text}
+                    <em fg={colors.thinking}>Thinking:</em> {safe(part.text)}
                   </text>
                 </box>
               );
@@ -128,9 +129,9 @@ export function BotMessage({
                   paddingX={2}
                 >
                   <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.info}>{formatToolName(part.toolName)}:</em> {summarizeToolInput(part.input)}
+                    <em fg={colors.info}>{safe(formatToolName(part.toolName))}:</em> {safe(summarizeToolInput(part.input))}
                     {part.state === "running" ? " …" : ""}
-                    {part.state === "error" ? ` ${part.errorText}` : ""}
+                    {part.state === "error" ? ` ${safe(String(part.errorText))}` : ""}
                   </text>
                 </box>
               );
@@ -151,9 +152,9 @@ export function BotMessage({
                   paddingX={2}
                 >
                   <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.info}>Task:</em> {formatTaskLine(part)}
+                    <em fg={colors.info}>Task:</em> {safe(formatTaskLine(part))}
                   </text>
-                  {outcome && <text attributes={TextAttributes.DIM}>{outcome}</text>}
+                  {outcome && <text attributes={TextAttributes.DIM}>{safe(outcome)}</text>}
                 </box>
               );
             }
@@ -161,7 +162,7 @@ export function BotMessage({
             if (part.type === "text") {
               return (
                 <box key={`text-${j}`} paddingX={3} width="100%">
-                  <text>{part.text}</text>
+                  <text>{safe(part.text)}</text>
                 </box>
               );
             }
@@ -181,7 +182,7 @@ export function BotMessage({
             <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
               ›
             </text>
-            <text attributes={TextAttributes.DIM}>{model}</text>
+            <text attributes={TextAttributes.DIM}>{safe(model)}</text>
             {(durationMs != null) && (
               <>
                 <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
