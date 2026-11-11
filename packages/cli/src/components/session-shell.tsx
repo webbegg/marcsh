@@ -14,6 +14,8 @@ type Props = {
   cwd?: string;
   /** The engine the session runs on, shown next to the model; defaults to the one new sessions start on. */
   engine?: string;
+  /** The input takes keys but never sends (see InputBar). */
+  inputTypeOnly?: boolean;
 };
 
 export function SessionShell({
@@ -24,6 +26,7 @@ export function SessionShell({
   interruptible = false,
   cwd,
   engine,
+  inputTypeOnly = false,
 }: Props) {
   const { mode } = usePromptConfig();
 
@@ -41,7 +44,13 @@ export function SessionShell({
         <box>{children}</box>
       </scrollbox>
       <box flexShrink={0}>
-        <InputBar onSubmit={onSubmit} disabled={inputDisabled} cwd={cwd} engine={engine} />
+        <InputBar
+          onSubmit={onSubmit}
+          disabled={inputDisabled}
+          cwd={cwd}
+          engine={engine}
+          typeOnly={inputTypeOnly}
+        />
       </box>
       <box
         flexShrink={0}

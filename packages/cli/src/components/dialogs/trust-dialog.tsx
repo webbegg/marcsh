@@ -4,10 +4,10 @@ import { useDialog } from "../../providers/dialog";
 import { useToast } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { TrustPrompt } from "../trust-prompt";
-import { stripControlChars } from "../ui-prompts";
-import { canonical, findProjectResources, unreadableResources, type TrustAnswer } from "../../lib/engine/pi-trust";
-import { getStorage, type ProjectTrust, type Storage } from "../../lib/storage";
 import type { TrustRequest } from "../../hooks/use-chat";
+import { stripControlChars } from "../ui-prompts";
+import { canonical, diffReview, reviewProject, sameReview, unreadableResources, type ProjectTrustRecords, type TrustAnswer } from "../../lib/engine/pi-trust";
+import { getStorage, type ProjectTrust, type StoredReview } from "../../lib/storage";
 
 type Choice = { id: ProjectTrust | "forget"; label: string; hint: string };
 
@@ -24,7 +24,7 @@ type Props = {
   /** The project folder. */
   cwd: string;
   /** Where decisions are kept; default: marcsh's SQLite. */
-  store?: Pick<Storage, "getProjectTrust" | "setProjectTrust">;
+  store?: ProjectTrustRecords;
 };
 
 /**
@@ -32,7 +32,8 @@ type Props = {
  * Don't trust and Forget are one step. Trust is not: it opens the same full-screen listing as the turn's trust prompt
  * (everything pi would load, read to the end, then `t` and Enter) and stores nothing until that prompt says trust.
  * While marcsh cannot read an entry of the project, Trust is not offered at all (it could not show what trusting runs),
- * and a stored "trusted" is shown as not in effect.
+ * and a stored "trusted" is shown as not in effect. So is a stored "trusted" whose files changed since it was reviewed
+ * (or that has no review): the dialog says so, and trusting from it lists what changed and stores the new review.
  */
 export const TrustDialogContent = ({ cwd, store }: Props) => {
   const dialog = useDialog();
@@ -47,18 +48,32 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
       return null;
     }
   }, [records, cwd]);
-  const listed = useMemo(() => findProjectResources(cwd), [cwd]);
-  const found = listed.length;
-  const unreadable = useMemo(() => unreadableResources(listed), [listed]);
+  const reviewed = useMemo<StoredReview | null>(() => {
+    try {
+      return records.getProjectReview?.(cwd) ?? null;
+    } catch {
+      return null;
+    }
+  }, [records, cwd]);
+  const project = useMemo(() => reviewProject(cwd), [cwd]);
+  const found = project.resources.length;
+  const unreadable = useMemo(() => unreadableResources(project.resources), [project]);
   // With no pi files there is nothing to trust, and with an unreadable one there is nothing marcsh can show to trust.
   const choices = useMemo(() => (found > 0 && unreadable.length === 0 ? CHOICES : CHOICES.filter((choice) => choice.id !== "trusted")), [found, unreadable]);
-  // A stored "trusted" does not hold while an entry cannot be read (the file may have grown since).
-  const effective = current === "trusted" && unreadable.length > 0 ? null : current;
+  // A stored "trusted" does not hold while an entry cannot be read (the file may have grown since), nor once the files differ from what was reviewed.
+  const trustHolds = current === "trusted" && (found === 0 || (unreadable.length === 0 && reviewed !== null && sameReview(reviewed, project.record)));
+  const effective = current === "trusted" && !trustHolds ? null : current;
+  const staleReason =
+    unreadable.length > 0
+      ? "the stored decision no longer applies"
+      : reviewed
+        ? "this project's pi files changed since you trusted them"
+        : "the stored trust predates reviews: trust again to review the files";
 
   const save = useCallback(
-    (decision: ProjectTrust | null) => {
+    (decision: ProjectTrust | null, reviewedNow?: StoredReview) => {
       try {
-        records.setProjectTrust(cwd, decision);
+        records.setProjectTrust(cwd, decision, reviewedNow);
       } catch (error) {
         toast.show({ variant: "error", message: `Could not save the decision: ${error instanceof Error ? error.message : String(error)}` });
         dialog.close();
@@ -79,7 +94,7 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
       if (choice.id === "untrusted") return save("untrusted");
 
       // Listed afresh: the folder may have changed since the dialog opened.
-      const resources = findProjectResources(cwd);
+      const { resources, record } = reviewProject(cwd);
       if (resources.length === 0) {
         toast.show({ variant: "info", message: "This project has no pi files: nothing to trust" });
         dialog.close();
@@ -91,13 +106,21 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
         return;
       }
       const respond = (answer: TrustAnswer) => {
-        if (answer === "trust") save("trusted");
-        else if (answer === "distrust") save("untrusted");
+        if (answer === "trust") {
+          // What was shown is what gets stored: if the files moved on while the list was open, nothing is saved.
+          if (!sameReview(reviewProject(cwd).record, record)) {
+            toast.show({ variant: "error", message: "This project's pi files changed while you were reviewing them, so nothing was saved. Open /trust again" });
+            dialog.close();
+            return;
+          }
+          save("trusted", record);
+        } else if (answer === "distrust") save("untrusted");
         else dialog.close();
       };
-      setReview({ kind: "trust", id: crypto.randomUUID(), cwd: canonical(cwd), resources, respond });
+      const changes = current === "trusted" ? diffReview(reviewed, record) : undefined;
+      setReview({ kind: "trust", id: crypto.randomUUID(), cwd: canonical(cwd), resources, ...(changes ? { changes } : {}), respond });
     },
-    [cwd, save, dialog, toast],
+    [cwd, save, dialog, toast, current, reviewed],
   );
 
   if (review) return <TrustPrompt request={review} layer="dialog" />;
@@ -107,7 +130,7 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
       <box flexDirection="column">
         <text wrapMode="char">{stripControlChars(cwd)}</text>
         <text attributes={TextAttributes.DIM}>
-          {effective ? `Now: ${DECISION_TEXT[effective]}` : current ? "Now: not trusted (the stored decision no longer applies)" : "Now: not decided yet"}
+          {effective ? `Now: ${DECISION_TEXT[effective]}` : current ? `Now: not trusted (${staleReason})` : "Now: not decided yet"}
           {found > 0 ? ` · ${found} pi file${found === 1 ? "" : "s"} found` : " · no pi files found, nothing to trust"}
         </text>
         {unreadable.length > 0 ? (

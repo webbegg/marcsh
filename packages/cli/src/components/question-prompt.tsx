@@ -1,12 +1,51 @@
 import { useEffect, useRef, useState } from "react";
-import { TextAttributes, type InputRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { TextAttributes, type BoxRenderable, type InputRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { EmptyBorder } from "./border";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
 import type { QuestionRequest } from "../hooks/use-chat";
 import { buildAnswer } from "../lib/ask-user-question";
+import { escapeProjectText } from "../lib/engine/pi-trust";
+import { wrapByWidth, wrappedRows } from "../lib/display-text";
+import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
+
+const MIN_TEXT_WIDTH = 10;
+const UNMEASURED_MARGIN = 8;
+// Starts every row of text the model supplied (as in the approval prompt), which the prompt's own rows never have, so no row of it can pass for one.
+const GUTTER = "┊ ";
+// The columns the prompt uses beside its text: the left border, the padding on both sides and the gutter.
+const SIDE_COLUMNS = 1 + 4 + GUTTER.length;
+
+type RowsProps = {
+  rows: string[];
+  dim?: boolean;
+  /** The first row starts with text the prompt wrote itself (a label), so it needs no gutter. */
+  labelled?: boolean;
+  fg?: string;
+  em?: boolean;
+};
+
+/** Text the model supplied, drawn as the rows it was already cut into: each row behind the gutter, in a column of its own. */
+function Rows({ rows, dim = false, labelled = false, fg, em = false }: RowsProps) {
+  return (
+    <>
+      {rows.map((row, index) => {
+        const text = em ? <em fg={fg}>{row}</em> : row;
+        const attributes = dim ? TextAttributes.DIM : undefined;
+        return labelled && index === 0 ? (
+          <text key={index} attributes={attributes} wrapMode="char">{text}</text>
+        ) : (
+          <box key={index} flexDirection="row">
+            <text attributes={TextAttributes.DIM} flexShrink={0}>{GUTTER}</text>
+            <text attributes={attributes} flexGrow={1} flexShrink={1} wrapMode="char">{text}</text>
+          </box>
+        );
+      })}
+    </>
+  );
+}
 
 type Props = {
   request: QuestionRequest;
@@ -16,8 +55,27 @@ type Props = {
 
 export function QuestionPrompt({ request, onTextEntryChange }: Props) {
   const { colors } = useTheme();
+  const renderer = useRenderer();
+  const { width: terminalWidth } = useTerminalDimensions();
+  const boxRef = useRef<BoxRenderable>(null);
+  // The prompt's own width once laid out (the screen around it takes columns); until then the terminal's less a margin, so a first row is never too wide.
+  const [boxWidth, setBoxWidth] = useState(terminalWidth - UNMEASURED_MARGIN);
+  const textWidth = Math.max(MIN_TEXT_WIDTH, Math.min(boxWidth, terminalWidth) - SIDE_COLUMNS);
+
+  useEffect(() => {
+    const measure = () => {
+      const width = boxRef.current?.width;
+      if (width) setBoxWidth((prev) => (prev === width ? prev : width));
+    };
+    measure();
+    renderer.root.on("layout-changed", measure);
+    return () => {
+      renderer.root.off("layout-changed", measure);
+    };
+  }, [renderer]);
   const { isTopLayer } = useKeyboardLayer();
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
+  const lock = usePromptLock(request);
   const inputRef = useRef<InputRenderable>(null);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -49,6 +107,16 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
 
   useKeyboard((key) => {
     const chord = key.ctrl || key.meta || key.option || key.super || key.hyper;
+
+    // Opened while the user was composing: nothing answers it until ↓, then the rules below apply from a fresh quiet window.
+    if (lock.isLocked()) {
+      if (key.name === "down" && isTopLayer("base") && !chord) {
+        key.preventDefault();
+        lock.unlock();
+        restartQuiet();
+      }
+      return;
+    }
 
     if (typing) {
       if (!isTopLayer("base") || chord) return;
@@ -94,6 +162,7 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
 
   return (
     <box
+      ref={boxRef}
       border={["left"]}
       borderColor={colors.info}
       customBorderChars={{
@@ -106,10 +175,8 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
       <text attributes={TextAttributes.DIM}>
         Question {index + 1}/{request.questions.length}
       </text>
-      <text>
-        <em fg={colors.info}>{question.header}</em>
-      </text>
-      <text>{question.question}</text>
+      <Rows rows={wrapByWidth(escapeProjectText(question.header), textWidth)} em fg={colors.info} />
+      <Rows rows={wrappedRows(question.question, textWidth)} />
       {typing ? (
         <box>
           <input ref={inputRef} placeholder="Type an answer" focused />
@@ -119,18 +186,17 @@ export function QuestionPrompt({ request, onTextEntryChange }: Props) {
         <box>
           {question.options.map((option, i) => (
             <box key={i}>
-              <text>
-                {question.multiSelect ? (picked.includes(i) ? "[x] " : "[ ] ") : ""}
-                {i + 1} {option.label}
-              </text>
-              <text attributes={TextAttributes.DIM} paddingLeft={question.multiSelect ? 6 : 2}>
-                {option.description}
-              </text>
+              <Rows rows={wrapByWidth(`${question.multiSelect ? (picked.includes(i) ? "[x] " : "[ ] ") : ""}${i + 1} ${escapeProjectText(option.label)}`, textWidth)} labelled />
+              <box paddingLeft={question.multiSelect ? 6 : 2}>
+                <Rows rows={wrappedRows(option.description, textWidth - (question.multiSelect ? 6 : 2))} dim />
+              </box>
             </box>
           ))}
           <text>o Other (type an answer)</text>
           <text attributes={TextAttributes.DIM}>
-            {!quiet
+            {lock.locked
+              ? `${LOCKED_LINE} · Esc declines`
+              : !quiet
               ? "waiting for typing to stop…"
               : question.multiSelect
                 ? "numbers toggle · Enter confirms · Esc declines"

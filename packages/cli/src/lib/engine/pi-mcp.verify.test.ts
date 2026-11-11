@@ -9,6 +9,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 import type { EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
 let dir: string, agentDir: string, cwd: string;
@@ -64,7 +65,7 @@ async function setup(responses: FauxResponseStep[], rules: Storage = openStorage
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
-  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules: rules, pluginPath: null, projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} } }), faux, rules };
+  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules: rules, pluginPath: null, projectTrust: trustEveryProject }), faux, rules };
 }
 function start(engine: any, req: Partial<TurnRequest>, ask: (a: PermissionAsk) => Promise<PermissionDecision> | PermissionDecision) {
   const events: EngineEvent[] = [];
@@ -243,11 +244,12 @@ import { ModelRuntime } from ${JSON.stringify(Bun.resolveSync("@earendil-works/p
 import { fauxAssistantMessage, fauxProvider, fauxText, InMemoryCredentialStore } from ${JSON.stringify(Bun.resolveSync("@earendil-works/pi-ai", import.meta.dir))};
 import { openStorage } from ${JSON.stringify(join(import.meta.dir, "../storage"))};
 import { createPiEngine } from ${JSON.stringify(join(import.meta.dir, "pi"))};
+import { trustEveryProject } from ${JSON.stringify(join(import.meta.dir, "test-trust"))};
 const faux = fauxProvider({ models: [{ id: "faux-1" }] });
 const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
 modelRuntime.registerNativeProvider(faux.provider);
 faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
-const engine = createPiEngine({ agentDir: ${JSON.stringify(agentDir)}, modelRuntime, permissionRules: openStorage(":memory:"), pluginPath: null, projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} } });
+const engine = createPiEngine({ agentDir: ${JSON.stringify(agentDir)}, modelRuntime, permissionRules: openStorage(":memory:"), pluginPath: null, projectTrust: trustEveryProject });
 await engine.startTurn({ prompt: "go", cwd: ${JSON.stringify(cwd)}, mode: "BUILD", model: "faux/faux-1", signal: new AbortController().signal }, { emit() {}, askPermission: async () => "allow", askQuestions: async () => null }).done;
 console.log("turn done");
 `);

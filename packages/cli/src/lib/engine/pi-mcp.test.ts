@@ -16,6 +16,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 import type { AgentSession, LoadedMcpConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 import { createMarcshMcpExtension, disposePiSession, MCP_TOOL_PREFIX, withDirectExposure } from "./pi-mcp";
 import type { Engine, EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
@@ -86,9 +87,7 @@ async function setup(responses: FauxResponseStep[], permissionRules = openStorag
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
-  // These tests predate project trust (S18): the fixture projects are trusted, as every project was then.
-  const projectTrust = { getProjectTrust: () => "trusted" as const, setProjectTrust: () => {} };
-  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust }), faux, model: "faux/faux-1", permissionRules };
+  return { engine: createPiEngine({ agentDir, modelRuntime, permissionRules, projectTrust: trustEveryProject }), faux, model: "faux/faux-1", permissionRules };
 }
 
 function summarize(events: EngineEvent[]) {

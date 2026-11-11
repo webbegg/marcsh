@@ -27,7 +27,21 @@ export type EngineEvent =
   /** The engine's command list for the `/` menu; replaces any cached list. */
   | { type: "commands"; commands: ClaudeCommand[] }
   /** The turn failed with a user-facing message. */
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** The messages the user typed during the turn that the engine has not sent yet (replaces the last list). */
+  | { type: "queue"; steering: string[]; followUp: string[] }
+  /** A queued message was just sent: the reply so far is complete, and what follows answers this message. */
+  | { type: "delivered"; text: string; kind: "steer" | "followUp" }
+  /** The engine has settled: the turn takes no more steers or follow-ups, though it may still be shutting down. */
+  | { type: "input-closed" };
+
+/** What `steer` and `followUp` reject with once the engine has settled: the text was not taken and nothing will send it. */
+export class TurnClosedError extends Error {
+  constructor() {
+    super("The turn is already over, so the message was not sent.");
+    this.name = "TurnClosedError";
+  }
+}
 
 export type TurnRequest = {
   prompt: string;
@@ -71,8 +85,17 @@ export type TurnHost = {
 export type EngineTurn = {
   /** Settles when the turn ends; rejects when it fails outside a reported `error` event. */
   done: Promise<void>;
-  /** Stops the current response and ends the turn. */
+  /** Stops the current response and ends the turn. Messages queued but not yet sent are discarded. */
   interrupt(): void;
+  /*
+   * Typing during a turn. An engine without them takes no input until the turn ends (the chat keeps its input
+   * disabled). Each rejects when the engine cannot take the text (`TurnClosedError` once it has settled, see the
+   * `input-closed` event); after an interrupt they do nothing.
+   */
+  /** Sends the text to the running turn, before the model's next response. */
+  steer?(text: string): Promise<void>;
+  /** Sends the text as a message of its own once the turn has nothing else to do. */
+  followUp?(text: string): Promise<void>;
 };
 
 export type Engine = {
