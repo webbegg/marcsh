@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { PI_DEFAULT_MODEL } from "../models";
-import { listAvailablePiModels, pickPiModel, piModelRef, type PiModelOption } from "./pi-models";
+import { listAvailablePiModels, pickPiModel, pickTurnPiModel, piModelRef, type PiModelOption } from "./pi-models";
 
 function fakeProvider(id: string, name: string, models: { id: string; name: string }[]) {
   const faux = fauxProvider({ provider: id, models });
@@ -82,5 +82,23 @@ describe("pickPiModel", () => {
   test("with no available model, the default pi model", () => {
     expect(pickPiModel("fake-b/b-1", [])).toBe(PI_DEFAULT_MODEL);
     expect(pickPiModel(undefined, [])).toBe(PI_DEFAULT_MODEL);
+  });
+});
+
+describe("pickTurnPiModel", () => {
+  const available = [option("fake-a", "a-1"), option("fake-b", "b-1")];
+
+  test("an agent's model wins while it is available", () => {
+    expect(pickTurnPiModel("fake-b/b-1", "fake-a/a-1", available)).toBe("fake-b/b-1");
+  });
+
+  test("an agent's model nobody here has credentials for falls back to the normal pick", () => {
+    expect(pickTurnPiModel("fake-none/n-1", "fake-b/b-1", available)).toBe("fake-b/b-1");
+    expect(pickTurnPiModel("fake-none/n-1", "fake-none/n-1", available)).toBe("fake-a/a-1");
+  });
+
+  test("without an agent model, the normal pick", () => {
+    expect(pickTurnPiModel(undefined, "fake-b/b-1", available)).toBe("fake-b/b-1");
+    expect(pickTurnPiModel(undefined, undefined, [])).toBe(PI_DEFAULT_MODEL);
   });
 });

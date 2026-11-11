@@ -27,3 +27,9 @@ export function pickPiModel(preferred: string | undefined, available: readonly P
   if (preferred && available.some((model) => model.ref === preferred)) return preferred;
   return available[0]?.ref ?? PI_DEFAULT_MODEL;
 }
+
+/** The model of one pi turn: the agent's own while it is available, else the normal pick, so an agent never breaks a user without that provider. */
+export function pickTurnPiModel(turnModel: string | undefined, preferred: string | undefined, available: readonly PiModelOption[]): string {
+  if (turnModel && available.some((model) => model.ref === turnModel)) return turnModel;
+  return pickPiModel(preferred, available);
+}

@@ -201,7 +201,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     let session: AgentSession | undefined;
     let aborted = signal.aborted;
@@ -258,6 +258,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         agentDir,
         settingsManager,
         ...pluginResources,
+        // Added to whatever APPEND_SYSTEM.md pi found; `appendSystemPrompt` would replace it. A fresh loader per turn is why a switched agent applies from the next turn.
+        ...(systemPromptAppend ? { appendSystemPromptOverride: (base: string[]) => [...base, systemPromptAppend] } : {}),
         extensionFactories: [
           // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),

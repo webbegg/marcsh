@@ -29,6 +29,8 @@ export type MessagePart =
 
 export type ChatMessageMetadata = {
   mode?: ModeType;
+  /** The name of the agent that answered; older messages have none and show their mode. */
+  agent?: string;
   model?: string;
   durationMs?: number;
   costUsd?: number;
