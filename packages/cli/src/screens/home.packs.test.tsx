@@ -65,7 +65,8 @@ afterAll(() => {
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
-const frame = () => screen!.captureCharFrame().replace(/[│\s]+/g, " ");
+// Toasts wrap long messages inside their `┃` border, so the border goes too.
+const frame = () => screen!.captureCharFrame().replace(/[│┃\s]+/g, " ");
 const tab = async () => {
   await act(async () => screen!.mockInput.pressTab());
   await settle(60);
