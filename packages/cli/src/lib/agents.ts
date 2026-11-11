@@ -1,35 +1,13 @@
-import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, extname, join } from "node:path";
-import { Mode, type ModeType } from "./modes";
-import { listPacks, packAgentsDir, packPluginDir, packsRoot, printable } from "./packs";
+import { join } from "node:path";
+import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
+import { Mode } from "./modes";
+import { listPacks, packAgentsDir, packPluginDir, packsRoot } from "./packs";
+import { printable } from "./safe-text";
 
-/** An agent file larger than this is not read (a pack is third-party content). */
-export const MAX_AGENT_BYTES = 256 * 1024;
-
-/**
- * A selectable agent: Tab cycles them and `/agents` lists them. Build and Plan are built in; the rest are markdown files with
- * OpenCode-style frontmatter. `mode` is the permission profile both engines already understand: PLAN only reads, BUILD asks
- * before it writes or runs.
- */
-export type Agent = {
-  /** "build" and "plan" for the built-ins, "<pack>/<file stem>" for the rest. */
-  id: string;
-  name: string;
-  description?: string;
-  mode: ModeType;
-  /** Appended to the engine's own system prompt, never in place of it. */
-  prompt?: string;
-  /** The model this agent asks for; the session model is used when absent or unusable on the engine. */
-  model?: string;
-  /** Where the agent comes from: "user" for ~/.marcsh/agents, "owner/repo" for an installed pack; undefined for the built-ins. */
-  pack?: string;
-  /** A pack agent's generated plugin view (its skills and commands): loaded by the engines only while this agent is selected. */
-  pluginDir?: string;
-  /** Frontmatter fields marcsh reads but does not apply. */
-  ignored: string[];
-};
+// Other modules import the agent type and the file parser from here.
+export { parseAgentFile, type Agent };
 
 export const BUILTIN_AGENTS: readonly Agent[] = [
   { id: "build", name: "Build", description: "Edits files and runs commands, asking first", mode: Mode.BUILD, ignored: [] },
@@ -41,78 +19,6 @@ const BUILD_AGENT = BUILTIN_AGENTS[0]!;
 /** Where the user's own agents live; global only, never inside a project. */
 export function agentsDir() {
   return process.env.MARCSH_AGENTS_DIR?.trim() || join(homedir(), ".marcsh", "agents");
-}
-
-type Frontmatter = { fields: Map<string, string | null>; body: string; unclosed: boolean };
-
-// A small reader for flat frontmatter: `key: value` lines, quoted values, and `|`/`>` blocks. An indented block under a key
-// is a nested map or list, which marcsh never applies, so it is recorded as null.
-function readFrontmatter(text: string): Frontmatter {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const fields = new Map<string, string | null>();
-  if (lines[0]?.trim() !== "---") return { fields, body: text, unclosed: false };
-  const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
-  // An opening line with no closing one: the whole file stays the prompt, and the caller reports it.
-  if (end < 0) return { fields, body: text, unclosed: true };
-
-  let key: string | undefined;
-  let block: { style: string; lines: string[] } | undefined;
-  const closeBlock = () => {
-    if (key && block) fields.set(key, block.lines.join(block.style.startsWith("|") ? "\n" : " ").trim());
-    block = undefined;
-  };
-  for (const line of lines.slice(1, end)) {
-    const top = /^([A-Za-z0-9_-]+):[ \t]*(.*)$/.exec(line);
-    if (top) {
-      closeBlock();
-      key = top[1]!;
-      const value = top[2]!.trim();
-      if (/^[|>][-+]?$/.test(value)) block = { style: value, lines: [] };
-      fields.set(key, value.replace(/^(["'])(.*)\1$/, "$2"));
-    } else if (key && /^[ \t]/.test(line) && line.trim()) {
-      if (block) block.lines.push(line.trim());
-      else fields.set(key, null);
-    }
-  }
-  closeBlock();
-  return { fields, body: lines.slice(end + 1).join("\n"), unclosed: false };
-}
-
-const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model"]);
-
-function slug(text: string) {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
-}
-
-/** The ID part of an agent file: its slug, else (a name with no letters or digits) a short hash of the file name, which is stable. */
-const idPart = (stem: string, file: string) => slug(stem) || createHash("sha1").update(file).digest("hex").slice(0, 8);
-
-/** Parses one agent file; null when it is a subagent (not selectable). */
-export function parseAgentFile(text: string, { pack, file }: { pack: string; file: string }): Agent | null {
-  const { fields, body, unclosed } = readFrontmatter(text);
-  const ignored = [...fields.keys()].filter((key) => !KNOWN_FIELDS.has(key));
-  if (unclosed) ignored.push("frontmatter");
-
-  const kind = fields.get("mode");
-  if (kind === "subagent") return null;
-  if (kind !== undefined && kind !== "primary" && kind !== "all") ignored.push("mode");
-
-  const permission = fields.get("permission");
-  if (permission !== undefined && permission !== "read-only" && permission !== "build") ignored.push("permission");
-
-  const stem = basename(file, extname(file));
-  const field = (key: string) => fields.get(key)?.trim() || undefined;
-  const prompt = body.trim();
-  return {
-    id: `${pack}/${idPart(stem, file)}`,
-    name: field("name") ?? stem,
-    description: field("description"),
-    mode: permission === "read-only" ? Mode.PLAN : Mode.BUILD,
-    prompt: prompt || undefined,
-    model: field("model"),
-    pack,
-    ignored,
-  };
 }
 
 function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boolean }): Agent[] {

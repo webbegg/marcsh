@@ -20,8 +20,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { MAX_AGENT_BYTES, parseAgentFile } from "./agents";
+import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
 import { Mode } from "./modes";
+import { listDir } from "./plugin";
+import { printable } from "./safe-text";
 
 /*
  * Packs: a GitHub repo in the Claude plugin layout plus `agents/*.md`, installed under ~/.marcsh/packs.
@@ -79,6 +81,14 @@ export const MAX_PACK_ENTRIES = 5000;
 export const MAX_PACK_BYTES = 50 * 1024 * 1024;
 
 const FETCH_TIMEOUT_MS = 120_000;
+const MAX_PART_BYTES = 1024 * 1024;
+const MAX_MANIFEST_BYTES = 256 * 1024;
+
+/** The agent ID given to a file that is only being checked by `scanPack`: the result is not kept, so it needs no real pack. */
+const SCAN_PACK_ID = "pack";
+
+/** A size limit as the messages say it, so the text cannot drift from the constant. */
+const formatLimit = (bytes: number) => (bytes % (1024 * 1024) === 0 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`);
 const FORMS = "Use owner/repo, owner/repo@ref or https://github.com/owner/repo";
 
 export function packsRoot() {
@@ -325,15 +335,7 @@ export async function fetchPack({
 
 // ---- scan and preview ----
 
-function listDir(path: string) {
-  try {
-    return readdirSync(path, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
-
-function head(path: string, bytes = 65536) {
+function head(path: string, bytes: number) {
   const fd = openSync(path, "r");
   try {
     const buffer = Buffer.alloc(bytes);
@@ -345,11 +347,9 @@ function head(path: string, bytes = 65536) {
 
 const rejected = (why: string) => new PackError(`Pack rejected: ${why}`);
 
-const MAX_PART_BYTES = 1024 * 1024;
-
 /**
- * Every file under `skills/` or `commands/`, as paths relative to the clone. Only real folders and regular files of at most 1 MB are
- * accepted: a link, a device or anything else rejects the pack, so the view can be built from exactly this list.
+ * Every file under `skills/` or `commands/`, as paths relative to the clone. Only real folders and regular files of at most
+ * MAX_PART_BYTES are accepted: a link, a device or anything else rejects the pack, so the view can be built from exactly this list.
  */
 function listPart(src: string, part: "skills" | "commands"): string[] {
   let top;
@@ -366,7 +366,7 @@ function listPart(src: string, part: "skills" | "commands"): string[] {
       const stat = lstatSync(join(src, rel));
       if (stat.isDirectory()) walk(rel);
       else if (!stat.isFile()) throw rejected(`${printable(rel)} is ${stat.isSymbolicLink() ? "a symlink" : "not a regular file"}; ${part}/ may hold only regular files`);
-      else if (stat.size > MAX_PART_BYTES) throw rejected(`${printable(rel)} is larger than 1 MB`);
+      else if (stat.size > MAX_PART_BYTES) throw rejected(`${printable(rel)} is larger than ${formatLimit(MAX_PART_BYTES)}`);
       else files.push(rel);
     }
   };
@@ -391,6 +391,9 @@ function collectKeys(value: unknown, keys: Set<string>, seen = new Set<object>()
  * indented, in a `{ }` mapping, upper case). It is read as YAML and ALSO searched as text, so a key the YAML reader would see
  * differently from Claude Code's or pi's reader still stops the pack. Throws when the frontmatter is not unambiguous: a marker
  * line with other text on it, no closing line, or YAML that does not parse.
+ *
+ * This is a security check, so it is not `readFrontmatter` (agent-file.ts): that one is a lenient reader of flat fields and would
+ * let a nested or oddly written key through.
  */
 function declaredKeys(text: string): { hooks: boolean; allowedTools: boolean } {
   const lines = text.replace(/\r\n?/g, "\n").trimStart().split("\n");
@@ -437,15 +440,14 @@ function readParts(src: string): Parts {
   }
   // A skill is a folder with a SKILL.md (any case), or a .md directly in skills/ (pi loads those too); a command is any .md
   // under commands/, named by its path.
-  const skills = files
+  const folderSkills = files
     .filter((file) => file.startsWith("skills/") && basename(file).toLowerCase() === "skill.md")
     .map((file) => relative("skills", dirname(file)) || ".");
   const rootSkills = files
     .filter((file) => dirname(file) === "skills" && file.toLowerCase().endsWith(".md") && basename(file).toLowerCase() !== "skill.md")
     .map((file) => basename(file).slice(0, -3));
-  skills.push(...rootSkills);
   const commands = files.filter((file) => file.startsWith("commands/") && file.toLowerCase().endsWith(".md")).map((file) => relative("commands", file).slice(0, -3));
-  return { files, skills: skills.sort(), commands: commands.sort(), warnings };
+  return { files, skills: [...folderSkills, ...rootSkills].sort(), commands: commands.sort(), warnings };
 }
 
 // Like the loader, a pack's `agents` folder is not read through a link.
@@ -507,8 +509,8 @@ export function scanPack(src: string, limits: Partial<PackLimits> = {}): Parts {
   let primary = 0;
   for (const file of agentFiles(src)) {
     const path = join(src, "agents", file);
-    if (lstatSync(path).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${printable(file)} is larger than ${MAX_AGENT_BYTES / 1024} KB`);
-    const agent = parseAgentFile(readFileSync(path, "utf8"), { pack: "pack", file });
+    if (lstatSync(path).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${printable(file)} is larger than ${formatLimit(MAX_AGENT_BYTES)}`);
+    const agent = parseAgentFile(readFileSync(path, "utf8"), { pack: SCAN_PACK_ID, file });
     // The loader keeps such a file as a Build agent whose prompt starts with the frontmatter; a pack fails closed instead.
     if (agent?.ignored.includes("frontmatter")) throw rejected(`agents/${printable(file)} has a frontmatter that is never closed`);
     if (agent) primary++;
@@ -520,18 +522,12 @@ export function scanPack(src: string, limits: Partial<PackLimits> = {}): Parts {
 
 function pluginManifestKeys(src: string): Set<string> {
   try {
-    const manifest = JSON.parse(head(join(src, ".claude-plugin", "plugin.json"), 262144));
+    const manifest = JSON.parse(head(join(src, ".claude-plugin", "plugin.json"), MAX_MANIFEST_BYTES));
     return new Set(manifest && typeof manifest === "object" ? Object.keys(manifest) : []);
   } catch {
     return new Set();
   }
 }
-
-/**
- * Text from a pack as it may reach the terminal: every control character (ESC sequences start with one) and every Unicode format
- * character (zero-width, bidi controls, word joiner, soft hyphen, tag characters...) is removed; those change how a line reads without showing.
- */
-export const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").replace(/\p{Cf}/gu, "");
 
 /** What the pack holds and what marcsh will not use of it, read without running or following anything. `parts` is what `scanPack` read. */
 export function previewPack(src: string, { id, commit }: { id: string; commit: string }, parts: Parts = readParts(src)): PackPreview {

@@ -23,6 +23,18 @@ const ACTIONS: Row[] = [
   { kind: "action", id: "remove", label: "Remove a pack…" },
 ];
 
+// The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
+const permissionTag = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
+
+/** One agent's row: a bullet on the current one, its label, its permission tag, then its description. */
+function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string) {
+  const parts = [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents)];
+  const tag = permissionTag(agent);
+  if (tag) parts.push(`  ${tag}`);
+  if (agent.description) parts.push(`  ${agent.description}`);
+  return parts.join("");
+}
+
 export const AgentsDialogContent = ({ 
   agents, 
   currentId,
@@ -52,13 +64,6 @@ export const AgentsDialogContent = ({
 
   const label = (row: Row) => (row.kind === "agent" ? agentLabel(row.agent, agents) : row.label);
 
-  // The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
-  const permission = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
-  const agentRow = (agent: Agent) =>
-    [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents), permission(agent) && `  ${permission(agent)}`, agent.description && `  ${agent.description}`]
-      .filter(Boolean)
-      .join("");
-
   return (
     <box flexDirection="column" gap={1}>
       {problem && (
@@ -72,7 +77,7 @@ export const AgentsDialogContent = ({
         filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
         renderItem={(row, isSelected) => (
           <text selectable={false} fg={isSelected ? "black" : "white"}>
-            {row.kind === "agent" ? agentRow(row.agent) : `   ${row.label}`}
+            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId) : `   ${row.label}`}
           </text>
         )}
         getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
