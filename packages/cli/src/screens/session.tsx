@@ -122,12 +122,16 @@ function SessionChat({
     [session.engine, submit, refreshPiModel],
   );
 
-  // A turn that takes input (pi) keeps the input on; an approval, question or dialog still takes every key, so the input is off while one is open.
-  // Once the engine has settled the turn takes no more text (`inputClosed`): the input stays on so no key is lost, sending is refused, and the text can be sent when the turn ends.
+  // A pi session's input takes keys whenever no prompt is open: while it starts (the model check, before the turn can take steers), while the
+  // turn runs, and while it closes. An approval, question or dialog still takes every key, so the input is off while one is open.
+  // Only sending waits: before the turn can take steers (`starting`) and once the engine has settled it (`inputClosed`) Enter keeps the text,
+  // which is sent as the next prompt when the turn ends.
+  const piSession = session.engine === "pi";
   const typingDuringTurn = busy && (canSteer || inputClosed);
+  const starting = piSession && (choosingModel || (busy && !canSteer && !inputClosed));
   const turnInput = useMemo(
-    () => ({ active: typingDuringTurn && !pendingRequest, closed: busy && inputClosed, steer, queue: followUp }),
-    [typingDuringTurn, pendingRequest, busy, inputClosed, steer, followUp],
+    () => ({ active: typingDuringTurn && !pendingRequest, closed: busy && inputClosed, starting, steer, queue: followUp }),
+    [typingDuringTurn, pendingRequest, busy, inputClosed, starting, steer, followUp],
   );
 
   // Show the pi model in use (the saved one may need a fallback) before the first prompt.
@@ -161,7 +165,7 @@ function SessionChat({
         cwd={session.cwd}
         engine={session.engine}
         onSubmit={(text) => (busy ? steer(text) : send(text, mode, model))}
-        inputDisabled={(busy && !typingDuringTurn) || choosingModel || pendingRequest !== null}
+        inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
       >

@@ -276,9 +276,11 @@ type Props = {
  * and Alt+Enter queues the text as a follow-up through `queue`. A terminal that cannot send Alt+Enter
  * (macOS Terminal without "Use Option as Meta key") has `/queue <text>` instead. Each returns false when the turn did not
  * take the text (it is over, or was interrupted): the text then stays in the input. `closed` once the turn has settled and
- * is only winding down: the input still takes keys, refuses to send, and says so.
+ * is only winding down: the input still takes keys, refuses to send, and says so. `starting` while a pi session is
+ * starting (the model check, before the turn can take steers): the input takes keys, Enter, Alt+Enter and `/queue` keep the
+ * text and do nothing yet, and the hint says so.
  */
-export type TurnInput = { active: boolean; closed?: boolean; steer: (text: string) => boolean; queue: (text: string) => boolean };
+export type TurnInput = { active: boolean; closed?: boolean; starting?: boolean; steer: (text: string) => boolean; queue: (text: string) => boolean };
 
 export const TurnInputContext = createContext<TurnInput>({ active: false, steer: () => false, queue: () => false });
 
@@ -286,6 +288,7 @@ const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
 
 function turnHint(turnInput: TurnInput, disabled: boolean): string | undefined {
   if (turnInput.closed) return "turn ending · no more steers";
+  if (turnInput.starting && !disabled) return "turn starting · enter steers once it runs";
   if (turnInput.active && !disabled) return "enter steers · alt+enter queues";
   return undefined;
 }
@@ -470,10 +473,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = textarea.plainText.trim();
     if (text.length === 0) return;
 
-    // While a turn takes input, `/queue <text>` queues like Alt+Enter does.
-    const queuedByCommand = turnInput.active ? QUEUE_COMMAND.exec(text) : null;
+    // While a turn takes input, `/queue <text>` queues like Alt+Enter does; before it can, the text stays where it is.
+    const queuedByCommand = turnInput.active || turnInput.starting ? QUEUE_COMMAND.exec(text) : null;
     if (queuedByCommand) {
-      if (turnInput.queue(queuedByCommand[1]!.trim())) {
+      if (!turnInput.starting && turnInput.queue(queuedByCommand[1]!.trim())) {
         clearKeyActivity(renderer);
         textarea.setText("");
       }
@@ -487,7 +490,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return;
     }
 
-    // A turn that is over takes nothing: the text stays in the input, to be sent once the turn ends.
+    // A session that is starting, or a turn that is over, takes nothing: the text stays in the input, to be sent once the turn ends.
+    if (turnInput.starting) return;
     if (turnInput.active && !(queue ? turnInput.queue(text) : turnInput.steer(text))) return;
     if (!turnInput.active) onSubmit(text);
     clearKeyActivity(renderer);
@@ -562,7 +566,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (key.name === "tab") {
       key.preventDefault();
       toggleMode();
-    } else if (turnInput.active && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
+    } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);
     }

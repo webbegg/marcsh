@@ -104,7 +104,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const [permissionQueue, setPermissionQueue] = useState<PendingRequest[]>([]);
   const [queued, setQueued] = useState<QueuedInput>(NOTHING_QUEUED);
   const [canSteer, setCanSteer] = useState(false);
-  // The engine has settled: the turn is still winding down but takes no more text.
+  // The turn is still winding down but takes no more text: the engine has settled, or the turn was interrupted.
   const [inputClosed, setInputClosed] = useState(false);
 
   const messagesRef = useRef(messages);
@@ -314,6 +314,10 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     interruptedRef.current = true;
     // The engine discards what it has not sent; the turn takes no more input while it winds down.
     setCanSteer(false);
+    if (turnRef.current) {
+      inputClosedRef.current = true;
+      setInputClosed(true);
+    }
     setQueued(NOTHING_QUEUED);
     turnRef.current?.interrupt();
   }, []);

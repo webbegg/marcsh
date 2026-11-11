@@ -36,6 +36,7 @@ afterAll(() => rmSync(prefsDir, { recursive: true, force: true }));
 
 afterEach(async () => {
   engines.set("pi", undefined);
+  engines.set("claude", undefined);
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
   rmSync(dir, { recursive: true, force: true });
@@ -302,13 +303,14 @@ describe("typing during a pi turn (S4)", () => {
 describe("an engine without steer keeps today's behavior (S4)", () => {
   test("the input is off during the turn and text typed then goes nowhere", async () => {
     const release = Promise.withResolvers<void>();
+    // A Claude session: its turn takes no input, and a pi session's input is on whenever no prompt is open.
     const stub: Engine = {
-      id: "pi",
+      id: "claude",
       startTurn: () => ({ done: release.promise, interrupt: () => release.resolve() }),
       warmUpCommands: async () => {},
     };
-    engines.set("pi", stub);
-    const session = getStorage().createSession({ title: "chat", cwd, engine: "pi" });
+    engines.set("claude", stub);
+    const session = getStorage().createSession({ title: "chat", cwd, engine: "claude" });
     const router = createMemoryRouter(
       [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
       { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "opus" } } }] },
