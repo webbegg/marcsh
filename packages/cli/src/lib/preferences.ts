@@ -9,6 +9,8 @@ export type Preferences = {
   defaultEngine?: string;
   /** The pi model ("provider/id") new pi turns use. */
   piModel?: string;
+  /** The ID of the selected agent (see lib/agents). */
+  agent?: string;
 };
 
 export function preferencesPath() {
@@ -51,4 +53,14 @@ export function getPiModel(path = preferencesPath()): string | undefined {
 
 export function setPiModel(model: string, path = preferencesPath()) {
   updatePreferences({ piModel: model }, path);
+}
+
+/** The stored agent ID, or undefined when none is stored; whether that agent still exists is the caller's check. */
+export function getAgentId(path = preferencesPath()): string | undefined {
+  const { agent } = readPreferences(path);
+  return typeof agent === "string" ? agent : undefined;
+}
+
+export function setAgentId(id: string, path = preferencesPath()) {
+  updatePreferences({ agent: id }, path);
 }
