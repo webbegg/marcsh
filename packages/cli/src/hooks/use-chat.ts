@@ -3,7 +3,7 @@ import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
-import type { ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
+import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import type { Engine, EngineEvent, EngineTurn, NoticeLevel, PermissionAsk, PermissionDecision, TurnHost } from "../lib/engine/types";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
@@ -57,12 +57,13 @@ export type EditorRequest = {
   respond: (text: string | undefined) => void;
 };
 
-/** marcsh's own question before pi loads a project's pi files (not an extension dialog): `respond` takes the answer; "skip" = untrusted for this turn only. */
+/** marcsh's own question before pi loads a project's pi files (not an extension dialog): `respond` takes the answer; "skip" = untrusted for this turn only. `changes` is set when the project was trusted before (see `ProjectTrustAsk`). */
 export type TrustRequest = {
   kind: "trust";
   id: string;
   cwd: string;
   resources: ProjectResource[];
+  changes?: ProjectChanges;
   respond: (answer: TrustAnswer) => void;
 };
 

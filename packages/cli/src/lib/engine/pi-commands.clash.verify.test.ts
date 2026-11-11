@@ -7,6 +7,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, InMemoryCredentialStore, 
 import { Mode } from "../modes";
 import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 
 // S11: the marcsh plugin's feature command and workflow skill stay reachable as /marcsh:feature and /marcsh:workflow
 // on pi even when the user (agent dir) or the project (.pi) has a template or skill with the same pi name.
@@ -36,7 +37,7 @@ async function sentFor(prompt: string) {
   let sent: string[] = [];
   faux.setResponses([(context) => ((sent = userTexts(context.messages)), fauxAssistantMessage([fauxText("ok")]))]);
   // Project trust (S18) is not what this checks: the project's own files are trusted.
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} } });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: openStorage(":memory:"), projectTrust: trustEveryProject });
   const turn = engine.startTurn(
     { prompt, cwd, mode: Mode.BUILD, model: "faux/faux-1", signal: new AbortController().signal },
     { emit() {}, askPermission: async () => "deny", askQuestions: async () => null },

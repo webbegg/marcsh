@@ -10,6 +10,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 import type { EngineEvent, PermissionAsk, PermissionDecision, TurnRequest } from "./types";
 
 let dir: string, agentDir: string, cwd: string, counter: string;
@@ -46,7 +47,7 @@ async function engineWith(responses: FauxResponseStep[], opts: { sessionDir?: bo
   modelRuntime.registerNativeProvider(faux.provider);
   faux.setResponses(responses);
   storage = openStorage(":memory:");
-  return createPiEngine({ agentDir, modelRuntime, permissionRules: storage, projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} }, ...(opts.sessionDir === false ? {} : { sessionDir: join(dir, "sessions") }) });
+  return createPiEngine({ agentDir, modelRuntime, permissionRules: storage, projectTrust: trustEveryProject, ...(opts.sessionDir === false ? {} : { sessionDir: join(dir, "sessions") }) });
 }
 
 async function run(engine: ReturnType<typeof createPiEngine>, request: Partial<TurnRequest>, decision: PermissionDecision | ((a: PermissionAsk) => PermissionDecision)) {

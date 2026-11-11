@@ -8,6 +8,7 @@ import {
   findProjectResources,
   isProjectTrusted,
   resolveProjectTrust,
+  reviewProject,
   unreadableResources,
   type ProjectTrustAsk,
   type TrustAnswer,
@@ -353,7 +354,7 @@ describe("resolveProjectTrust", () => {
 
   test("a stored decision is used and not asked again", async () => {
     const { storage, asks, resolve } = setup("distrust");
-    storage.setProjectTrust(project, "trusted");
+    storage.setProjectTrust(project, "trusted", reviewProject(project).record);
     expect(await resolve()).toBe(true);
 
     storage.setProjectTrust(project, "untrusted");
@@ -491,6 +492,7 @@ describe("an entry marcsh could not read makes the project untrustable", () => {
     expect(isProjectTrusted(project, () => storage)).toBe(false);
 
     write(join(project, ".pi", "mcp.json"), JSON.stringify({ mcpServers: {} }));
+    storage.setProjectTrust(project, "trusted", reviewProject(project).record);
     expect(isProjectTrusted(project, () => storage)).toBe(true);
   });
 
@@ -509,7 +511,7 @@ describe("isProjectTrusted (warm-up: never asks)", () => {
     storage.setProjectTrust(project, "untrusted");
     expect(isProjectTrusted(project, () => storage)).toBe(false);
 
-    storage.setProjectTrust(project, "trusted");
+    storage.setProjectTrust(project, "trusted", reviewProject(project).record);
     expect(isProjectTrusted(project, () => storage)).toBe(true);
   });
 

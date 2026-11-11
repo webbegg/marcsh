@@ -29,6 +29,11 @@ function reachedEnd({ top, total, viewport }: View, entries: number): boolean {
   return viewport >= MIN_LIST_ROWS && total >= entries && top + viewport >= total;
 }
 
+
+const TITLE = "Trust this project's pi files?";
+const CHANGED_TITLE = "This project's pi files changed since you trusted them. Trust them again?";
+const NO_RECORD_NOTICE = "No record of your earlier review: marcsh cannot tell which files changed.";
+
 type Props = {
   request: TrustRequest;
   /**
@@ -41,6 +46,9 @@ type Props = {
 /**
  * marcsh's own question before pi loads a project's pi files (extensions, MCP servers, settings...): what the folder
  * holds, then `t` to trust (arms Enter), `d` not to, Esc to leave this one turn untrusted without remembering.
+ * A project trusted before whose files changed since is asked again in the same way, with a title that says so, each entry
+ * marked [added], [changed] or [unchanged], and the paths that are gone listed as [removed] (a trust stored before reviews were
+ * kept has nothing to compare with: no marks, and a notice says so).
  * Like an approval it ignores keys until the keyboard has been quiet, so typing ahead cannot answer it, and
  * `t` alone trusts nothing: trusting lets the project's code run, so it only works once the whole list has been on screen.
  * When marcsh could not read an entry, it cannot show what trusting would run: those entries are listed first with the
@@ -66,13 +74,28 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   const [view, setView] = useState<View>(UNMEASURED);
   const [endSeen, setEndSeen] = useState(false);
   const endSeenRef = useRef(false);
-  const entries = request.resources.length;
   const unreadable = unreadableResources(request.resources).length;
   const reviewable = unreadable === 0;
+  const changes = request.changes;
+  const title = changes ? CHANGED_TITLE : TITLE;
+
+  // What the project supplies, one escaped line each; what could not be read comes first: it is the part the user cannot judge.
+  const marked = (resource: (typeof request.resources)[number]) => {
+    const mark = changes?.known ? `[${changes.status.get(resource.path) ?? "added"}] ` : "";
+    return escapeProjectText(`${mark}${resource.detail ? `${resource.path} — ${resource.detail}` : resource.path}`);
+  };
+  const rows = [
+    ...request.resources.filter((resource) => resource.unreadable).map(marked),
+    ...request.resources.filter((resource) => !resource.unreadable).map(marked),
+    ...(changes?.removed ?? []).map((path) => escapeProjectText(`[removed] ${path}`)),
+  ];
+  const entries = rows.length;
 
   // Too short for the whole layout: only the title, a notice and the answers that need no reading are drawn.
-  const folderRows = Math.max(1, Math.ceil(request.cwd.length / Math.max(1, width - SIDE_COLUMNS)));
-  const compact = height < FIXED_ROWS + folderRows + MIN_LIST_ROWS;
+  const columns = Math.max(1, width - SIDE_COLUMNS);
+  const folderRows = Math.max(1, Math.ceil(request.cwd.length / columns));
+  const noticeRows = changes && !changes.known ? Math.ceil(NO_RECORD_NOTICE.length / columns) : 0;
+  const compact = height < FIXED_ROWS + folderRows + noticeRows + MIN_LIST_ROWS;
   const compactRef = useRef(compact);
   compactRef.current = compact;
 
@@ -109,10 +132,6 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     };
   }, [renderer, measure, place]);
 
-  // What could not be read comes first: it is the part the user cannot judge.
-  const rows = [...request.resources.filter((resource) => resource.unreadable), ...request.resources.filter((resource) => !resource.unreadable)].map((resource) =>
-    escapeProjectText(resource.detail ? `${resource.path} — ${resource.detail}` : resource.path),
-  );
   const scrolls = view.viewport > 0 && view.total > view.viewport;
   // Judged from the layout that is on screen: less room than the minimum means the list cannot be reviewed.
   const tooSmall = compact || (view !== UNMEASURED && view.viewport < MIN_LIST_ROWS);
@@ -210,7 +229,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
         paddingX={2}
       >
         <text>
-          <em fg={colors.info}>Trust this project&apos;s pi files?</em>
+          <em fg={colors.info}>{title}</em>
         </text>
         <text attributes={TextAttributes.DIM}>{reviewable ? smallNotice : unreadableNotice}</text>
         <box flexDirection="row" gap={2}>
@@ -242,14 +261,16 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
     >
       <box flexShrink={0} flexDirection="column">
         <text>
-          <em fg={colors.info}>Trust this project&apos;s pi files?</em>
+          <em fg={colors.info}>{title}</em>
         </text>
         <text attributes={TextAttributes.DIM} wrapMode="char">
           {escapeProjectText(request.cwd)}
         </text>
         <text attributes={TextAttributes.DIM}>
-          {rows.length} {rows.length === 1 ? "item" : "items"} pi would load or run, most dangerous first
+          {request.resources.length} {request.resources.length === 1 ? "item" : "items"} pi would load or run, most dangerous first
+          {changes?.removed.length ? `, ${changes.removed.length} removed` : ""}
         </text>
+        {changes && !changes.known ? <text attributes={TextAttributes.DIM}>{NO_RECORD_NOTICE}</text> : null}
       </box>
       <scrollbox ref={scrollRef} flexGrow={1} flexShrink={1} minHeight={0}>
         {rows.map((row, i) => (

@@ -6,7 +6,7 @@ import { Mode } from "../modes";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
-import { applyPiEvent, createErrorTracker, withDuration } from "./pi-events";
+import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
@@ -207,10 +207,13 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     let aborted = signal.aborted;
     // Aborts when the turn is interrupted or over: pending approvals are then declined.
     const turnEnded = new AbortController();
+    // Streamed text reaches the host at most ~30 times a second; the feed is closed (queue sent, timer gone) when the turn ends.
+    const feed = createReplyFeed((event) => host.emit(event));
 
     const interrupt = () => {
       aborted = true;
       turnEnded.abort();
+      feed.flush();
       void session?.abort();
     };
     signal.addEventListener("abort", interrupt, { once: true });
@@ -326,9 +329,9 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       session.subscribe((event) => {
         const failure = errors.observe(event);
         if (failure) fail(failure);
-        if (event.type === "message_end" || event.type === "tool_execution_end") {
-          host.emit({ type: "reply", update: (reply) => applyPiEvent(reply, event) });
-        }
+        // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
+        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event));
+        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event));
       });
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
 
@@ -339,6 +342,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         await session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
         await session.waitForIdle();
       } finally {
+        feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });
       }
 
@@ -351,6 +355,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       .finally(() => {
         signal.removeEventListener("abort", interrupt);
         turnEnded.abort();
+        feed.close();
         // Tells the extensions the session is over (MCP closes its servers then) before pi's dispose drops them.
         return disposePiSession(session);
       });

@@ -17,6 +17,7 @@ const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { createPiEngine } = await import("../lib/engine/pi");
+const { reviewProject } = await import("../lib/engine/pi-trust");
 
 let dir: string;
 let agentDir: string;
@@ -523,8 +524,8 @@ describe("a project with a file marcsh could not read (S18)", () => {
     expect(existsSync(marker())).toBe(false);
   }, 30000);
 
-  test("control: a stored 'trusted' on a project whose files are all readable still loads without asking", async () => {
-    getStorage().setProjectTrust(cwd, "trusted");
+  test("control: a stored 'trusted' on a project whose files are all readable and as reviewed still loads without asking", async () => {
+    getStorage().setProjectTrust(cwd, "trusted", reviewProject(cwd).record);
     await openPiSession("hello");
     expect(await frameContaining(REPLY)).toContain(REPLY);
     expect(existsSync(marker())).toBe(true);

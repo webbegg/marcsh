@@ -9,6 +9,7 @@ import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine } from "./pi";
+import { trustEveryProject } from "./test-trust";
 import type { Guard } from "./pi-guard";
 import type { EngineEvent, PermissionAsk, PermissionDecision, TurnHost, TurnRequest } from "./types";
 
@@ -54,7 +55,7 @@ async function setup(script: Script, opts: { rules?: Storage; guard?: Guard } = 
   const seen: Record<string, Ctx[]> = {};
   faux.setResponses(Array.from({ length: 60 }, () => router(script, seen)) as any);
   const rules = opts.rules ?? openStorage(":memory:");
-  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: rules, projectTrust: { getProjectTrust: () => "trusted", setProjectTrust: () => {} }, sessionDir, ...(opts.guard ? { guard: opts.guard } : {}), pluginPath: null });
+  const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: rules, projectTrust: trustEveryProject, sessionDir, ...(opts.guard ? { guard: opts.guard } : {}), pluginPath: null });
   return { engine, seen, rules };
 }
 
