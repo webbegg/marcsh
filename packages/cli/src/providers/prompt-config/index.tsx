@@ -4,7 +4,7 @@ import type { ModeType } from "../../lib/modes";
 import { findAgent, loadAgents, nextAgent, type Agent } from "../../lib/agents";
 import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
 import { getPiRuntime, type EngineId } from "../../lib/engine";
-import { listAvailablePiModels, pickPiModel } from "../../lib/engine/pi-models";
+import { listAvailablePiModels, pickPiModel, pickTurnPiModel } from "../../lib/engine/pi-models";
 import {
   getAgentId,
   getDefaultEngine,
@@ -45,8 +45,11 @@ type PromptConfigContextValue = {
   piModelStatus: PiModelStatus;
   /** Picks the pi model for the following turns and for new pi sessions (kept in the preferences). */
   setPiModel: (model: string) => void;
-  /** Checks the pi model against the models that have credentials now, and resolves with the one to use. */
-  refreshPiModel: () => Promise<string>;
+  /**
+   * Checks the pi model against the models that have credentials now, and resolves with the one to use: `turnModel` (an
+   * agent's) when it is available, else the same pick the status line shows.
+   */
+  refreshPiModel: (turnModel?: string) => Promise<string>;
 };
 
 /** How long the pi model check may take before it counts as failed. Mutable so tests can shorten it. */
@@ -131,7 +134,7 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
   // Checks overlap (a screen opening, a turn starting): only the latest one may change what the line says.
   const latestCheck = useRef(0);
 
-  const refreshPiModel = useCallback(async () => {
+  const refreshPiModel = useCallback(async (turnModel?: string) => {
     const check = ++latestCheck.current;
     try {
       const available = await withinLimit(
@@ -140,7 +143,7 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
       );
       const next = pickPiModel(preferredPiModel.current, available);
       if (check === latestCheck.current) applyPiModel(next, available.length > 0 ? "ready" : "none");
-      return next;
+      return pickTurnPiModel(turnModel, preferredPiModel.current, available);
     } catch {
       // No runtime to ask, or it took too long: the line names no model (the built-in default is only a guess), nothing is
       // shown as a toast, and a turn still goes out with what is in use so it reports what is missing.

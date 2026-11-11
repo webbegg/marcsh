@@ -89,7 +89,8 @@ function decline(request: PendingRequest) {
   }
 }
 
-export type SubmitParams = { userText: string; mode: ModeType; model: string };
+/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine. */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string } };
 
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
@@ -118,14 +119,14 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   }, []);
 
   const submit = useCallback(
-    async ({ userText, mode, model }: SubmitParams) => {
+    async ({ userText, mode, model, agent }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
       interruptedRef.current = false;
 
       const replyId = crypto.randomUUID();
-      const metadata = { mode, model };
+      const metadata = { mode, model, ...(agent ? { agent: agent.name } : {}) };
       updateMessages((prev) => [
         ...prev,
         { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
@@ -232,6 +233,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             cwd: session.cwd,
             mode,
             model,
+            systemPromptAppend: agent?.prompt,
             resumeRef: resumeRefRef.current ?? undefined,
             signal: abortController.signal,
           },

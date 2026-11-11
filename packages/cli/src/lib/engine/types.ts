@@ -34,6 +34,8 @@ export type TurnRequest = {
   cwd: string;
   mode: ModeType;
   model: string;
+  /** The selected agent's prompt: added to the engine's own system prompt for this turn, never in place of it. */
+  systemPromptAppend?: string;
   resumeRef?: string;
   /** Aborting stops the turn. */
   signal: AbortSignal;

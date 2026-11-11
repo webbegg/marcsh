@@ -12,6 +12,8 @@ const newSessionStateSchema = z.object({
   message: z.string(),
   mode: modeSchema,
   model: z.string(),
+  /** The ID of the agent selected on the home screen. */
+  agent: z.string().optional(),
 });
 
 export function NewSession() {

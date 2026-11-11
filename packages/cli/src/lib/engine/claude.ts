@@ -26,7 +26,7 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
-function startTurn({ prompt, cwd, mode, model, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
@@ -67,7 +67,7 @@ function startTurn({ prompt, cwd, mode, model, resumeRef, signal }: TurnRequest,
           permissionMode: toPermissionMode(mode),
           resume: resumeRef,
           abortController,
-          systemPrompt: { type: "preset", preset: "claude_code" },
+          systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
           settingSources: ["user", "project", "local"],
           canUseTool,
           ...(pluginPath ? { plugins: [{ type: "local" as const, path: pluginPath }] } : {}),
