@@ -10,6 +10,8 @@ const prefsPath = join(prefsDir, "preferences.json");
 process.env.MARCSH_PREFERENCES_PATH = prefsPath;
 
 let claudeCalls: { prompt: string; options: any }[] = [];
+// When set, a Claude turn waits for it before it ends.
+let claudeHold: Promise<void> | null = null;
 
 // Fake query(): init → result, so a Claude turn needs no model.
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
@@ -17,6 +19,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     claudeCalls.push({ prompt, options });
     const messages = (async function* () {
       yield { type: "system", subtype: "init", session_id: "claude-1", model: options.model };
+      await claudeHold;
       yield { type: "result", subtype: "success", is_error: false, result: "ok", duration_ms: 1, total_cost_usd: 0 };
     })();
     return Object.assign(messages, { interrupt: async () => {}, supportedCommands: async () => [] });
@@ -107,6 +110,7 @@ afterAll(() => {
 
 afterEach(async () => {
   claudeCalls = [];
+  claudeHold = null;
   piRequests = [];
   rmSync(prefsPath, { force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
@@ -291,5 +295,83 @@ describe("new sessions take the default engine (S2)", () => {
     expect(sessionByTitle("first pi chat")?.engine).toBe("pi");
     expect(piRequests.map((r) => [r.prompt, r.model])).toEqual([["first pi chat", PI_DEFAULT_MODEL]]);
     expect(claudeCalls).toEqual([]);
+  });
+});
+
+describe("keys typed on the new-session screen (S4)", () => {
+  // The keys arrive while /sessions/new is up, just before it creates the session and moves on to it.
+  const burstOnNewSession = (burst: string) => {
+    const storage = getStorage();
+    const createSession = storage.createSession.bind(storage);
+    storage.createSession = ((...args: Parameters<typeof createSession>) => {
+      storage.createSession = createSession;
+      for (const ch of burst) screen!.mockInput.pressKey(ch as never);
+      return createSession(...args);
+    }) as typeof storage.createSession;
+  };
+
+  test("on a pi session the burst is in the session input, and the first prompt is sent once", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi" }), "utf8");
+    await open("/");
+    burstOnNewSession("and then");
+
+    await type("first words");
+    await press("RETURN");
+    await settle(200);
+
+    expect(piRequests.map((r) => r.prompt)).toEqual(["first words"]);
+    expect(frame()).toContain("and then");
+
+    await press("RETURN");
+    await settle(100);
+    expect(piRequests.map((r) => r.prompt)).toEqual(["first words", "and then"]);
+  });
+
+  test("on a Claude session the burst stays in the disabled input during the turn and is not lost", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "claude" }), "utf8");
+    const hold = Promise.withResolvers<void>();
+    claudeHold = hold.promise;
+    await open("/");
+    burstOnNewSession("and then");
+
+    await type("first words");
+    await press("RETURN");
+    await settle(200);
+
+    expect(claudeCalls.map((c) => c.prompt)).toEqual(["first words"]);
+    expect(frame()).toContain("and then");
+    // The turn is running: the input is off, so more keys and Enter change nothing.
+    await press("RETURN");
+    expect(claudeCalls).toHaveLength(1);
+
+    hold.resolve();
+    await settle(200);
+    expect(frame()).toContain("and then");
+    expect(claudeCalls).toHaveLength(1);
+
+    await press("RETURN");
+    await settle(100);
+    expect(claudeCalls.map((c) => c.prompt)).toEqual(["first words", "and then"]);
+  });
+
+  test("Enter on the new-session screen sends nothing and keeps the text", async () => {
+    writeFileSync(prefsPath, JSON.stringify({ defaultEngine: "pi" }), "utf8");
+    await open("/");
+    const storage = getStorage();
+    const createSession = storage.createSession.bind(storage);
+    storage.createSession = ((...args: Parameters<typeof createSession>) => {
+      storage.createSession = createSession;
+      screen!.mockInput.pressKey("x" as never);
+      screen!.mockInput.pressEnter();
+      screen!.mockInput.pressKey("y" as never);
+      return createSession(...args);
+    }) as typeof storage.createSession;
+
+    await type("first words");
+    await press("RETURN");
+    await settle(200);
+
+    expect(piRequests.map((r) => r.prompt)).toEqual(["first words"]);
+    expect(frame()).toContain("xy");
   });
 });

@@ -32,6 +32,8 @@ const sessionLocationSchema = z.object({
       model: z.string(),
     })
     .optional(),
+  // Text typed on the new-session screen, to be carried into the input.
+  draft: z.string().optional(),
 });
 
 function ChatMessage(
@@ -62,9 +64,11 @@ function ChatMessage(
 function SessionChat({ 
   session,
   initialPrompt,
+  draft,
 }: { 
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string };
+  draft?: string;
 }) {
   const { mode, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
@@ -164,6 +168,7 @@ function SessionChat({
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
+        initialDraft={draft}
         onSubmit={(text) => (busy ? steer(text) : send(text, mode, model))}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
@@ -200,9 +205,9 @@ export function Session() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const initialPrompt = useMemo(() => {
+  const { initialPrompt, draft } = useMemo(() => {
     const parsed = sessionLocationSchema.safeParse(location.state);
-    return parsed.success ? parsed.data.initialPrompt : undefined;
+    return parsed.success ? parsed.data : { initialPrompt: undefined, draft: undefined };
   }, [location.state]);
 
   const { session, loadError } = useMemo(() => {
@@ -232,6 +237,7 @@ export function Session() {
       key={session.id} 
       session={session} 
       initialPrompt={initialPrompt}
+      draft={draft}
     />
   );
 };

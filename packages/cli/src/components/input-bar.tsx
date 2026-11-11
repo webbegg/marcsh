@@ -269,6 +269,15 @@ type Props = {
   cwd?: string;
   /** The engine the prompt runs on; defaults to the one new sessions start on. */
   engine?: string;
+  /** Text the bar mounts with (a draft carried over from the screen before). */
+  initialDraft?: string;
+  /**
+   * Set to a function that reads the text as it is right now. The text of a key is in the textarea before its content-change event
+   * fires, so a screen that moves on mid-burst reads it here, not from an event.
+   */
+  readDraftRef?: { current: (() => string) | null };
+  /** Takes keys but never sends: Enter and the `/` commands do nothing, the text stays (the new-session screen, where there is no prompt yet). */
+  typeOnly?: boolean;
 };
 
 /**
@@ -300,7 +309,7 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine }: Props) {
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, initialDraft, readDraftRef, typeOnly = false }: Props) {
   const { mode, toggleMode, setMode, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
@@ -387,6 +396,14 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu, renderer]);
 
+  useEffect(() => {
+    if (!readDraftRef) return;
+    readDraftRef.current = () => textareaRef.current?.plainText ?? "";
+    return () => {
+      readDraftRef.current = null;
+    };
+  }, [readDraftRef]);
+
   // A prompt that opens while the user is composing here opens locked (see prompt-lock). Keys can reach a new bar before this runs
   // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
   useEffect(() => {
@@ -458,14 +475,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
   const handleCommandExecute = useCallback(
     (index: number) => {
+      if (typeOnly) return;
       const command = resolveCommand(index);
       handleCommand(command);
     },
-    [resolveCommand, handleCommand],
+    [resolveCommand, handleCommand, typeOnly],
   );
 
   const handleSubmit = useCallback((queue = false) => {
-    if (disabled) return;
+    if (disabled || typeOnly) return;
 
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -496,7 +514,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!turnInput.active) onSubmit(text);
     clearKeyActivity(renderer);
     textarea.setText("");
-  }, [disabled, onSubmit, handleCommand, turnInput, renderer])
+  }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer])
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
@@ -537,7 +555,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   }, []);
 
   onSubmitRef.current = () => {
-    if (disabled) return;
+    if (disabled || typeOnly) return;
 
     if (showCommandMenu) {
       const command = resolveCommand(selectedIndex);
@@ -565,7 +583,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      toggleMode();
+      if (!typeOnly) toggleMode();
     } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);
@@ -691,6 +709,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
               !disabled && 
               (isTopLayer("base") || isTopLayer("command") || isTopLayer("mention"))
             }
+            initialValue={initialDraft}
             keyBindings={TEXTAREA_KEY_BINDINGS}
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}

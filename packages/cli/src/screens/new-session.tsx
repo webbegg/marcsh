@@ -20,6 +20,8 @@ export function NewSession() {
   const toast = useToast();
   const { defaultEngine } = usePromptConfig();
   const hasStartedRef = useRef(false);
+  // Keys typed here (a burst right after Enter on the home screen) are the start of the next message: they go on to the session's input.
+  const readDraftRef = useRef<(() => string) | null>(null);
 
   const state = useMemo(() => {
     const parsed = newSessionStateSchema.safeParse(location.state);
@@ -47,7 +49,7 @@ export function NewSession() {
       });
       navigate(
         `/sessions/${session.id}`,
-        { replace: true, state: { initialPrompt: state } }
+        { replace: true, state: { initialPrompt: state, draft: readDraftRef.current?.() ?? "" } }
       );
     } catch (error) {
       toast.show({
@@ -61,7 +63,7 @@ export function NewSession() {
   if (!state) return null;
 
   return (
-    <SessionShell onSubmit={() => {}} inputDisabled loading>
+    <SessionShell onSubmit={() => {}} inputTypeOnly readDraftRef={readDraftRef} loading>
       <UserMessage message={state.message} mode={state.mode} />
     </SessionShell>
   );
