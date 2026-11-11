@@ -205,6 +205,10 @@ function git(cwd: string, args: string[], { url, timeoutMs }: { url: string; tim
     child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
     child.on("close", (code, signal) => {
       if (code === 0) return done(out.trim());
+      // GitHub answers a missing or private repo by asking for a login, which is off: say what that means.
+      if (/could not read Username|Authentication failed|Repository not found/.test(err)) {
+        return fail(new PackError(`${printable(url)} was not found, or it is private: marcsh installs public repositories only`));
+      }
       // The server's own words reach the toast: cleaned, and only the end of them (git puts the reason last).
       const why = signal ? `timed out after ${Math.round(timeoutMs / 1000)} s` : printable(err.trim()).slice(-MAX_GIT_MESSAGE) || `exited with ${code}`;
       fail(new PackError(`git ${args[0]} failed: ${why}`));

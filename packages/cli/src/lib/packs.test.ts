@@ -832,6 +832,27 @@ describe("review corrections", () => {
     }
   });
 
+  test("a repo GitHub will not serve without a login says it is missing or private, not 'could not read Username'", async () => {
+    const bin = join(work, "bin");
+    mkdirSync(bin);
+    // GitHub answers a missing or private repo with 401; with prompts off, git ends with this line.
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nfor a in "$@"; do if [ "$a" = fetch ]; then echo "fatal: could not read Username for 'https://github.com': terminal prompts disabled" >&2; exit 128; fi; done\nexit 0\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      const text = await message(installPack("acme/typo", options()));
+      expect(text).toContain("acme/typo");
+      expect(text).toContain("not found, or it is private");
+      expect(text).not.toContain("Username");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
   test("a pack agent whose frontmatter is never closed is rejected [R3-002]", async () => {
     makeRepo("acme/open", { "agents/reviewer.md": AGENT, "agents/open.md": "---\nname: Open\npermission: read-only\nNo closing line" });
     await expect(installPack("acme/open", options())).rejects.toThrow(/Pack rejected: agents\/open\.md.*never closed/);
