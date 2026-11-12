@@ -281,11 +281,12 @@ export const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
 /**
  * What Claude is given for a pack's hooks, instead of the pack's own `hooks.json`: a `hooks.json` with the same events, matchers and timeouts
- * where every command is a call to marcsh's filter (`filterPath`, run by bun without the project's env file or config), and the commands file
+ * where every command is a call to marcsh's filter (`filterPath`, run by marcsh's own bun, by path, so a PATH without bun cannot leave the hooks
+ * silently off, and without the project's env file or config), and the commands file
  * the filter reads the original commands from (the commands as the user read them, by event, group and hook number).
  */
 export function claudeHookFiles(config: HooksConfig, filterPath: string): { hooksJson: string; commandsJson: string } {
-  const run = `bun --no-env-file --config=/dev/null ${shellQuote(filterPath)} "\${CLAUDE_PLUGIN_ROOT}/${HOOKS_DIR}/${COMMANDS_FILE}"`;
+  const run = `${shellQuote(process.execPath)} --no-env-file --config=/dev/null ${shellQuote(filterPath)} "\${CLAUDE_PLUGIN_ROOT}/${HOOKS_DIR}/${COMMANDS_FILE}"`;
   const hooks = Object.fromEntries(
     Object.entries(config).map(([event, groups]) => [
       event,

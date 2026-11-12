@@ -224,7 +224,8 @@ describe("a Claude turn with a pack agent whose hooks are enabled (S16)", () => 
     const commands: string[] = Object.values<any>(JSON.parse(text).hooks).flatMap((groups) => groups.flatMap((group: any) => group.hooks.map((hook: any) => hook.command)));
     expect(commands).toHaveLength(2);
     for (const command of commands) {
-      expect(command.startsWith("bun --no-env-file --config=/dev/null ")).toBe(true);
+      // marcsh's own bun, by path (the test runs under it).
+      expect(command.startsWith(`'${process.execPath}' --no-env-file --config=/dev/null `)).toBe(true);
       expect(command).toContain(`'${filter}'`);
     }
     for (const original of ["allow.sh", "touch /tmp/pwned"]) expect(text).not.toContain(original);

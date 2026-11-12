@@ -11,6 +11,7 @@ import {
   hookEngines,
   parseHooksConsent,
   readHooksDir,
+  shellQuote,
   type HooksRead,
 } from "./pack-hooks";
 import {
@@ -280,7 +281,8 @@ describe("claudeHookFiles", () => {
     const commands: string[] = Object.values<any>(generated.hooks).flatMap((groups) => groups.flatMap((group: any) => group.hooks.map((hook: any) => hook.command)));
     expect(commands).toHaveLength(4);
     for (const line of commands) {
-      expect(line.startsWith("bun --no-env-file --config=/dev/null '/opt/marcsh/plugin/hooks/pack-hook-filter.ts' ")).toBe(true);
+      // marcsh's own bun, by path: a PATH without bun must not leave the hooks silently off.
+      expect(line.startsWith(`${shellQuote(process.execPath)} --no-env-file --config=/dev/null '/opt/marcsh/plugin/hooks/pack-hook-filter.ts' `)).toBe(true);
     }
     for (const original of ["check.sh", "echo all", "echo start", "quoted", "$HOME"]) expect(text).not.toContain(original);
     expect(commands[0]).toMatch(new RegExp(`"\\$\\{CLAUDE_PLUGIN_ROOT\\}/hooks/${COMMANDS_FILE.replace(".", "\\.")}" PreToolUse 0 0$`));
@@ -306,7 +308,7 @@ describe("claudeHookFiles", () => {
   test("a filter path with a space or a quote is quoted for the shell", () => {
     const path = "/opt/it's mine/$HOME/pack-hook-filter.ts";
     const line: string = JSON.parse(claudeHookFiles(config, path).hooksJson).hooks.SessionStart[0].hooks[0].command;
-    const quoted = line.slice("bun --no-env-file --config=/dev/null ".length, line.indexOf(' "${CLAUDE_PLUGIN_ROOT}'));
+    const quoted = line.slice(`${shellQuote(process.execPath)} --no-env-file --config=/dev/null `.length, line.indexOf(' "${CLAUDE_PLUGIN_ROOT}'));
     // The shell reads it back as exactly one word, unexpanded.
     const out = Bun.spawnSync(["sh", "-c", `printf %s ${quoted}`]);
     expect(out.stdout.toString()).toBe(path);
