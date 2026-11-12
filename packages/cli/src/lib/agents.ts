@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
 import { unsupportedGroups } from "./agent-tools";
-import { Mode } from "./modes";
+import { Mode, type ModeType } from "./modes";
 import { hookEngines, hookEvents } from "./pack-hooks";
 import { inspectPackHooks, listPacks, packAgentsDir, packPluginDir, packsRoot, packViewLocation } from "./packs";
 import { printable } from "./safe-text";
@@ -11,12 +11,18 @@ import { printable } from "./safe-text";
 // Other modules import the agent type and the file parser from here.
 export { parseAgentFile, type Agent };
 
+export const BUILD_AGENT_ID = "build";
+export const PLAN_AGENT_ID = "plan";
+
 export const BUILTIN_AGENTS: readonly Agent[] = [
-  { id: "build", name: "Build", description: "Edits files and runs commands, asking first", mode: Mode.BUILD, ignored: [] },
-  { id: "plan", name: "Plan", description: "Reads and plans; changes nothing", mode: Mode.PLAN, ignored: [] },
+  { id: BUILD_AGENT_ID, name: "Build", description: "Edits files and runs commands, asking first", mode: Mode.BUILD, ignored: [] },
+  { id: PLAN_AGENT_ID, name: "Plan", description: "Reads and plans; changes nothing", mode: Mode.PLAN, ignored: [] },
 ];
 
 const BUILD_AGENT = BUILTIN_AGENTS[0]!;
+
+/** The ID of the built-in agent that runs in `mode`. */
+export const builtinAgentId = (mode: ModeType) => (mode === Mode.PLAN ? PLAN_AGENT_ID : BUILD_AGENT_ID);
 
 /** Where the user's own agents live; global only, never inside a project. */
 export function agentsDir() {
@@ -116,12 +122,12 @@ export function agentModelFits(model: string, engineId: string) {
   return !model.includes("/") && (/^claude/i.test(model) || CLAUDE_ALIAS.test(model));
 }
 
-/** What the engine will not do with the hooks of the agent's pack (S16): events it cannot run, or consent that no longer covers the files. */
-function hookWarnings(agent: Agent, engineId: string): string[] {
+/** What the engine will not do with the hooks of the agent's pack : events it cannot run, or consent that no longer covers the files. */
+async function hookWarnings(agent: Agent, engineId: string): Promise<string[]> {
   const location = agent.pack && agent.pluginDir ? packViewLocation(agent.pluginDir) : null;
   if (!location) return [];
   try {
-    const info = inspectPackHooks(location.id, { root: location.root });
+    const info = await inspectPackHooks(location.id, { root: location.root });
     if (info.state === "off" && info.changed) {
       return [`${location.id}: hooks are off because their files changed since you approved them; review them with /agents hooks ${location.id}`];
     }
@@ -135,17 +141,18 @@ function hookWarnings(agent: Agent, engineId: string): string[] {
 }
 
 /** One line per part of the agent that the engine will not apply; shown when the agent is selected. */
-export function agentWarnings(agent: Agent, engineId: string): string[] {
+export async function agentWarnings(agent: Agent, engineId: string): Promise<string[]> {
   const warnings: string[] = [];
   if (agent.ignored.length > 0) warnings.push(`${agent.name}: ignored ${agent.ignored.join(", ")}`);
   if (agent.unknownTools && agent.unknownTools.length > 0) warnings.push(`${agent.name}: unknown tools ${agent.unknownTools.join(", ")}`);
   for (const note of agent.toolNotes ?? []) warnings.push(`${agent.name}: ${note}`);
-  // The one group an engine cannot apply today: pi has no web tools to take away.
-  const unsupported = unsupportedGroups(agent.tools?.deny ?? [], engineId);
-  if (unsupported.length > 0) warnings.push(`${agent.name}: tools ${unsupported.join(", ")} is not applied on ${engineId} (it has no ${unsupported.join("/")} tools)`);
+  // pi has no web tools to take away: say so only when the agent asked for it by name (a list or `*` never does).
+  for (const group of unsupportedGroups(agent.tools?.deny ?? [], engineId)) {
+    if (agent.tools?.named?.includes(group)) warnings.push(`${agent.name}: ${group} tools are not available on ${engineId}, so \`${group}: false\` changes nothing`);
+  }
   if (agent.model && !agentModelFits(agent.model, engineId)) {
     warnings.push(`${agent.name}: model "${agent.model}" is ignored on ${engineId}; the session model is used`);
   }
-  warnings.push(...hookWarnings(agent, engineId));
+  warnings.push(...(await hookWarnings(agent, engineId)));
   return warnings;
 }

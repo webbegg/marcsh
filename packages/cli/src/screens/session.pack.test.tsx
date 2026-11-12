@@ -105,7 +105,7 @@ async function runTurn(selected: string) {
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd", engine: "claude" });
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
-    { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agent: selected } } }] },
+    { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agentId: selected } } }] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
   await settle(80);
@@ -116,7 +116,7 @@ async function runTurn(selected: string) {
 const frameText = () => screen!.captureCharFrame().replace(/[│┃\s]+/g, " ");
 
 async function enableHooks() {
-  const info = inspectPackHooks("acme/flows");
+  const info = await inspectPackHooks("acme/flows");
   if (info.state !== "off") throw new Error(`hooks are ${info.state}`);
   await enablePackHooks("acme/flows", { reviewed: { commit: info.commit, digest: info.digest } });
 }
@@ -268,6 +268,8 @@ describe("a Claude turn with a pack agent whose hooks are enabled (S16)", () => 
     expect(options.plugins).toHaveLength(2);
     expect(calls[0]!.hooksAtCall).toEqual([OWN, false]);
     expect(existsSync(join(packPluginDir("acme/flows"), "hooks"))).toBe(false);
+    // The view check is asynchronous: the warning reaches the screen a frame or two after the turn starts.
+    for (let waited = 0; !frameText().includes("no longer match what you approved") && waited < 2000; waited += 50) await settle(50);
     expect(frameText()).toContain("no longer match what you approved");
   });
 

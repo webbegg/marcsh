@@ -55,7 +55,7 @@ async function installFake(id: string, hooks: Record<string, string> | null, { e
   lock.packs.push({ id, url: `file:///nowhere/${id}`, commit: "a".repeat(40), installedAt: "2026-11-12T10:00:00.000Z" });
   writeFileSync(lockFile, JSON.stringify(lock));
   if (hooks && enable) {
-    const info = inspectPackHooks(id, { root });
+    const info = await inspectPackHooks(id, { root });
     if (info.state !== "off") throw new Error(`hooks are ${info.state}`);
     await enablePackHooks(id, { root, reviewed: { commit: info.commit, digest: info.digest } });
   }

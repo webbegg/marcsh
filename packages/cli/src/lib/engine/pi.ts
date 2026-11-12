@@ -106,12 +106,7 @@ function restoredPlanTools(session: AgentSession): boolean {
   return !session.getAllTools().some((tool) => active.has(tool.name) && tool.sourceInfo.path.startsWith(BUILTIN_PREFIX) && !isReadOnlyBuiltin(tool));
 }
 
-/**
- * What marcsh itself took away from a session's tools for an agent's `tools` field (S15), kept in the session file as a custom entry
- * (pi ignores those) so a later turn can undo exactly that and nothing else. pi restores a resumed session's tools from its last turn,
- * so without this the next agent would inherit the narrowing; and without this record a change in the restored tools that marcsh did
- * not make (the user's `defaultTools`, an extension that turned a tool off) would look like one.
- */
+// What marcsh took away for an agent's `tools` field, kept in the session file: pi restores a resumed session's tools, so the next agent would inherit it.
 const NARROWING_ENTRY = "marcsh-agent-tools";
 type Narrowing = { denied: Group[]; removed: string[] };
 
@@ -141,12 +136,8 @@ function isMarcshOwned(tool: ToolSource): boolean {
 }
 
 /**
- * Takes the tools of the denied groups (an agent's `tools` field, S15) away from a session: they leave the active tools, are not
- * declared to the model, and a call to one is blocked with a reason, without asking. It only ever narrows (the names in `restore`, which
- * an earlier agent's narrowing took away and which were not registered yet when the session started, come back once marcsh's own
- * tools (Task, AskUserQuestion, MCP) register under them; then the denial is applied on top). It is loaded twice: before the
- * approval extension, so a denied call is blocked before anything is asked, and after it, because plan mode's own handler there
- * sets the active tools to every read-only tool and would otherwise put a denied one back.
+ * Takes the denied groups' tools away from a session and blocks a call to one without asking; `restore` names come back once marcsh registers them.
+ * Loaded before the approval extension and again after it, because plan mode's handler there would put a denied tool back.
  */
 export function createDeniedToolsExtension(
   denied: readonly Group[],
@@ -154,8 +145,7 @@ export function createDeniedToolsExtension(
 ): ExtensionFactory {
   return (pi) => {
     const isDenied = (name: string) => isPiToolDenied(name, denied);
-    // A tool that registers late (an MCP server that connects after the session started) comes back when it shows up, if marcsh registered it.
-    // `restore` is read on first use: the turn fills it in after the session exists and before any extension runs.
+    // A tool that registers late (an MCP server connecting after start) comes back when it shows up; `restore` is filled in after the session exists.
     let pending: Set<string> | undefined;
     pi.on("tool_call", (event) => (isDenied(event.toolName) ? { block: true, reason: notAvailableReason(event.toolName) } : undefined));
     const narrow = () => {
@@ -317,9 +307,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const resourcesFor = (packView?: string) => {
     const templates = pluginPath ? [join(pluginPath, "commands")] : [];
     const skills = pluginPath ? [join(pluginPath, "skills")] : [];
-    for (const [list, part] of [[templates, "commands"], [skills, "skills"]] as const) {
-      if (packView && existsSync(join(packView, part))) list.push(join(packView, part));
-    }
+    if (packView && existsSync(join(packView, "commands"))) templates.push(join(packView, "commands"));
+    if (packView && existsSync(join(packView, "skills"))) skills.push(join(packView, "skills"));
     return templates.length > 0 || skills.length > 0 ? { additionalPromptTemplatePaths: templates, additionalSkillPaths: skills } : {};
   };
   const pluginResources = resourcesFor();
@@ -436,7 +425,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     };
 
     // Writes what this turn's agent took away to the session, when it differs from what the last record says (see NARROWING_ENTRY).
-    // A record that is not written (the process died first) only means the next turn undoes nothing, as before S15.
+    // A record that is never written only means the next turn undoes nothing.
     const recordNarrowing = () => {
       if (!session) return;
       try {
@@ -490,9 +479,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         planMode: mode === Mode.PLAN,
         guard: options.guard,
       };
-      // The pack's hooks are checked against what the user approved before anything of the view loads (S16): changed hooks are dropped for
-      // this turn. Enabled ones run (PreToolUse, PostToolUse and PostToolUseFailure only) ahead of the approval extension, so a call they block never asks.
-      const packTurn = packPluginPath ? prepareViewForTurn(packPluginPath) : undefined;
+      // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
+      const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
       const packHooks = packTurn?.hooks
         ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: turnEnded.signal, notify: (message, level) => host.notify?.(message, level) })]
@@ -557,10 +545,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           fresh = await freshTools();
           session.setActiveToolsByName(fresh);
         }
-        // The tools an earlier agent's narrowing took away come back, now and before any extension adjusts the active tools (so one that
-        // turns a tool off still wins). The record is only a list of names: a name comes back only when a new unrestricted session would
-        // offer it (pi's own tools under the current `defaultTools`, extension tools that are active by default) or marcsh owns the tool.
-        // The ones not registered yet (MCP's) are left to the extension, which restores them if marcsh's MCP registers them.
+        // Tools an earlier agent's narrowing took away come back before extensions adjust them, but only those a new session would offer or marcsh owns.
         if (restore.length > 0) {
           const registered = new Map(session.getAllTools().map((tool) => [tool.name, tool]));
           const offered = new Set(fresh ?? (await freshTools()));

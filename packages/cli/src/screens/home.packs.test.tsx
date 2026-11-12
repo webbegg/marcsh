@@ -40,7 +40,7 @@ const git = (...args: string[]) =>
 
 beforeAll(() => {
   const files: Record<string, string> = {
-    "agents/ftd.md": "---\nname: FTD\ndescription: Test first\npermission: build\n---\nWork test-first.",
+    "agents/ftd.md": "---\nname: FTD\ndescription: Test first\npermission: build\ntools:\n  bash: false\n  webfetch: false\n---\nWork test-first.",
     "skills/tdd/SKILL.md": "---\nname: tdd\ndescription: Test first\n---\nRED then GREEN.",
     "commands/ship.md": "---\ndescription: Ship\n---\nShip it.",
     "hooks/hooks.json": JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo checked" }] }] } }),
@@ -156,7 +156,8 @@ describe("/agents installs packs from GitHub (S10)", () => {
 
     const preview = frame();
     expect(preview).toContain("acme/flows @ ");
-    expect(preview).toContain("FTD (build)");
+    // The tools field narrows the agent: the preview says so.
+    expect(preview).toContain("FTD (build, no bash, web)");
     expect(preview).toContain("Skills: tdd");
     expect(preview).toContain("Commands: ship");
     expect(preview).toContain("Not used: .mcp.json");

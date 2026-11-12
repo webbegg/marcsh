@@ -71,7 +71,10 @@ export function readFrontmatter(text: string): Frontmatter {
       if (block) block.lines.push(line.trim());
       else {
         fields.set(key, null);
-        nested.set(key, [...(nested.get(key) ?? []), line.trim()]);
+        // Appended in place: copying the list on every line made a long pack file take seconds to read.
+        const lines = nested.get(key) ?? [];
+        lines.push(line.trim());
+        nested.set(key, lines);
       }
     }
   }

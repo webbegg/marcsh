@@ -81,15 +81,29 @@ const type = async (text: string) => {
   await act(() => screen!.mockInput.typeText(text));
   await settle(60);
 };
-const press = async (key: string) => {
+const press = async (key: string, ms = 80) => {
   await act(async () => screen!.mockInput.pressKey(key));
-  await settle(80);
+  await settle(ms);
 };
 const enter = () => press("\r");
-const down = () => press("\u001B[B");
+const down = (ms?: number) => press("\u001B[B", ms);
 const up = () => press("\u001B[A");
 const pageDown = () => press("\u001B[6~");
 const pageUp = () => press("\u001B[5~");
+// Where `text` is on the screen (row and column), for the mouse.
+function findText(text: string): { x: number; y: number } {
+  const lines = screen!.captureCharFrame().split("\n");
+  for (let y = 0; y < lines.length; y++) {
+    const x = lines[y]!.indexOf(text);
+    if (x >= 0) return { x, y };
+  }
+  throw new Error(`"${text}" is not on the screen:\n${screen!.captureCharFrame()}`);
+}
+async function click(text: string) {
+  const { x, y } = findText(text);
+  await act(async () => screen!.mockMouse.click(x + 1, y));
+  await settle(150);
+}
 async function waitForFrame(text: string, ms = 40_000) {
   const until = Date.now() + ms;
   while (!frame().includes(text)) {
@@ -199,6 +213,55 @@ describe("/agents hooks review with many commands (S16)", () => {
     expect(frame()).toContain("$ sh -c LAST_SMALL_X");
     expect(frame()).toContain("Cancel");
     await enter();
+    await waitForFrame("Enabled hooks of acme/small");
+    expect(lockEntry("small").hooks).toBeDefined();
+  });
+
+  test("every command can be reached by scrolling a line at a time, and the header and choices stay on screen", async () => {
+    await openHome({ width: 110, height: 50 });
+    await installFixture("flows");
+    await runCommand("/agents hooks acme/flows");
+    await waitForFrame("PreToolUse (matcher: Bash)");
+    await settle(300);
+
+    const seen = new Set<string>();
+    const collect = () => {
+      const text = frame();
+      // The trailing space keeps `check-1` from matching inside `check-10`.
+      for (const command of MANY) if (text.includes(`$ ${command} `)) seen.add(command);
+      expect(text).toContain(`acme/flows @ ${lockEntry("flows").commit.slice(0, 7)}`);
+      expect(text).toContain("Cancel");
+      expect(text).toContain("Enable");
+    };
+    collect();
+    for (let i = 0; i < 400 && frame().includes("Scroll to the end to review"); i++) {
+      await down(20);
+      collect();
+    }
+    collect();
+    expect(MANY.filter((command) => !seen.has(command))).toEqual([]);
+    expect(lockEntry("flows").hooks).toBeUndefined();
+  });
+
+  test("a click on Enable before the end does nothing; the mouse wheel reaches the end and the click then enables", async () => {
+    await openHome({ width: 80, height: 24 });
+    await installFixture("small");
+    await runCommand("/agents hooks acme/small");
+    await waitForFrame("PreToolUse (matcher: Bash)");
+    await settle(300);
+
+    await click("   Enable");
+    expect(lockEntry("small").hooks).toBeUndefined();
+    expect(frame()).toContain("Scroll to the end to review all 7 commands");
+
+    const { x, y } = findText("$ sh -c FIRST_SMALL_X");
+    for (let i = 0; i < 60 && frame().includes("Scroll to the end to review"); i++) {
+      await act(async () => screen!.mockMouse.scroll(x, y, "down"));
+      await settle(40);
+    }
+    expect(frame()).toContain("$ sh -c LAST_SMALL_X");
+    expect(frame()).not.toContain("Scroll to the end to review");
+    await click("   Enable");
     await waitForFrame("Enabled hooks of acme/small");
     expect(lockEntry("small").hooks).toBeDefined();
   });

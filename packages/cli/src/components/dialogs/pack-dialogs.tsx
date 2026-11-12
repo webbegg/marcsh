@@ -8,6 +8,7 @@ import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { TextField } from "./text-field";
 import { parsePackCommand } from "../../lib/pack-command";
+import { wrapByWidth } from "../../lib/display-text";
 import { engineLine, hookEvents, HOOKS_DIR, type HooksConfig } from "../../lib/pack-hooks";
 import {
   disablePackHooks,
@@ -62,7 +63,7 @@ export function previewLines(preview: PackPreview): string[] {
   return [
     header,
     "Agents:",
-    ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model].filter(Boolean).join(", ")})`),
+    ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model, agent.tools].filter(Boolean).join(", ")})`),
     ...list("Skills", preview.skills),
     ...list("Commands", preview.commands),
     ...(preview.hooks
@@ -265,25 +266,6 @@ const REVIEW_FOOTER_ROWS = 1 + 2 + 3;
 const REVIEW_MIN_ROWS = 3;
 const REACHED_POLL_MS = 50;
 
-/** Rows a line takes when wrapped by words to `width`. */
-function wrappedRows(line: string, width: number): number {
-  let rows = 1;
-  let column = 0;
-  for (const word of line.split(/(?<= )/)) {
-    const length = word.trimEnd().length;
-    if (column > 0 && column + length > width) {
-      rows++;
-      column = 0;
-    }
-    // A word longer than a row is broken inside.
-    if (length > width) {
-      rows += Math.floor((length - 1) / width);
-      column = length % width;
-    } else column += word.length;
-  }
-  return rows;
-}
-
 type ReviewProps = {
   /** Always on screen above the list: the commit and what the hooks are. */
   header: string[];
@@ -339,7 +321,7 @@ function HooksReview({ header, body, commands, gated, yes, shown, onAnswer }: Re
   });
 
   const textWidth = Math.min(60, width - 4) - DIALOG_TEXT_INSET;
-  const headerRows = header.reduce((rows, line) => rows + wrappedRows(line, textWidth), 0);
+  const headerRows = header.reduce((rows, line) => rows + wrapByWidth(line, textWidth).length, 0);
   const room = Math.max(REVIEW_MIN_ROWS, height - DIALOG_CHROME_ROWS - headerRows - REVIEW_FOOTER_ROWS);
   const choose = (index: number) => {
     if (index === 1 && !reached && !atEnd()) return;
@@ -422,7 +404,7 @@ export function hooksReviewLines(id: string, info: ReviewInfo): string[] {
 /** `/agents hooks <owner/repo>`: shows the hooks and enables them on consent (or turns them off, when they are on). */
 async function runHooks(flow: Flow, id: string) {
   if (!listPacks().some((pack) => pack.id === id)) return failure(flow, `${id} is not installed`);
-  const info = inspectPackHooks(id);
+  const info = await inspectPackHooks(id);
   if (info.state === "none") return failure(flow, `${id} has no hooks`);
   if (info.state === "unusable") return failure(flow, `The hooks of ${id} cannot be enabled: ${info.reason}`);
 
@@ -523,7 +505,31 @@ const hooksStateText = (info: PackHooksInfo) => {
 /** "Update packs…", "Remove a pack…" and "Pack hooks…": the installed packs (for hooks, those that have a hooks folder), one is picked. */
 export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
   const flow = useFlow(onChanged);
-  const [packs] = useState(() => (action === "hooks" ? listPacks().filter((pack) => inspectPackHooks(pack.id).state !== "none") : listPacks()));
+  const [packs, setPacks] = useState<PackEntry[]>(() => (action === "hooks" ? [] : listPacks()));
+  // Which packs have hooks, and in what state, is read from their files in the background; the list is empty until then.
+  const [hooksText, setHooksText] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [loading, setLoading] = useState(action === "hooks");
+  useEffect(() => {
+    if (action !== "hooks") return;
+    let alive = true;
+    void (async () => {
+      const found: PackEntry[] = [];
+      const text = new Map<string, string>();
+      for (const pack of listPacks()) {
+        const info = await inspectPackHooks(pack.id);
+        if (info.state === "none") continue;
+        found.push(pack);
+        text.set(pack.id, hooksStateText(info));
+      }
+      if (!alive) return;
+      setPacks(found);
+      setHooksText(text);
+      setLoading(false);
+    })().catch(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [action]);
   const select = (pack: PackEntry) => {
     if (action === "update") return runUpdate(flow, pack);
     if (action === "hooks") return runHooks(flow, pack.id);
@@ -538,13 +544,13 @@ export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
         <box flexDirection="row" gap={1} overflow="hidden">
           <text selectable={false} fg={isSelected ? "black" : "white"}>{`   ${pack.id}`}</text>
           <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-            {action === "hooks" ? hooksStateText(inspectPackHooks(pack.id)) : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
+            {action === "hooks" ? (hooksText.get(pack.id) ?? "") : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
           </text>
         </box>
       )}
       getKey={(pack) => pack.id}
       placeholder="Search packs"
-      emptyText={action === "hooks" ? "No installed pack has hooks" : "No packs installed"}
+      emptyText={loading ? "Reading packs…" : action === "hooks" ? "No installed pack has hooks" : "No packs installed"}
     />
   );
 };

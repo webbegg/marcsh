@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
@@ -27,11 +27,12 @@ const ACTIONS: Row[] = [
 // The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
 const permissionTag = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
 
-/** One agent's row: a bullet on the current one, its label, its permission tag (and "hooks on" when its pack's hooks run, "hooks changed — off" when they were enabled but no longer match), then its description. */
+/** One agent's row: a bullet on the current one, its label, its permission tag, "(limited tools)" when its tools field narrows it (and "hooks on" when its pack's hooks run, "hooks changed — off" when they were enabled but no longer match), then its description. */
 function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string, hooks: ReadonlyMap<string, "on" | "changed">) {
   const parts = [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents)];
   const tag = permissionTag(agent);
   if (tag) parts.push(`  ${tag}`);
+  if (agent.tools) parts.push("  (limited tools)");
   const state = agent.pack ? hooks.get(agent.pack) : undefined;
   if (state) parts.push(state === "on" ? "  (hooks on)" : "  (hooks changed \u2014 off)");
   if (agent.description) parts.push(`  ${agent.description}`);
@@ -48,7 +49,18 @@ export const AgentsDialogContent = ({
   // An unreadable packs.json hides every pack agent without a word otherwise.
   const [problem] = useState(() => lockProblem());
   // The packs whose hooks were enabled: on while they still match what was approved, else off because they changed. Their agents' rows say so.
-  const [hooks] = useState(() => packHooksStates());
+  // Read in the background: it reads the files of every pack with hooks, and the rows are shown meanwhile without the note.
+  const [hooks, setHooks] = useState<ReadonlyMap<string, "on" | "changed">>(() => new Map());
+  useEffect(() => {
+    let alive = true;
+    void packHooksStates().then(
+      (states) => alive && setHooks(states),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
 

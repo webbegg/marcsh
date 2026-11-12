@@ -3,27 +3,9 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hooks";
 import type { NoticeLevel } from "./types";
 
-/*
- * Pack hooks on pi. Claude runs a pack's hooks itself, from the pack's view; pi has no hooks, so marcsh runs the tool-call events
- * (PreToolUse, PostToolUse and PostToolUseFailure) of an enabled pack here, following Claude's hook contract:
- *
- *   - the command runs as `sh -c <command>` in the session's cwd, with CLAUDE_PLUGIN_ROOT (the view) and CLAUDE_PROJECT_DIR (the cwd);
- *   - stdin is JSON: { session_id, cwd, hook_event_name, tool_name, tool_input } (+ tool_response for PostToolUse, + error and
- *     is_interrupt for PostToolUseFailure), with pi's tool names mapped to Claude's current ones (bash → Bash, find → Glob, Task → Agent...);
- *   - a hook's matcher is a `*`, or tool names separated by `|` (compileMatcher), and matches a tool by its current Claude name or the
- *     older one Claude still accepts (Task|Agent); matching hooks run in parallel, identical commands once;
- *   - PostToolUse runs only for a call that succeeded; a call that failed runs the PostToolUseFailure hooks, if the pack has any.
- *
- * A hook can only narrow what marcsh allows. Exit 2, `{ "decision": "block" }`, `{ "continue": false }` and
- * `hookSpecificOutput.permissionDecision: "deny"` block the call. "allow", "ask", "approve" and `updatedInput` have NO effect: the call
- * still goes through marcsh's approval, with the input the model gave. Any other exit code does not block (stderr is shown as a notice).
- *
- * Two places where a failure is a block, and so differs from Claude, where a hook that times out or cannot start does not stop the call:
- * a PreToolUse hook that times out (60 s unless the hook says otherwise; its whole process group is killed), cannot be started, or is cut
- * off by the end of the turn blocks the call. The user consented to a check; a check that did not finish is not a pass.
- *
- * The extension is loaded before the approval extension, so a call a hook blocks never asks.
- */
+// Pack hooks on pi, which has none: marcsh runs an enabled pack's tool-call events itself, with Claude's hook contract (see the agent-workflows skill).
+// A hook can only narrow, and a PreToolUse hook that times out, cannot start or is cut off blocks the call: a check that did not finish is not a pass.
+// Loaded before the approval extension, so a blocked call never asks.
 
 export const DEFAULT_HOOK_TIMEOUT_SECONDS = 60;
 const MAX_CAPTURE = 256 * 1024;
@@ -87,20 +69,21 @@ export function runHookCommand({ command, cwd, env, input, timeoutMs, signal }: 
     let grace: ReturnType<typeof setTimeout> | undefined;
 
     const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
-    const finish = (outcome: HookOutcome, kill = false) => {
+    const finish = (outcome: HookOutcome) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(grace);
       signal?.removeEventListener("abort", onAbort);
-      if (kill) killGroup(child);
+      // Whatever the hook left running goes with it: a hook is a check, not a way to start a daemon.
+      killGroup(child);
       child.stdout?.destroy();
       child.stderr?.destroy();
       resolve(outcome);
     };
     const exited = (): HookOutcome => ({ kind: "exit", code: exitCode ?? null, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
-    const onAbort = () => finish({ kind: "aborted" }, true);
-    const timer = setTimeout(() => finish({ kind: "timeout" }, true), timeoutMs);
+    const onAbort = () => finish({ kind: "aborted" });
+    const timer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const collect = (into: Buffer[]) => {

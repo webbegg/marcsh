@@ -318,10 +318,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
+  const agentIdRef = useRef(agent.id);
+  agentIdRef.current = agent.id;
   // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
-  const warnAboutAgent = useCallback((agent: Agent) => {
-    const warnings = agentWarnings(agent, engineId);
-    if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
+  const warnAboutAgent = useCallback(async (selected: Agent) => {
+    const warnings = await agentWarnings(selected, engineId);
+    if (warnings.length > 0 && agentIdRef.current === selected.id) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
   }, [engineId, toast]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
@@ -510,7 +513,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         navigate,
         agentId: agent.id,
         reloadAgents,
-        selectAgent: (id) => warnAboutAgent(selectAgent(id)),
+        selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
         setModel,
       });
     } else {
@@ -635,7 +638,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      if (!typeOnly) warnAboutAgent(cycleAgent());
+      if (!typeOnly) void warnAboutAgent(cycleAgent());
     } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);

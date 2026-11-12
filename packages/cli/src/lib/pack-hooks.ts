@@ -1,18 +1,11 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { hidesText, printable } from "./safe-text";
 
-/*
- * Pack hooks: the commands a pack asks to run, read from its `hooks/` folder without running anything.
- *
- * A pack's hooks are `hooks/hooks.json` (Claude's plugin format) plus the regular files under `hooks/` it may run. They are off until the
- * user enables them after reading every command, and the consent is pinned to the pack commit and to `digest` below (see packs.ts). This
- * module only reads and judges: whatever is not exactly the supported shape makes the hooks unusable, and unusable hooks are never enabled.
- *
- * Claude is not given the pack's `hooks.json`: `claudeHookFiles` makes the one it runs, where every command is a call to marcsh's filter
- * (plugin/hooks/pack-hook-filter.ts) that runs the original and lets only what narrows a call through.
- */
+// Pack hooks: the commands a pack asks to run, read from its `hooks/` without running anything. Anything but the supported shape makes
+// them unusable, and Claude gets a generated hooks.json whose commands go through marcsh's filter (`claudeHookFiles`), never the pack's own.
 
 export const HOOKS_DIR = "hooks";
 export const HOOKS_FILE = "hooks.json";
@@ -172,28 +165,34 @@ function parseHooksJson(text: string): HooksConfig {
   return config;
 }
 
+const cannotRead = (rel: string) => unusable(`${printable(rel)} is a symlink or cannot be read`);
+
+function checkRegular(stat: Stats, rel: string) {
+  if (!stat.isFile()) throw unusable(`${printable(rel)} is not a regular file`);
+  if (stat.size > MAX_HOOK_FILE_BYTES) throw unusable(`${printable(rel)} is larger than ${formatMegabytes(MAX_HOOK_FILE_BYTES)}`);
+}
+
 /** Opens without following a link and reads the whole file, so a file swapped for a link after it was listed is not read. */
-function readRegular(path: string, rel: string): { data: Buffer; mode: number } {
-  let fd: number;
+async function readRegular(path: string, rel: string): Promise<{ data: Buffer; mode: number }> {
+  let handle;
   try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   } catch {
-    throw unusable(`${printable(rel)} is a symlink or cannot be read`);
+    throw cannotRead(rel);
   }
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw unusable(`${printable(rel)} is not a regular file`);
-    if (stat.size > MAX_HOOK_FILE_BYTES) throw unusable(`${printable(rel)} is larger than ${formatMegabytes(MAX_HOOK_FILE_BYTES)}`);
+    const stat = await handle.stat();
+    checkRegular(stat, rel);
     const data = Buffer.alloc(stat.size);
     let read = 0;
     while (read < data.length) {
-      const n = readSync(fd, data, read, data.length - read, read);
-      if (n === 0) break;
-      read += n;
+      const { bytesRead } = await handle.read(data, read, data.length - read, read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
     }
     return { data: data.subarray(0, read), mode: stat.mode };
   } finally {
-    closeSync(fd);
+    await handle.close();
   }
 }
 
@@ -210,81 +209,107 @@ export function digestFiles(files: readonly { path: string; data: Buffer }[]): s
 
 class Absent extends Error {}
 
-/** Every regular file under `dir` (never through a link), sorted by path. Throws `Absent` when there is no folder, `Unusable` when it holds anything else. */
-function listHookFiles(dir: string): HookFile[] {
-  let top;
-  try {
-    top = lstatSync(dir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Absent();
-    throw unusable("hooks/ cannot be read");
-  }
+const byPath = (a: HookFile, b: HookFile) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+/** Why the folder itself cannot be listed: it is missing (`Absent`), or it cannot be read. */
+function topFailure(error: unknown): never {
+  if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Absent();
+  throw unusable("hooks/ cannot be read");
+}
+
+function checkTop(top: Stats) {
   if (top.isSymbolicLink()) throw unusable("hooks is a symlink; only a real folder is used");
   if (!top.isDirectory()) throw unusable("hooks is not a folder");
+}
 
+/** Counts what a walk passes and holds it to the limits. */
+class HookBudget {
+  private entries = 0;
+  private bytes = 0;
+  entry(name: string) {
+    if (++this.entries > MAX_HOOK_ENTRIES) throw unusable(`hooks/ holds more than ${MAX_HOOK_ENTRIES} entries`);
+    if (hidesText(name)) throw unusable(`a file name under hooks/ has control or invisible characters (${JSON.stringify(name).slice(0, 60)})`);
+  }
+  file(size: number) {
+    this.bytes += size;
+    if (this.bytes > MAX_HOOKS_BYTES) throw unusable(`hooks/ holds more than ${formatMegabytes(MAX_HOOKS_BYTES)} in total`);
+  }
+}
+
+/** A folder to walk into, or a regular file to read; a link or anything else makes the hooks unusable. */
+function entryKind(stat: Stats, path: string): "dir" | "file" {
+  if (stat.isDirectory()) return "dir";
+  if (stat.isSymbolicLink()) throw unusable(`${printable(path)} is a symlink; hooks/ may hold only regular files`);
+  if (!stat.isFile()) throw unusable(`${printable(path)} is not a regular file; hooks/ may hold only regular files`);
+  return "file";
+}
+
+/** Every regular file under `dir` (never through a link), sorted by path. Throws `Absent` when there is no folder, `Unusable` when it holds anything else. */
+async function listHookFiles(dir: string): Promise<HookFile[]> {
+  checkTop(await lstat(dir).catch(topFailure));
   const files: HookFile[] = [];
-  let entries = 0;
-  let bytes = 0;
-  const walk = (rel: string) => {
-    for (const name of readdirSync(join(dir, rel)).sort()) {
+  const budget = new HookBudget();
+  const walk = async (rel: string) => {
+    for (const name of (await readdir(join(dir, rel))).sort()) {
       const path = rel ? `${rel}/${name}` : name;
-      if (++entries > MAX_HOOK_ENTRIES) throw unusable(`hooks/ holds more than ${MAX_HOOK_ENTRIES} entries`);
-      if (hidesText(name)) throw unusable(`a file name under hooks/ has control or invisible characters (${JSON.stringify(name).slice(0, 60)})`);
-      const stat = lstatSync(join(dir, path));
-      if (stat.isDirectory()) walk(path);
-      else if (stat.isSymbolicLink()) throw unusable(`${printable(path)} is a symlink; hooks/ may hold only regular files`);
-      else if (!stat.isFile()) throw unusable(`${printable(path)} is not a regular file; hooks/ may hold only regular files`);
+      budget.entry(name);
+      const stat = await lstat(join(dir, path));
+      if (entryKind(stat, path) === "dir") await walk(path);
       else {
-        bytes += stat.size;
-        if (bytes > MAX_HOOKS_BYTES) throw unusable(`hooks/ holds more than ${formatMegabytes(MAX_HOOKS_BYTES)} in total`);
-        const { data, mode } = readRegular(join(dir, path), path);
+        budget.file(stat.size);
+        const { data, mode } = await readRegular(join(dir, path), path);
         files.push({ path, size: data.length, mode, data });
       }
     }
   };
-  walk("");
-  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  await walk("");
+  return files.sort(byPath);
+}
+
+type HookFilesRead = { ok: true; files: HookFile[] } | { ok: false; reason: string };
+
+function hookFilesFailure(error: unknown): HookFilesRead {
+  if (error instanceof Absent) return { ok: false, reason: "hooks/ is missing" };
+  return { ok: false, reason: error instanceof Unusable ? error.message : "hooks/ cannot be read" };
 }
 
 /** The files of a folder under the same rules as `readHooksDir`, but not the shape of `hooks.json`: for a copy of `hooks/` in a view. */
-export function readHookFiles(dir: string): { ok: true; files: HookFile[] } | { ok: false; reason: string } {
+export async function readHookFiles(dir: string): Promise<HookFilesRead> {
   try {
-    return { ok: true, files: listHookFiles(dir) };
+    return { ok: true, files: await listHookFiles(dir) };
   } catch (error) {
-    if (error instanceof Absent) return { ok: false, reason: "hooks/ is missing" };
-    return { ok: false, reason: error instanceof Unusable ? error.message : "hooks/ cannot be read" };
+    return hookFilesFailure(error);
   }
 }
 
-/**
- * Reads a `hooks/` folder: every regular file in it (never through a link), the digest of those files, and the commands of `hooks.json`.
- * The folder is unusable, and so never enabled, when anything in it is a link or a special file, a file is over 1 MB or the folder over
- * 5 MB, a name has control or invisible characters or is one marcsh keeps for itself, or `hooks.json` is missing or is anything but the supported shape.
- */
-export function readHooksDir(dir: string): HooksRead {
+/** What `hooks.json` and the files make of a `hooks/` folder, once they are read. */
+function judgeHooksDir(files: HookFile[]): HooksRead {
+  if (files.some((file) => file.path === COMMANDS_FILE)) throw unusable(`${COMMANDS_FILE} is a name marcsh keeps for itself; rename that file`);
+  const manifest = files.find((file) => file.path === HOOKS_FILE);
+  if (!manifest) throw unusable("hooks/ has no hooks.json");
+  const config = parseHooksJson(manifest.data.toString("utf8"));
+  return { present: true, usable: true, config, files, digest: digestFiles(files) };
+}
+
+function hooksDirFailure(error: unknown): HooksRead {
+  if (error instanceof Absent) return { present: false };
+  if (error instanceof Unusable) return { present: true, usable: false, reason: error.message };
+  return { present: true, usable: false, reason: "hooks/ cannot be read" };
+}
+
+/** Reads a `hooks/` folder: its regular files (never through a link), their digest and the commands of `hooks.json`; unusable when anything is off-limits or `hooks.json` is not the supported shape. */
+export async function readHooksDir(dir: string): Promise<HooksRead> {
   try {
-    const files = listHookFiles(dir);
-    if (files.some((file) => file.path === COMMANDS_FILE)) throw unusable(`${COMMANDS_FILE} is a name marcsh keeps for itself; rename that file`);
-    const manifest = files.find((file) => file.path === HOOKS_FILE);
-    if (!manifest) throw unusable("hooks/ has no hooks.json");
-    const config = parseHooksJson(manifest.data.toString("utf8"));
-    return { present: true, usable: true, config, files, digest: digestFiles(files) };
+    return judgeHooksDir(await listHookFiles(dir));
   } catch (error) {
-    if (error instanceof Absent) return { present: false };
-    if (error instanceof Unusable) return { present: true, usable: false, reason: error.message };
-    return { present: true, usable: false, reason: "hooks/ cannot be read" };
+    return hooksDirFailure(error);
   }
 }
 
 /** Quotes text as one word for `sh`. */
 export const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
-/**
- * What Claude is given for a pack's hooks, instead of the pack's own `hooks.json`: a `hooks.json` with the same events, matchers and timeouts
- * where every command is a call to marcsh's filter (`filterPath`, run by marcsh's own bun, by path, so a PATH without bun cannot leave the hooks
- * silently off, and without the project's env file or config), and the commands file
- * the filter reads the original commands from (the commands as the user read them, by event, group and hook number).
- */
+/** What Claude gets instead of the pack's `hooks.json`: the same events, matchers and timeouts with every command calling the filter (by marcsh's own bun, so PATH cannot turn the hooks off), plus the original commands for it to read. */
 export function claudeHookFiles(config: HooksConfig, filterPath: string): { hooksJson: string; commandsJson: string } {
   const run = `${shellQuote(process.execPath)} --no-env-file --config=/dev/null ${shellQuote(filterPath)} "\${CLAUDE_PLUGIN_ROOT}/${HOOKS_DIR}/${COMMANDS_FILE}"`;
   const hooks = Object.fromEntries(
