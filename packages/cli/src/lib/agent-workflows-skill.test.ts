@@ -37,6 +37,27 @@ describe("the agent-workflows skill", () => {
     expect(agent!.description).toBeTruthy();
     expect(agent!.prompt).toBeTruthy();
     expect(agent!.mode).toBe(Mode.PLAN);
+    // The example uses `tools` (S15): it is applied, so it is neither ignored nor unknown.
+    expect(agent!.tools).toBeDefined();
+    expect(agent!.unknownTools).toEqual([]);
+  });
+
+  test("explains the tools field: both forms, the groups, narrowing only, ask never removed [S15]", () => {
+    const body = text();
+    expect(body).toContain("| `tools` |");
+    for (const word of ["bash: false", "tools: Read, Grep", "read", "edit", "bash", "web", "task", "ask", "mcp", "unknown"]) {
+      expect(body).toContain(word);
+    }
+    expect(body).toMatch(/never (adds|widens)|only (removes|narrows)|cannot (add|widen)/i);
+    expect(body).toMatch(/ask[^.]*never removed|never removes[^.]*ask/i);
+    expect(body).not.toContain("Per-agent tool lists are not supported");
+    expect(body).not.toContain("(`tools`, `temperature`");
+  });
+
+  test("every tools form the skill shows parses to the narrowing it claims [S15]", () => {
+    const parse = (frontmatter: string) => parseAgentFile(`---\n${frontmatter}\n---\nBody`, { pack: "user", file: "x.md" })!;
+    expect(parse("tools:\n  bash: false\n  webfetch: false").tools?.deny).toEqual(["bash", "web"]);
+    expect(parse("tools: Read, Grep").tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
   });
 
   test("names where a personal agent lives and the three ways to run a pack command", () => {
@@ -49,7 +70,7 @@ describe("the agent-workflows skill", () => {
 
   test("names every field and value of the agent file", () => {
     const body = text();
-    for (const word of ["name", "description", "mode", "primary", "subagent", "permission", "read-only", "build", "model", "provider/id"]) {
+    for (const word of ["name", "description", "mode", "primary", "subagent", "permission", "read-only", "build", "model", "provider/id", "tools"]) {
       expect(body).toContain(word);
     }
   });

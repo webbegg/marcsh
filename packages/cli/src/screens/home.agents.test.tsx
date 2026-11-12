@@ -153,13 +153,13 @@ describe("selecting agents (S1, S9)", () => {
 
   test("an agent with fields marcsh cannot apply is selectable and warns in one line (S7)", async () => {
     rmSync(join(agentsDir, "reviewer.md"));
-    writeAgent("tooled.md", "---\nname: Tooled\ntools:\n  bash: false\n---\nNo shell.");
+    writeAgent("tooled.md", "---\nname: Tooled\ntemperature: 0.2\n---\nNo shell.");
     await openHome();
 
     await tab();
     await tab();
     const text = frame();
     expect(text).toContain("Tooled › ");
-    expect(text).toContain("Warning: Tooled: ignored tools");
+    expect(text).toContain("Warning: Tooled: ignored temperature");
   });
 });

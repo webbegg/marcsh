@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import type { AgentTools } from "../lib/agent-tools";
 import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
@@ -95,8 +96,8 @@ function decline(request: PendingRequest) {
   }
 }
 
-/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one. */
-export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string; pluginDir?: string } };
+/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools } };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -284,6 +285,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             model,
             systemPromptAppend: agent?.prompt,
             ...(agent?.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
+            ...(agent?.tools && agent.tools.deny.length > 0 ? { deniedTools: agent.tools.deny } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             signal: abortController.signal,
           },

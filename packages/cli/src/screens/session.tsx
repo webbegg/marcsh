@@ -114,7 +114,7 @@ function SessionChat({
   // else the session's (a pi session sends the pi model that has credentials now).
   const send = useCallback(
     (userText: string, turnAgent: Agent, claudeModel: string) => {
-      const turn = { userText, mode: turnAgent.mode, agent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir } };
+      const turn = { userText, mode: turnAgent.mode, agent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
       const agentModel = turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined;
       if (session.engine !== "pi") {
         void submit({ ...turn, model: agentModel ?? modelForEngine(session.engine, claudeModel) });

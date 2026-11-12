@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
+import { parseTools, type AgentTools } from "./agent-tools";
 import { Mode, type ModeType } from "./modes";
 
 /** An agent file larger than this is not read (a pack is third-party content). */
@@ -24,24 +25,33 @@ export type Agent = {
   pack?: string;
   /** A pack agent's generated plugin view (its skills and commands): loaded by the engines only while this agent is selected. */
   pluginDir?: string;
+  /** The tool groups this agent does not get (its `tools` field); undefined when it restricts nothing. */
+  tools?: AgentTools;
+  /** Names in the `tools` field that match no tool group: not applied, and named in the warning. */
+  unknownTools?: string[];
+  /** Entries of the `tools` field that were kept anyway (`ask: false`; `read: false` when nothing else is left): named in the warning. */
+  toolNotes?: string[];
   /** Frontmatter fields marcsh reads but does not apply. */
   ignored: string[];
 };
 
-export type Frontmatter = { fields: Map<string, string | null>; body: string; unclosed: boolean };
+/** `nested` holds the raw indented lines under a key (a map or list marcsh does not read generally; only `tools` is used). */
+export type Frontmatter = { fields: Map<string, string | null>; nested: Map<string, string[]>; body: string; unclosed: boolean };
 
 /**
  * The one reader for flat frontmatter (agent files and marcsh's own plugin files): `key: value` lines, quoted values, and `|`/`>`
- * blocks. An indented block under a key is a nested map or list, which marcsh never applies, so it is recorded as null.
+ * blocks. An indented block under a key is a nested map or list: its field is null and its lines are kept in `nested`, so a caller
+ * that reads one (`tools`) can; the others are never applied.
  * (A pack's skills and commands are checked by `declaredKeys` in pack-scan.ts, a stricter reader on purpose.)
  */
 export function readFrontmatter(text: string): Frontmatter {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const fields = new Map<string, string | null>();
-  if (lines[0]?.trim() !== "---") return { fields, body: text, unclosed: false };
+  const nested = new Map<string, string[]>();
+  if (lines[0]?.trim() !== "---") return { fields, nested, body: text, unclosed: false };
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
   // An opening line with no closing one: the whole file stays the prompt, and the caller reports it.
-  if (end < 0) return { fields, body: text, unclosed: true };
+  if (end < 0) return { fields, nested, body: text, unclosed: true };
 
   let key: string | undefined;
   let block: { style: string; lines: string[] } | undefined;
@@ -59,14 +69,17 @@ export function readFrontmatter(text: string): Frontmatter {
       fields.set(key, value.replace(/^(["'])(.*)\1$/, "$2"));
     } else if (key && /^[ \t]/.test(line) && line.trim()) {
       if (block) block.lines.push(line.trim());
-      else fields.set(key, null);
+      else {
+        fields.set(key, null);
+        nested.set(key, [...(nested.get(key) ?? []), line.trim()]);
+      }
     }
   }
   closeBlock();
-  return { fields, body: lines.slice(end + 1).join("\n"), unclosed: false };
+  return { fields, nested, body: lines.slice(end + 1).join("\n"), unclosed: false };
 }
 
-const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model"]);
+const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model", "tools"]);
 
 function slug(text: string) {
   return text.toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
@@ -77,8 +90,10 @@ const idPart = (stem: string, file: string) => slug(stem) || createHash("sha1").
 
 /** Parses one agent file; null when it is a subagent (not selectable). */
 export function parseAgentFile(text: string, { pack, file }: { pack: string; file: string }): Agent | null {
-  const { fields, body, unclosed } = readFrontmatter(text);
-  const ignored = [...fields.keys()].filter((key) => !KNOWN_FIELDS.has(key));
+  const { fields, nested, body, unclosed } = readFrontmatter(text);
+  // A `tools` field with no name in it is reported as ignored, like any other field marcsh cannot apply.
+  const tools = fields.has("tools") ? parseTools(fields.get("tools"), nested.get("tools")) : undefined;
+  const ignored = [...fields.keys()].filter((key) => !KNOWN_FIELDS.has(key) || (key === "tools" && tools?.empty));
   if (unclosed) ignored.push("frontmatter");
 
   // The frontmatter `mode` says whether the agent is selectable (primary/all) or a subagent; it is not the Build/Plan `mode` of the
@@ -101,6 +116,9 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
     prompt: prompt || undefined,
     model: field("model"),
     pack,
+    ...(tools?.tools ? { tools: tools.tools } : {}),
+    ...(tools && !tools.empty ? { unknownTools: tools.unknown } : {}),
+    ...(tools && tools.notes.length > 0 ? { toolNotes: tools.notes } : {}),
     ignored,
   };
 }
