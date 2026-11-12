@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import { Mode, type ModeType } from "../lib/modes";
-import { agentModelFits, findAgent, type Agent } from "../lib/agents";
+import type { ModeType } from "../lib/modes";
+import { agentModelFits, builtinAgentId, findAgent, type Agent } from "../lib/agents";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
 import { 
@@ -32,7 +32,7 @@ const sessionLocationSchema = z.object({
       message: z.string(),
       mode: z.custom<ModeType>(),
       model: z.string(),
-      agent: z.string().optional(),
+      agentId: z.string().optional(),
     })
     .optional(),
 });
@@ -56,7 +56,7 @@ function ChatMessage(
       parts={msg.parts}
       model={msg.metadata?.model ?? "unknown"}
       mode={msg.metadata?.mode ?? "BUILD"}
-      agent={msg.metadata?.agent}
+      agentName={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
       streaming={false}
     />
@@ -68,7 +68,7 @@ function SessionChat({
   initialPrompt,
 }: { 
   session: StoredSession,
-  initialPrompt?: { message: string; mode: ModeType; model: string; agent?: string };
+  initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string };
 }) {
   const { agents, agent, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
@@ -114,7 +114,7 @@ function SessionChat({
   // else the session's (a pi session sends the pi model that has credentials now).
   const send = useCallback(
     (userText: string, turnAgent: Agent, claudeModel: string) => {
-      const turn = { userText, mode: turnAgent.mode, agent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
+      const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
       const agentModel = turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined;
       if (session.engine !== "pi") {
         void submit({ ...turn, model: agentModel ?? modelForEngine(session.engine, claudeModel) });
@@ -167,8 +167,8 @@ function SessionChat({
     if (!initialPrompt || hasSubmittedInitialPromptRef.current) return;
     hasSubmittedInitialPromptRef.current = true;
     // A prompt that names no agent (older navigation state) runs as the selected agent, or as the built-in one when the mode it carries differs.
-    const fallback = agent.mode === initialPrompt.mode ? agent.id : initialPrompt.mode === Mode.PLAN ? "plan" : "build";
-    const first = findAgent(agents, initialPrompt.agent ?? fallback);
+    const fallback = agent.mode === initialPrompt.mode ? agent.id : builtinAgentId(initialPrompt.mode);
+    const first = findAgent(agents, initialPrompt.agentId ?? fallback);
     send(initialPrompt.message, first, initialPrompt.model);
   }, [initialPrompt, agents, agent, send]);
 

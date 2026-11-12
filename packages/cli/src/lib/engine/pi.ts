@@ -317,9 +317,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   const resourcesFor = (packView?: string) => {
     const templates = pluginPath ? [join(pluginPath, "commands")] : [];
     const skills = pluginPath ? [join(pluginPath, "skills")] : [];
-    for (const [list, part] of [[templates, "commands"], [skills, "skills"]] as const) {
-      if (packView && existsSync(join(packView, part))) list.push(join(packView, part));
-    }
+    if (packView && existsSync(join(packView, "commands"))) templates.push(join(packView, "commands"));
+    if (packView && existsSync(join(packView, "skills"))) skills.push(join(packView, "skills"));
     return templates.length > 0 || skills.length > 0 ? { additionalPromptTemplatePaths: templates, additionalSkillPaths: skills } : {};
   };
   const pluginResources = resourcesFor();

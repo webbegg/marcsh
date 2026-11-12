@@ -319,8 +319,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const dialog = useDialog();
   const toast = useToast();
   // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
-  const warnAboutAgent = useCallback((agent: Agent) => {
-    const warnings = agentWarnings(agent, engineId);
+  const warnAboutAgent = useCallback(async (selected: Agent) => {
+    const warnings = await agentWarnings(selected, engineId);
     if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
   }, [engineId, toast]);
   const { colors } = useTheme();
@@ -510,7 +510,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         navigate,
         agentId: agent.id,
         reloadAgents,
-        selectAgent: (id) => warnAboutAgent(selectAgent(id)),
+        selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
         setModel,
       });
     } else {
@@ -635,7 +635,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      if (!typeOnly) warnAboutAgent(cycleAgent());
+      if (!typeOnly) void warnAboutAgent(cycleAgent());
     } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);

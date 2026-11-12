@@ -27,9 +27,7 @@ import {
   hookEvents,
   parseHooksConsent,
   readHookFiles,
-  readHookFilesSync,
   readHooksDir,
-  readHooksDirSync,
   type HookFile,
   type HooksConfig,
   type HooksConsent,
@@ -495,27 +493,6 @@ function partEntryKind(stat: Stats, rel: string, part: string): "dir" | "file" {
   return "file";
 }
 
-/** `listPart` without yielding to the event loop; see `inspectPackHooks`. */
-function listPartSync(src: string, part: "skills" | "commands"): string[] {
-  let top;
-  try {
-    top = lstatSync(join(src, part));
-  } catch {
-    return [];
-  }
-  checkPartTop(top, part);
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const name of readdirSync(join(src, dir)).sort()) {
-      const rel = `${dir}/${name}`;
-      if (partEntryKind(lstatSync(join(src, rel)), rel, part) === "dir") walk(rel);
-      else files.push(rel);
-    }
-  };
-  walk(part);
-  return files;
-}
-
 /** `key:` as a YAML key in any spelling a line can start with: plain, quoted, indented, a list item or inside `{ }`. */
 const keyAnywhere = (key: string) => new RegExp(`(?:^|[-?{,\\[])[ \\t]*["']?[ \\t]*${key}[ \\t]*["']?[ \\t]*:`, "im");
 
@@ -905,8 +882,6 @@ async function partFiles(base: string): Promise<PackFile[]> {
   return files;
 }
 
-const partFilesSync = (base: string): PackFile[] => [...listPartSync(base, "skills"), ...listPartSync(base, "commands")].map((path) => ({ path, data: readFileSync(join(base, path)) }));
-
 const hookPath = (file: PackFile): PackFile => ({ path: `${HOOKS_DIR}/${file.path}`, data: file.data });
 
 /** What the consent digest covers: every file a hook can reach through ${CLAUDE_PLUGIN_ROOT}, the hooks/ ones included. */
@@ -938,15 +913,6 @@ async function viewMatches(view: string, parts: readonly PackFile[], expected: r
   }
 }
 
-function viewMatchesSync(view: string, parts: readonly PackFile[], expected: readonly HookFile[]): boolean {
-  try {
-    const hooks = readHookFilesSync(join(view, HOOKS_DIR));
-    return hooks.ok && consentDigest(partFilesSync(view), hooks.files) === consentDigest(parts, expected);
-  } catch {
-    return false;
-  }
-}
-
 const unreadableParts = (error: unknown): PackHooksInfo => ({ state: "unusable", reason: printable(error instanceof Error ? error.message : "the pack cannot be read") });
 
 type HooksShared = { commit: string; config: HooksConfig; files: HookFile[]; digest: string };
@@ -973,7 +939,7 @@ const hooksShared = (entry: PackEntry, read: UsableHooks, parts: readonly PackFi
  * What the installed clone's `hooks/` holds now, and whether the lockfile's consent covers exactly that: the commit, and the digest of the
  * whole pack. Consent counts as `on` only while the view also holds exactly what enabling made of it. Nothing is run.
  */
-export async function inspectPackHooksAsync(id: string, { root = packsRoot() }: RootOption = {}): Promise<PackHooksInfo> {
+export async function inspectPackHooks(id: string, { root = packsRoot() }: RootOption = {}): Promise<PackHooksInfo> {
   assertPackId(id);
   const entry = listPacks({ root }).find((pack) => pack.id === id);
   if (!entry) return { state: "none" };
@@ -992,34 +958,11 @@ export async function inspectPackHooksAsync(id: string, { root = packsRoot() }: 
   return hooksState(entry, shared, filter !== null && (await viewMatches(packPluginDir(id, root), parts, viewHookFiles(read, filter))));
 }
 
-/**
- * `inspectPackHooksAsync` for the one caller that cannot wait: the agent-selection warnings (`agentWarnings`, read synchronously by the
- * input bar). Everything else uses the async one, which keeps the UI running while it reads the pack.
- */
-export function inspectPackHooks(id: string, { root = packsRoot() }: RootOption = {}): PackHooksInfo {
-  assertPackId(id);
-  const entry = listPacks({ root }).find((pack) => pack.id === id);
-  if (!entry) return { state: "none" };
-  const src = join(packDir(id, root), "src");
-  const read = readHooksDirSync(join(src, HOOKS_DIR));
-  if (!read.present) return { state: "none" };
-  if (!read.usable) return { state: "unusable", reason: read.reason };
-  let parts: PackFile[];
-  try {
-    parts = partFilesSync(src);
-  } catch (error) {
-    return unreadableParts(error);
-  }
-  const shared = hooksShared(entry, read, parts);
-  const filter = consentFilter(entry, shared.digest);
-  return hooksState(entry, shared, filter !== null && viewMatchesSync(packPluginDir(id, root), parts, viewHookFiles(read, filter)));
-}
-
 /** Packs whose hooks have a consent in the lockfile: `on` when it still covers the pack and its view, `changed` when the hooks are off because it no longer does. */
 export async function packHooksStates({ root = packsRoot() }: RootOption = {}): Promise<Map<string, "on" | "changed">> {
   const states = new Map<string, "on" | "changed">();
   for (const pack of listPacks({ root })) {
-    if (pack.hooks) states.set(pack.id, (await inspectPackHooksAsync(pack.id, { root })).state === "on" ? "on" : "changed");
+    if (pack.hooks) states.set(pack.id, (await inspectPackHooks(pack.id, { root })).state === "on" ? "on" : "changed");
   }
   return states;
 }
@@ -1177,7 +1120,7 @@ export async function prepareViewForTurn(viewPath: string): Promise<TurnView> {
 
   const { root, id } = location;
   // `on` means the lockfile's consent covers the clone's pack files (hooks, skills, commands) and the view holds exactly what enabling made of them.
-  const info = await inspectPackHooksAsync(id, { root });
+  const info = await inspectPackHooks(id, { root });
   if (info.state === "on") return { view: viewPath, hooks: { id, root, config: info.config } };
 
   if (!present && !entry.hooks) return { view: viewPath };

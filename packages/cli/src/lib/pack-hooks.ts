@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, type Stats } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { hidesText, printable } from "./safe-text";
@@ -204,29 +204,6 @@ async function readRegular(path: string, rel: string): Promise<{ data: Buffer; m
   }
 }
 
-function readRegularSync(path: string, rel: string): { data: Buffer; mode: number } {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch {
-    throw cannotRead(rel);
-  }
-  try {
-    const stat = fstatSync(fd);
-    checkRegular(stat, rel);
-    const data = Buffer.alloc(stat.size);
-    let read = 0;
-    while (read < data.length) {
-      const n = readSync(fd, data, read, data.length - read, read);
-      if (n === 0) break;
-      read += n;
-    }
-    return { data: data.subarray(0, read), mode: stat.mode };
-  } finally {
-    closeSync(fd);
-  }
-}
-
 /** sha256 over the files sorted by path: each one's path length, path, size and bytes, so no path and content can be told from another split. */
 export function digestFiles(files: readonly { path: string; data: Buffer }[]): string {
   const hash = createHash("sha256");
@@ -297,34 +274,6 @@ async function listHookFiles(dir: string): Promise<HookFile[]> {
   return files.sort(byPath);
 }
 
-/** `listHookFiles` without yielding to the event loop; see `readHooksDirSync`. */
-function listHookFilesSync(dir: string): HookFile[] {
-  let top;
-  try {
-    top = lstatSync(dir);
-  } catch (error) {
-    topFailure(error);
-  }
-  checkTop(top);
-  const files: HookFile[] = [];
-  const budget = new HookBudget();
-  const walk = (rel: string) => {
-    for (const name of readdirSync(join(dir, rel)).sort()) {
-      const path = rel ? `${rel}/${name}` : name;
-      budget.entry(name);
-      const stat = lstatSync(join(dir, path));
-      if (entryKind(stat, path) === "dir") walk(path);
-      else {
-        budget.file(stat.size);
-        const { data, mode } = readRegularSync(join(dir, path), path);
-        files.push({ path, size: data.length, mode, data });
-      }
-    }
-  };
-  walk("");
-  return files.sort(byPath);
-}
-
 type HookFilesRead = { ok: true; files: HookFile[] } | { ok: false; reason: string };
 
 function hookFilesFailure(error: unknown): HookFilesRead {
@@ -336,14 +285,6 @@ function hookFilesFailure(error: unknown): HookFilesRead {
 export async function readHookFiles(dir: string): Promise<HookFilesRead> {
   try {
     return { ok: true, files: await listHookFiles(dir) };
-  } catch (error) {
-    return hookFilesFailure(error);
-  }
-}
-
-export function readHookFilesSync(dir: string): HookFilesRead {
-  try {
-    return { ok: true, files: listHookFilesSync(dir) };
   } catch (error) {
     return hookFilesFailure(error);
   }
@@ -372,18 +313,6 @@ function hooksDirFailure(error: unknown): HooksRead {
 export async function readHooksDir(dir: string): Promise<HooksRead> {
   try {
     return judgeHooksDir(await listHookFiles(dir));
-  } catch (error) {
-    return hooksDirFailure(error);
-  }
-}
-
-/**
- * `readHooksDir` for the one caller that cannot wait: the agent-selection warnings (`agentWarnings`) are read synchronously by the input bar.
- * Everything else uses the async one, which keeps the UI running while it reads.
- */
-export function readHooksDirSync(dir: string): HooksRead {
-  try {
-    return judgeHooksDir(listHookFilesSync(dir));
   } catch (error) {
     return hooksDirFailure(error);
   }

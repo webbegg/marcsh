@@ -51,7 +51,7 @@ async function runTurn(selected: string, initialPrompt: Record<string, unknown> 
     {
       initialEntries: [
         // What the home screen sends: the selected agent's ID next to its mode.
-        { pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agent: selected, ...initialPrompt } } },
+        { pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agentId: selected, ...initialPrompt } } },
       ],
     },
   );
@@ -106,7 +106,7 @@ describe("a Claude turn with the selected agent (S4, S5, S6)", () => {
   });
 
   test("a new session starts with the agent chosen on the home screen", async () => {
-    const options = await runTurn("build", { agent: "user/ftd" });
+    const options = await runTurn("build", { agentId: "user/ftd" });
 
     expect(options.systemPrompt.append).toBe("Work test-first.");
   });

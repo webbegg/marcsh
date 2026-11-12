@@ -13,7 +13,7 @@ import {
   disablePackHooks,
   enablePackHooks,
   hasLeftover,
-  inspectPackHooksAsync,
+  inspectPackHooks,
   installPack,
   listPacks,
   removePack,
@@ -422,7 +422,7 @@ export function hooksReviewLines(id: string, info: ReviewInfo): string[] {
 /** `/agents hooks <owner/repo>`: shows the hooks and enables them on consent (or turns them off, when they are on). */
 async function runHooks(flow: Flow, id: string) {
   if (!listPacks().some((pack) => pack.id === id)) return failure(flow, `${id} is not installed`);
-  const info = await inspectPackHooksAsync(id);
+  const info = await inspectPackHooks(id);
   if (info.state === "none") return failure(flow, `${id} has no hooks`);
   if (info.state === "unusable") return failure(flow, `The hooks of ${id} cannot be enabled: ${info.reason}`);
 
@@ -534,7 +534,7 @@ export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
       const found: PackEntry[] = [];
       const text = new Map<string, string>();
       for (const pack of listPacks()) {
-        const info = await inspectPackHooksAsync(pack.id);
+        const info = await inspectPackHooks(pack.id);
         if (info.state === "none") continue;
         found.push(pack);
         text.set(pack.id, hooksStateText(info));

@@ -49,7 +49,7 @@ async function runTurn(selected: string) {
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
     {
       initialEntries: [
-        { pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agent: selected } } },
+        { pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agentId: selected } } },
       ],
     },
   );

