@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage,
   fauxProvider,
@@ -325,6 +325,78 @@ export default function (pi) {
     expect(two.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "find", "grep", "ls", "read"]);
   });
 
+  test("a lifted narrowing does not bring back a tool a user extension turns off", async () => {
+    const one = recording(1);
+    const { turn } = await setup([...one.steps, toolCall("write", { path: made(), content: "x" }), fauxAssistantMessage([fauxText("ok")])]);
+    const first = await turn({ deniedTools: ["edit"] });
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "no-write.ts"),
+      `export default function (pi) { pi.on("session_start", () => { pi.setActiveTools(pi.getActiveTools().filter((n) => n !== "write")); }); }\n`,
+    );
+    const { tools } = await turn({ resumeRef: first.ref });
+    expect(existsSync(made())).toBe(false);
+    expect(tools.map((t) => [t.toolName, t.state])).toEqual([["write", "error"]]);
+  });
+
+  // The record is the session file's, so a user (or a bug) can write anything in it: only tools a fresh unrestricted session offers come back.
+  const forge = (ref: string | undefined, data: { denied: string[]; removed: string[] }) => SessionManager.open(ref!).appendCustomEntry("marcsh-agent-tools", data);
+
+  test("a recorded name outside the user's `defaultTools` does not come back (write and edit under read, bash)", async () => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+    const one = recording(1);
+    const two = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps]);
+
+    const first = await turn();
+    forge(first.ref, { denied: ["edit"], removed: ["write", "edit"] });
+    await turn({ resumeRef: first.ref });
+
+    expect(one.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "read"]);
+    expect(two.offered[0]).toEqual(one.offered[0]!);
+  });
+
+  test("a recorded `bash` never reaches an agent that denies bash, nor a session whose `defaultTools` has no bash", async () => {
+    const one = recording(1);
+    const two = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps]);
+    const first = await turn();
+    forge(first.ref, { denied: ["read"], removed: ["bash"] });
+    await turn({ deniedTools: ["bash"], resumeRef: first.ref });
+    expect(two.offered[0]).toEqual(without(ALL_BUILD, "bash"));
+
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read"] }));
+    const three = recording(2);
+    const narrowed = await setup(three.steps);
+    const second = await narrowed.turn();
+    forge(second.ref, { denied: ["bash"], removed: ["bash"] });
+    await narrowed.turn({ deniedTools: ["edit"], resumeRef: second.ref });
+    expect(three.offered[1]).toEqual(["AskUserQuestion", "Task", "read"]);
+  });
+
+  test("a recorded name never activates an extension tool that is not active by default", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "opt-in.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "optin_tool", label: "o", description: "o", parameters: Type.Object({}), defaultActive: false,
+    async execute() { return { content: [{ type: "text", text: "ran" }] }; } });
+}
+`,
+    );
+    const one = recording(1);
+    const two = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps]);
+
+    const first = await turn();
+    forge(first.ref, { denied: ["edit"], removed: ["optin_tool"] });
+    await turn({ resumeRef: first.ref });
+
+    expect(one.offered[0]).not.toContain("optin_tool");
+    expect(two.offered[0]).toEqual(one.offered[0]!);
+  });
 });
 
 describe("pi's MCP resource tools leave with the mcp group [S15 regression]", () => {
@@ -349,6 +421,26 @@ describe("pi's MCP resource tools leave with the mcp group [S15 regression]", ()
     expect(offered[0]!.filter((name) => name.startsWith("mcp__") || name.includes("mcp_resource"))).toEqual([]);
     expect(asks).toEqual([]);
     expect(existsSync(readMarker)).toBe(false);
+  });
+
+  test("marcsh's MCP tools come back for an unrestricted build turn after a resumed `mcp: false` turn", async () => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({ mcpServers: { fx: { command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-resource-server.ts", import.meta.url))] } } }),
+    );
+    const one = recording(1);
+    const two = recording(1);
+    const three = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps, ...three.steps]);
+
+    const first = await turn();
+    const second = await turn({ deniedTools: ["mcp"], resumeRef: first.ref });
+    await turn({ resumeRef: second.ref });
+
+    expect(one.offered[0]).toContain("mcp__fx__echo");
+    expect(two.offered[0]!.filter((name) => name.startsWith("mcp__"))).toEqual([]);
+    expect(three.offered[0]).toEqual(one.offered[0]!);
   });
 
   test("an extension tool named like a denied group (`Bash`, `shell`) is removed and blocked with it", async () => {
@@ -464,24 +556,40 @@ describe("createDeniedToolsExtension", () => {
   test("tools to restore come back when they register, and what is removed is reported [S15 regression]", () => {
     const handlers = new Map<string, (event: any) => any>();
     let active = ["read", "bash"];
-    let registered = ["read", "bash", "Task"];
+    let registered = ["read", "bash"];
     const removed: string[] = [];
-    createDeniedToolsExtension(["bash"], { restore: ["Task", "mcp__late__tool"], onRemoved: (names) => removed.push(...names) })({
+    const source = (name: string) => ({ name, sourceInfo: { path: name.startsWith("mcp__") ? "<inline:marcsh-mcp>" : "<extension>" } });
+    createDeniedToolsExtension(["bash"], { restore: ["mcp__late__tool", "mcp__user__tool"], onRemoved: (names) => removed.push(...names) })({
       on: (event: string, handler: (event: any) => any) => void handlers.set(event, handler),
       getActiveTools: () => active,
       setActiveTools: (next: string[]) => void (active = [...next]),
-      getAllTools: () => registered.map((name) => ({ name })),
+      getAllTools: () => registered.map(source),
     } as any);
 
     handlers.get("before_agent_start")!({});
-    expect(active).toEqual(["read", "Task"]);
+    expect(active).toEqual(["read"]);
     expect(removed).toEqual(["bash"]);
 
     // The MCP tool registers (and pi activates it) later in the turn.
     registered = [...registered, "mcp__late__tool"];
     active = [...active, "mcp__late__tool"];
     handlers.get("turn_start")!({});
-    expect(active).toEqual(["read", "Task", "mcp__late__tool"]);
+    expect(active).toEqual(["read", "mcp__late__tool"]);
+  });
+
+  test("only a tool marcsh's MCP extension registered comes back late, never another extension's tool of the same name", () => {
+    const handlers = new Map<string, (event: any) => any>();
+    let active = ["read"];
+    createDeniedToolsExtension([], { restore: ["mcp__user__tool", "optin"] })({
+      on: (event: string, handler: (event: any) => any) => void handlers.set(event, handler),
+      getActiveTools: () => active,
+      setActiveTools: (next: string[]) => void (active = [...next]),
+      getAllTools: () => ["read", "mcp__user__tool", "optin"].map((name) => ({ name, sourceInfo: { path: "/home/u/ext.ts" } })),
+    } as any);
+
+    handlers.get("before_agent_start")!({});
+
+    expect(active).toEqual(["read"]);
   });
 
   test("marcsh's Task is named Task for the group mapping (TASK_TOOL)", () => {
