@@ -130,7 +130,7 @@ describe("the agent-workflows skill", () => {
 
     test("says which events run on which engine", () => {
       const body = text();
-      expect(body).toMatch(/PreToolUse and PostToolUse[^\n]*Claude and pi/);
+      expect(body).toMatch(/PreToolUse, PostToolUse and PostToolUseFailure run on Claude and pi/);
       expect(body).toMatch(/other events[^\n]*Claude only/i);
     });
 
@@ -158,6 +158,39 @@ describe("the agent-workflows skill", () => {
       expect(body).toMatch(/hooks\/[^\n]*5 MB/);
       expect(body).toMatch(/unusable/i);
       expect(body).toMatch(/symlink/);
+    });
+
+    test("points to hooks/hooks.json as the supported way when a skill or command declares hooks", () => {
+      expect(text()).toMatch(/frontmatter of any skill or command[^\n]*Declare hooks in `hooks\/hooks\.json`/);
+    });
+
+    test("says the consent covers the whole pack, since a hook may run any file of it", () => {
+      const body = text();
+      expect(body).toContain("Hooks may run any file of this pack");
+      expect(body).toMatch(/`hooks\/`, `skills\/` and `commands\/`/);
+      expect(body).toContain("hooks changed — off");
+    });
+
+    test("says what a matcher may be, and that Task and Agent are the same tool", () => {
+      const body = text();
+      expect(body).toMatch(/`matcher` is empty, `\*`, or tool names separated by `\|`/);
+      expect(body).toMatch(/regular expressions included, makes the hooks unusable/i);
+      expect(body).toMatch(/`Task` and `Agent` name the same tool/);
+    });
+
+    test("says that on Claude too a hook can block but never approve, through marcsh's filter", () => {
+      const body = text();
+      expect(body).toMatch(/On Claude\*\* marcsh does not hand the pack's `hooks\.json` to Claude/);
+      expect(body).toMatch(/filter/);
+      expect(body).toMatch(/`allow`, `ask`, `approve` and `updatedInput` are dropped/);
+    });
+
+    test("says PostToolUse runs only for a call that succeeded and failures go to PostToolUseFailure", () => {
+      expect(text()).toMatch(/PostToolUse runs only for a call that succeeded[^\n]*PostToolUseFailure/);
+    });
+
+    test("keeps the documented limit: an edit to the view in the middle of a turn is not noticed until the next turn", () => {
+      expect(text()).toMatch(/middle of a turn is not noticed until the next turn/);
     });
 
     test("the checklist covers the hooks folder", () => {

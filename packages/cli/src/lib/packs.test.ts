@@ -285,6 +285,8 @@ describe("installPack", () => {
   test("a skill or command that declares hooks rejects the pack; allowed-tools is a warning", async () => {
     makeRepo("acme/hooked", { ...goodPack, "skills/lint/SKILL.md": "---\nname: lint\nhooks:\n  PreToolUse: x\n---\nL" });
     await expect(installPack("acme/hooked", options())).rejects.toThrow(/hooks/);
+    // The way out is the supported one: hooks/hooks.json, which stays off until the user enables it.
+    await expect(installPack("acme/hooked", options())).rejects.toThrow(/declare them in hooks\/hooks\.json.*\/agents hooks/);
 
     makeRepo("acme/tooled", { ...goodPack, "commands/ship.md": "---\nallowed-tools: Bash(*)\n---\nShip" });
     let preview: PackPreview | undefined;

@@ -4,13 +4,15 @@ import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hook
 import type { NoticeLevel } from "./types";
 
 /*
- * Pack hooks on pi. Claude runs a pack's hooks itself, from the pack's view; pi has no hooks, so marcsh runs the two tool-call events
- * (PreToolUse and PostToolUse) of an enabled pack here, following Claude's hook contract:
+ * Pack hooks on pi. Claude runs a pack's hooks itself, from the pack's view; pi has no hooks, so marcsh runs the tool-call events
+ * (PreToolUse, PostToolUse and PostToolUseFailure) of an enabled pack here, following Claude's hook contract:
  *
  *   - the command runs as `sh -c <command>` in the session's cwd, with CLAUDE_PLUGIN_ROOT (the view) and CLAUDE_PROJECT_DIR (the cwd);
- *   - stdin is JSON: { session_id, cwd, hook_event_name, tool_name, tool_input } (+ tool_response for PostToolUse), with pi's tool
- *     names mapped to Claude's (bash → Bash, find → Glob...);
- *   - a hook's matcher follows Claude's rules (compileMatcher); matching hooks run in parallel, identical commands once.
+ *   - stdin is JSON: { session_id, cwd, hook_event_name, tool_name, tool_input } (+ tool_response for PostToolUse, + error and
+ *     is_interrupt for PostToolUseFailure), with pi's tool names mapped to Claude's current ones (bash → Bash, find → Glob, Task → Agent...);
+ *   - a hook's matcher is a `*`, or tool names separated by `|` (compileMatcher), and matches a tool by its current Claude name or the
+ *     older one Claude still accepts (Task|Agent); matching hooks run in parallel, identical commands once;
+ *   - PostToolUse runs only for a call that succeeded; a call that failed runs the PostToolUseFailure hooks, if the pack has any.
  *
  * A hook can only narrow what marcsh allows. Exit 2, `{ "decision": "block" }`, `{ "continue": false }` and
  * `hookSpecificOutput.permissionDecision: "deny"` block the call. "allow", "ask", "approve" and `updatedInput` have NO effect: the call
@@ -29,10 +31,18 @@ const MAX_REASON = 4000;
 /** After the hook exited, how long its output pipes are waited for: a process it left running in the background may hold them open. */
 const PIPE_GRACE_MS = 250;
 
-const CLAUDE_NAMES: Record<string, string> = { bash: "Bash", edit: "Edit", write: "Write", read: "Read", grep: "Grep", find: "Glob", ls: "LS" };
+const CLAUDE_NAMES: Record<string, string> = { bash: "Bash", edit: "Edit", write: "Write", read: "Read", grep: "Grep", find: "Glob", ls: "LS", Task: "Agent" };
+/** Names Claude used for a tool before it renamed it, and still accepts in a matcher. */
+const OLDER_NAMES: Record<string, string[]> = { Agent: ["Task"] };
 
-/** The name Claude's hooks and matchers use for a pi tool: `Task`, `AskUserQuestion` and `mcp__server__tool` already are; unknown tools keep their name. */
+/** The name Claude's hooks and matchers use for a pi tool now (`Task` is `Agent`): `AskUserQuestion` and `mcp__server__tool` already are; unknown tools keep their name. */
 export const claudeToolName = (piName: string) => CLAUDE_NAMES[piName] ?? piName;
+
+/** Every name a matcher may use for a pi tool: the current Claude name first, then the older ones. */
+export const claudeToolNames = (piName: string) => {
+  const name = claudeToolName(piName);
+  return [name, ...(OLDER_NAMES[name] ?? [])];
+};
 
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {
@@ -190,12 +200,12 @@ type Plan = { matches: (toolName: string) => boolean; hooks: HookCommand[] }[];
 
 const plan = (config: HooksConfig, event: string): Plan => (config[event] ?? []).map((group) => ({ matches: compileMatcher(group.matcher), hooks: group.hooks }));
 
-/** The commands of the groups that match the tool, each command once (like Claude, identical commands are deduplicated). */
-function selected(groups: Plan, toolName: string): HookCommand[] {
+/** The commands of the groups whose matcher accepts one of the tool's names, each command once (like Claude, identical commands are deduplicated). */
+function selected(groups: Plan, toolNames: readonly string[]): HookCommand[] {
   const seen = new Set<string>();
   const commands: HookCommand[] = [];
   for (const group of groups) {
-    if (!group.matches(toolName)) continue;
+    if (!toolNames.some(group.matches)) continue;
     for (const hook of group.hooks) {
       if (seen.has(hook.command)) continue;
       seen.add(hook.command);
@@ -206,7 +216,7 @@ function selected(groups: Plan, toolName: string): HookCommand[] {
 }
 
 export type PackHooksOptions = {
-  /** The enabled, verified hooks of the pack (see `prepareViewForTurn`); only PreToolUse and PostToolUse are used. */
+  /** The enabled, verified hooks of the pack (see `prepareViewForTurn`); only PreToolUse, PostToolUse and PostToolUseFailure are used. */
   config: HooksConfig;
   /** The pack's plugin view: CLAUDE_PLUGIN_ROOT. */
   view: string;
@@ -219,13 +229,18 @@ export type PackHooksOptions = {
 
 const shorten = (command: string) => (command.length > 60 ? `${command.slice(0, 59)}…` : command);
 
+/** The text of a tool result, for the hook that is told what failed. */
+const resultText = (content: readonly { type: string; text?: string }[]) =>
+  content.flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : [])).join("\n");
+
 /**
- * The pi extension that runs a pack's PreToolUse and PostToolUse hooks for the session it is loaded into. Load it before the approval
+ * The pi extension that runs a pack's PreToolUse, PostToolUse and PostToolUseFailure hooks for the session it is loaded into. Load it before the approval
  * extension. It registers nothing when the pack has no hook for these events.
  */
 export function createPackHooksExtension({ config, view, cwd, signal, notify }: PackHooksOptions): ExtensionFactory {
   const pre = plan(config, "PreToolUse");
   const post = plan(config, "PostToolUse");
+  const failure = plan(config, "PostToolUseFailure");
   return (pi) => {
     const execute = (hooks: HookCommand[], payload: Json) => {
       const input = JSON.stringify(payload);
@@ -249,7 +264,7 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
     if (pre.length > 0) {
       pi.on("tool_call", async (event, ctx) => {
         const name = claudeToolName(event.toolName);
-        const hooks = selected(pre, name);
+        const hooks = selected(pre, claudeToolNames(event.toolName));
         if (hooks.length === 0) return undefined;
         try {
           const results = await execute(hooks, {
@@ -273,31 +288,33 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
       });
     }
 
-    if (post.length > 0) {
+    if (post.length > 0 || failure.length > 0) {
       pi.on("tool_result", async (event, ctx) => {
+        // A call that failed is PostToolUseFailure's, one that succeeded PostToolUse's: never both, and nothing when the pack has no hook for it.
+        const eventName = event.isError ? "PostToolUseFailure" : "PostToolUse";
         const name = claudeToolName(event.toolName);
-        const hooks = selected(post, name);
+        const hooks = selected(event.isError ? failure : post, claudeToolNames(event.toolName));
         if (hooks.length === 0) return undefined;
         try {
           const results = await execute(hooks, {
             session_id: sessionId(ctx),
             cwd,
-            hook_event_name: "PostToolUse",
+            hook_event_name: eventName,
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),
-            tool_response: { content: event.content, is_error: event.isError },
+            ...(event.isError ? { error: resultText(event.content), is_interrupt: false } : { tool_response: { content: event.content, is_error: false } }),
           });
           const feedback: string[] = [];
           for (const { hook, outcome } of results) {
             const verdict = judgePostToolUse(outcome);
-            if (verdict.notice) tell("PostToolUse", hook, verdict.notice);
+            if (verdict.notice) tell(eventName, hook, verdict.notice);
             if (verdict.feedback) feedback.push(verdict.feedback);
           }
           if (feedback.length === 0) return undefined;
           // The model hears what the hook said next to the tool's own result; the result itself, and whether it was an error, are not changed.
-          return { content: [...event.content, ...feedback.map((message) => ({ type: "text" as const, text: `Pack hook feedback (PostToolUse): ${message}` }))] };
+          return { content: [...event.content, ...feedback.map((message) => ({ type: "text" as const, text: `Pack hook feedback (${eventName}): ${message}` }))] };
         } catch (error) {
-          notify?.(`Pack hook PostToolUse failed: ${clean(error instanceof Error ? error.message : String(error))}`, "warning");
+          notify?.(`Pack hook ${eventName} failed: ${clean(error instanceof Error ? error.message : String(error))}`, "warning");
           return undefined;
         }
       });

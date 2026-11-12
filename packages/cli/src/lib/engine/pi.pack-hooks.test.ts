@@ -263,6 +263,26 @@ describe("PostToolUse hooks on pi", () => {
     expect(seen[0]![0]).toContain("Pack hook feedback (PostToolUse): lint failed");
   });
 
+  test("a call that fails runs the PostToolUseFailure hooks, not the PostToolUse ones", async () => {
+    const view = await installFake("acme/flows", {
+      "hooks.json": hooksJson({
+        PostToolUse: [{ hooks: [{ type: "command", command: sh("after.sh") }] }],
+        PostToolUseFailure: [{ hooks: [{ type: "command", command: sh("failed.sh") }] }],
+      }),
+      "after.sh": `touch ${marker("post-ran")}\n`,
+      "failed.sh": `cat > ${marker("failure.json")}\n`,
+    });
+    const { turn } = await setup([toolCall("read", { path: join(cwd, "does-not-exist.txt") }), done()]);
+
+    await turn({ packPluginPath: view });
+
+    expect(existsSync(marker("post-ran"))).toBe(false);
+    const payload = JSON.parse(readFileSync(marker("failure.json"), "utf8"));
+    expect(payload).toMatchObject({ hook_event_name: "PostToolUseFailure", tool_name: "Read" });
+    expect(typeof payload.error).toBe("string");
+    expect(payload.error).not.toBe("");
+  });
+
   test("does not run for a call that was blocked", async () => {
     const view = await installFake("acme/flows", {
       "hooks.json": hooksJson({

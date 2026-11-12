@@ -491,7 +491,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         guard: options.guard,
       };
       // The pack's hooks are checked against what the user approved before anything of the view loads (S16): changed hooks are dropped for
-      // this turn. Enabled ones run (PreToolUse and PostToolUse only) ahead of the approval extension, so a call they block never asks.
+      // this turn. Enabled ones run (PreToolUse, PostToolUse and PostToolUseFailure only) ahead of the approval extension, so a call they block never asks.
       const packTurn = packPluginPath ? prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
       const packHooks = packTurn?.hooks

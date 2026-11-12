@@ -3,7 +3,7 @@ import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
 import { agentLabel, type Agent } from "../../lib/agents";
-import { lockProblem, packsWithHooksOn } from "../../lib/packs";
+import { lockProblem, packHooksStates } from "../../lib/packs";
 import { Mode } from "../../lib/modes";
 
 type AgentsDialogContentProps = {
@@ -27,12 +27,13 @@ const ACTIONS: Row[] = [
 // The permission comes before the description, which is the pack's own words and may claim anything. Build needs no tag.
 const permissionTag = (agent: Agent) => (agent.mode === Mode.PLAN ? "(read-only)" : agent.pack ? "(build)" : undefined);
 
-/** One agent's row: a bullet on the current one, its label, its permission tag (and "hooks on" when its pack's hooks run), then its description. */
-function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string, hooksOn: ReadonlySet<string>) {
+/** One agent's row: a bullet on the current one, its label, its permission tag (and "hooks on" when its pack's hooks run, "hooks changed — off" when they were enabled but no longer match), then its description. */
+function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string, hooks: ReadonlyMap<string, "on" | "changed">) {
   const parts = [agent.id === currentId ? " • " : "   ", agentLabel(agent, agents)];
   const tag = permissionTag(agent);
   if (tag) parts.push(`  ${tag}`);
-  if (agent.pack && hooksOn.has(agent.pack)) parts.push("  (hooks on)");
+  const state = agent.pack ? hooks.get(agent.pack) : undefined;
+  if (state) parts.push(state === "on" ? "  (hooks on)" : "  (hooks changed \u2014 off)");
   if (agent.description) parts.push(`  ${agent.description}`);
   return parts.join("");
 }
@@ -46,8 +47,8 @@ export const AgentsDialogContent = ({
   const dialog = useDialog();
   // An unreadable packs.json hides every pack agent without a word otherwise.
   const [problem] = useState(() => lockProblem());
-  // The packs whose hooks are enabled and still match what was approved: their agents' rows say so.
-  const [hooksOn] = useState(() => packsWithHooksOn());
+  // The packs whose hooks were enabled: on while they still match what was approved, else off because they changed. Their agents' rows say so.
+  const [hooks] = useState(() => packHooksStates());
 
   const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
 
@@ -81,7 +82,7 @@ export const AgentsDialogContent = ({
         filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
         renderItem={(row, isSelected) => (
           <text selectable={false} fg={isSelected ? "black" : "white"}>
-            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId, hooksOn) : `   ${row.label}`}
+            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId, hooks) : `   ${row.label}`}
           </text>
         )}
         getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}

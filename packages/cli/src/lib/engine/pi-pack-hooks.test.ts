@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { compileMatcher, type HooksConfig } from "../pack-hooks";
 import {
   claudeToolName,
+  claudeToolNames,
   createPackHooksExtension,
   judgePostToolUse,
   judgePreToolUse,
@@ -33,7 +34,14 @@ describe("claudeToolName", () => {
   test("pi's tools are named the way Claude names them", () => {
     expect(
       ["bash", "edit", "write", "read", "grep", "find", "ls", "Task", "AskUserQuestion"].map(claudeToolName),
-    ).toEqual(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "LS", "Task", "AskUserQuestion"]);
+    ).toEqual(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "LS", "Agent", "AskUserQuestion"]);
+  });
+
+  test("Claude renamed Task to Agent: the hook is told Agent, and a matcher written for either name matches", () => {
+    expect(claudeToolName("Task")).toBe("Agent");
+    expect(claudeToolNames("Task")).toEqual(["Agent", "Task"]);
+    expect(claudeToolNames("bash")).toEqual(["Bash"]);
+    expect(claudeToolNames("find")).toEqual(["Glob"]);
   });
 
   test("MCP tools already carry Claude's mcp__server__tool name; any other tool keeps its own", () => {
@@ -60,16 +68,17 @@ describe("compileMatcher (Claude's rules)", () => {
     expect([writes("Edit"), writes("Write"), writes("Read"), writes("EditX")]).toEqual([true, true, false, false]);
   });
 
-  test("anything else is a regular expression", () => {
+  test("a name with a wildcard matches what starts and ends as it does around the *", () => {
     const mcp = compileMatcher("mcp__.*");
-    expect([mcp("mcp__fs__read"), mcp("Bash")]).toEqual([true, false]);
-    const anchored = compileMatcher("^(Edit|Write)$");
-    expect([anchored("Edit"), anchored("EditX")]).toEqual([true, false]);
-    expect(compileMatcher("Notebook.*")("NotebookEdit")).toBe(true);
+    expect([mcp("mcp__fs__read"), mcp("mcp__"), mcp("Bash"), mcp("xmcp__a")]).toEqual([true, true, false, false]);
+    const middle = compileMatcher("mcp__.*__write");
+    expect([middle("mcp__fs__write"), middle("mcp__fs__read"), middle("mcp__write")]).toEqual([true, false, false]);
+    expect(compileMatcher("Notebook*")("NotebookEdit")).toBe(true);
+    expect(compileMatcher("Edit|mcp__fs__*")("mcp__fs__delete")).toBe(true);
   });
 
-  test("a pattern that does not compile throws", () => {
-    expect(() => compileMatcher("(")).toThrow();
+  test("a matcher that is not a plain name list throws: no regular expressions", () => {
+    for (const matcher of ["(", "^(Edit|Write)$", "(a+)+$", "[ab]", "Bash|", ".+"]) expect(() => compileMatcher(matcher), matcher).toThrow();
   });
 });
 
@@ -265,6 +274,26 @@ describe("createPackHooksExtension", () => {
   test("registers only the handler of the events the pack declares", () => {
     expect([...load({ PreToolUse: group("true") }).handlers.keys()]).toEqual(["tool_call"]);
     expect([...load({ PostToolUse: group("true") }).handlers.keys()]).toEqual(["tool_result"]);
+    expect([...load({ PostToolUseFailure: group("true") }).handlers.keys()]).toEqual(["tool_result"]);
+  });
+
+  test("a matcher written for Task or for Agent matches pi's Task tool, which the hook is told is Agent", async () => {
+    const out = join(dir, "stdin.json");
+    for (const matcher of ["Task", "Agent", "Task|Agent", "Ag*"]) {
+      rmSync(out, { force: true });
+      await load({ PreToolUse: group(`cat > ${out}`, matcher) }).call("Task", { description: "d", prompt: "p" });
+      expect(JSON.parse(readFileSync(out, "utf8")).tool_name, matcher).toBe("Agent");
+    }
+  });
+
+  test("Glob, Grep and LS are what a hook is told for pi's find, grep and ls, and what its matcher is matched against", async () => {
+    const ran: string[] = [];
+    const notices = (name: string) => `echo ${name} >> ${join(dir, "ran.txt")}`;
+    await load({ PreToolUse: [...group(notices("glob"), "Glob"), ...group(notices("grep"), "Grep"), ...group(notices("ls"), "LS"), ...group(notices("never"), "find")] }).call("find", {});
+    await load({ PreToolUse: group(notices("grep"), "Grep") }).call("grep", {});
+    await load({ PreToolUse: group(notices("ls"), "LS") }).call("ls", {});
+    ran.push(...readFileSync(join(dir, "ran.txt"), "utf8").trim().split("\n"));
+    expect(ran).toEqual(["glob", "grep", "ls"]);
   });
 
   test("a tool call that no matcher matches runs no hook and is not blocked", async () => {
@@ -374,6 +403,46 @@ describe("createPackHooksExtension", () => {
     expect(await load({ PostToolUse: group("true", "Edit") }).result("edit", {}, "ok")).toBeUndefined();
     const marker = join(dir, "ran");
     expect(await load({ PostToolUse: group(`touch ${marker}; exit 2`, "Edit") }).result("bash", {}, "ok")).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("PostToolUse runs only for a call that succeeded; a failed call runs nothing when no PostToolUseFailure is declared", async () => {
+    const marker = join(dir, "ran");
+    const { result } = load({ PostToolUse: group(`touch ${marker}; exit 2`) });
+    expect(await result("bash", { command: "false" }, "exit 1", true)).toBeUndefined();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("a failed call runs the PostToolUseFailure hooks with the error, and exit 2 reaches the model as feedback", async () => {
+    const out = join(dir, "failure.json");
+    const ran = join(dir, "post-ran");
+    const { result } = load({
+      PostToolUse: group(`touch ${ran}`),
+      PostToolUseFailure: group(`cat > ${out}; echo 'try another path' >&2; exit 2`, "Read"),
+    });
+
+    const changed = await result("read", { path: "missing.ts" }, "ENOENT: no such file", true);
+
+    expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({
+      session_id: "session-1",
+      cwd,
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Read",
+      tool_input: { path: "missing.ts", file_path: "missing.ts" },
+      error: "ENOENT: no such file",
+      is_interrupt: false,
+    });
+    expect(existsSync(ran)).toBe(false);
+    expect(changed.content).toEqual([
+      { type: "text", text: "ENOENT: no such file" },
+      { type: "text", text: "Pack hook feedback (PostToolUseFailure): try another path" },
+    ]);
+  });
+
+  test("PostToolUseFailure does not run for a call that succeeded", async () => {
+    const marker = join(dir, "ran");
+    const { result } = load({ PostToolUseFailure: group(`touch ${marker}`) });
+    expect(await result("read", { path: "a.ts" }, "contents")).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
   });
 

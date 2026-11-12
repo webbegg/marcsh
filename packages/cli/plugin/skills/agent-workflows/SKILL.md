@@ -100,7 +100,7 @@ commands/*.md                   slash commands
 - A repository over 5,000 entries (files and folders) or 50 MB of files, counted on the checked-out tree without `.git`. Keep a pack to prompts, skills and commands; do not commit assets, binaries or `node_modules`.
 - An agent file whose frontmatter is never closed (an opening `---` with no closing `---`).
 - No primary agent in `agents/*.md` (only subagents, or none).
-- `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested).
+- `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested). Declare hooks in `hooks/hooks.json` instead: that is the supported way, and it is opt-in (see Hooks below).
 - A `...` line inside a skill or command frontmatter.
 - Frontmatter that is not clean: an opening or closing `---` line with other text on it, no closing `---`, or YAML that does not parse (quote a `description` that contains `: `).
 
@@ -120,17 +120,20 @@ A pack can ship hooks, but they are opt-in and off by default. Nothing in `hooks
 }
 ```
 
-- Only `"type": "command"` hooks are supported, each `command` on one line of at most 2,000 characters with no control characters. Any other hook type, key or shape makes the hooks unusable: the pack still installs, the preview says so, and they can never be enabled.
-- Limits of `hooks/`: no symlinks or special files, each file at most 1 MB, 5 MB in total. A folder over a limit is unusable too.
-- `matcher` follows Claude's rules: empty or `*` is every tool, a name or an `a|b` list matches exactly, anything else is a regular expression on the tool name.
-- PreToolUse and PostToolUse run on Claude and pi. All other events (SessionStart, Stop...) run on Claude only; selecting the agent on pi warns about them.
+- Only `"type": "command"` hooks are supported, each `command` on one line of at most 2,000 characters with no control or invisible characters (line and paragraph separators, non-ASCII spaces, lone surrogates and blank-looking letters such as U+3164 or U+2800 count). Any other hook type, key or shape makes the hooks unusable: the pack still installs, the preview says so, and they can never be enabled.
+- Limits of `hooks/`: no symlinks or special files, each file at most 1 MB, 5 MB in total, and file names with the same kind of characters are refused. A folder over a limit is unusable too. The name `.marcsh-commands.json` is marcsh's own and cannot be used.
+- `matcher` is empty, `*`, or tool names separated by `|` written with letters, digits, `_`, `.` and `-`, each with at most one `*` (or `.*`) wildcard (`Bash`, `Edit|Write`, `mcp__memory__.*`). Anything else, regular expressions included, makes the hooks unusable. `Task` and `Agent` name the same tool on pi, so a matcher written for either one matches.
+- PreToolUse, PostToolUse and PostToolUseFailure run on Claude and pi. All other events (SessionStart, Stop...) run on Claude only; selecting the agent on pi warns about them.
+- Hooks may run any file of this pack (`${CLAUDE_PLUGIN_ROOT}` is the pack's generated view with its skills, commands and `hooks/`), so the consent covers the whole pack, not only `hooks/`.
 - Hooks run only while one of the pack's agents is selected, never for Build, Plan or personal agents.
 
 **Enabling.** `/agents hooks owner/repo` (or the "Pack hooks…" row of `/agents`) shows the commit, every event with its matcher and the exact command, the files under `hooks/` with sizes, which events run on which engine, and the line that these commands run on the user's machine with their permissions. The choices are Cancel (the default) and Enable. `/agents hooks owner/repo off` turns them off without asking.
 
-**Re-consent.** Consent is pinned to the pack commit and to a digest of every file under `hooks/`. An update that moves the commit turns hooks off ("Hooks turned off; review them again with /agents hooks owner/repo"), and files that change on disk after enabling are dropped for the turn with a warning, so the user has to review them again.
+**Re-consent.** Consent is pinned to the pack commit and to a digest of every file a hook can reach: all files under `hooks/`, `skills/` and `commands/`. An update that moves the commit turns hooks off ("Hooks turned off; review them again with /agents hooks owner/repo"), and any of those files that changes on disk after enabling (in the clone or in the generated view) turns the hooks off for the turn with a warning; `/agents` then says "hooks changed — off" and the user has to review them again. Limit: an edit to the generated view in the middle of a turn is not noticed until the next turn.
 
-**On pi** marcsh runs PreToolUse and PostToolUse itself, with Claude's contract: `sh -c <command>` in the project directory, `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` set, JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`, plus `tool_response` for PostToolUse) and Claude's tool names (Bash, Edit, Write, Read, Grep, Glob, LS, Task, `mcp__server__tool`).
+**On Claude** marcsh does not hand the pack's `hooks.json` to Claude. The view's `hooks/hooks.json` is generated: every command is a call to marcsh's filter, which runs the original command (same shell, directory, environment and stdin, same timeout and exit code) and lets only what narrows a call through: exit 2, `decision: "block"`, `continue: false` and `permissionDecision: "deny"` survive; `allow`, `ask`, `approve` and `updatedInput` are dropped. So a hook can block a call but never approve it or change what the model asked, on Claude as on pi.
+
+**On pi** marcsh runs PreToolUse, PostToolUse and PostToolUseFailure itself, with Claude's contract: `sh -c <command>` in the project directory, `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` set, JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`, plus `tool_response` for PostToolUse and `error` for PostToolUseFailure) and Claude's current tool names (Bash, Edit, Write, Read, Grep, Glob, LS, Agent for Task, `mcp__server__tool`). PostToolUse runs only for a call that succeeded; a call that failed runs the PostToolUseFailure hooks, if the pack declares any, and nothing otherwise.
 
 - Exit code 2 blocks the call and stderr is the reason. `{"decision": "block", "reason": ...}` or `hookSpecificOutput.permissionDecision: "deny"` block too. A blocked call never asks.
 - `allow`, `ask` and `updatedInput` have no effect: hooks can only narrow, and marcsh's approval still asks about the model's own call.

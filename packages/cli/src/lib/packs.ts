@@ -22,9 +22,23 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
-import { HOOKS_DIR, hookEvents, parseHooksConsent, readHooksDir, type HookFile, type HooksConfig, type HooksConsent } from "./pack-hooks";
+import {
+  COMMANDS_FILE,
+  HOOKS_DIR,
+  HOOKS_FILE,
+  claudeHookFiles,
+  digestFiles,
+  hookEvents,
+  parseHooksConsent,
+  readHookFiles,
+  readHooksDir,
+  type HookFile,
+  type HooksConfig,
+  type HooksConsent,
+  type HooksRead,
+} from "./pack-hooks";
 import { Mode } from "./modes";
-import { listDir } from "./plugin";
+import { listDir, marcshPluginPath } from "./plugin";
 import { printable } from "./safe-text";
 
 /*
@@ -37,9 +51,11 @@ import { printable } from "./safe-text";
  * and previewed. Installing and updating need the user's consent after a preview; nothing is automatic.
  *
  * A pack's hooks (`hooks/`, see pack-hooks.ts) are the one exception to "nothing runs", and they are off until the user enables them
- * after reading the commands: the lock entry then holds `hooks` (the commit and the digest of the hook files that were reviewed), the
- * view gets a copy of `hooks/`, and the consent counts only while the commit and the digest of both the clone's and the view's files
- * still match (`prepareViewForTurn` checks before every turn). An update that changes the commit turns them off.
+ * after reading the commands: the lock entry then holds `hooks` (the commit and a digest of the whole pack: its hooks/, skills/ and
+ * commands/ files, since a hook may run any of them through ${CLAUDE_PLUGIN_ROOT}). The view then gets a copy of `hooks/` in which the
+ * pack's `hooks.json` is replaced by marcsh's (every command runs through the filter that lets a hook block a call but never approve it,
+ * the original commands being kept in COMMANDS_FILE), and the consent counts only while the clone and the whole view still match
+ * (`inspectPackHooks`; `prepareViewForTurn` checks before every turn). An update that changes the commit turns them off.
  *
  *   <root>/packs.json              the lockfile: every pack pinned to the commit that was previewed and accepted
  *   <root>/<owner>/<repo>/src      the clone at that commit
@@ -455,7 +471,7 @@ function readParts(src: string): Parts {
     } catch (error) {
       throw rejected(`the frontmatter of ${printable(file)} cannot be read unambiguously (${(error as Error).message})`);
     }
-    if (found.hooks) throw rejected(`${printable(file)} declares hooks, which marcsh never runs`);
+    if (found.hooks) throw rejected(`${printable(file)} declares hooks, which marcsh never runs from a skill or command; declare them in hooks/hooks.json, where they stay off until you enable them with /agents hooks`);
     if (found.allowedTools) warnings.push(`${file} pre-approves tools (allowed-tools)`);
   }
   // A skill is a folder with a SKILL.md (any case), or a .md directly in skills/ (pi loads those too); a command is any .md
@@ -771,22 +787,81 @@ export type PackHooksInfo =
 
 const sameConsent = (entry: PackEntry, digest: string) => entry.hooks !== undefined && entry.hooks.commit === entry.commit && entry.hooks.digest === digest;
 
-/** What the installed clone's `hooks/` holds now, and whether the lockfile's consent covers exactly that. Nothing is run. */
+type PackFile = { path: string; data: Buffer };
+type UsableHooks = Extract<HooksRead, { usable: true }>;
+
+/** The files of `skills/` and `commands/` under `base` (the clone or the view), read whole. Throws `PackError` like `listPart`. */
+const partFiles = (base: string): PackFile[] => [...listPart(base, "skills"), ...listPart(base, "commands")].map((path) => ({ path, data: readFileSync(join(base, path)) }));
+
+const hookPath = (file: PackFile): PackFile => ({ path: `${HOOKS_DIR}/${file.path}`, data: file.data });
+
+/** What the consent digest covers: every file a hook can reach through ${CLAUDE_PLUGIN_ROOT}, the hooks/ ones included. */
+const consentDigest = (parts: readonly PackFile[], hooks: readonly HookFile[]) => digestFiles([...parts, ...hooks.map(hookPath)]);
+
+/** The filter every command of the view's hooks.json runs through (marcsh's own plugin), or null when marcsh's plugin cannot be found. */
+function filterPath(): string | null {
+  const plugin = marcshPluginPath();
+  return plugin ? join(plugin, HOOKS_DIR, "pack-hook-filter.ts") : null;
+}
+
+/** The files of the view's `hooks/` for these hooks: the pack's own, except its hooks.json, then marcsh's hooks.json and commands file. */
+function viewHookFiles(read: UsableHooks, filter: string): HookFile[] {
+  const { hooksJson, commandsJson } = claudeHookFiles(read.config, filter);
+  const generated = (path: string, text: string): HookFile => {
+    const data = Buffer.from(text);
+    return { path, size: data.length, mode: 0o644, data };
+  };
+  return [...read.files.filter((file) => file.path !== HOOKS_FILE), generated(HOOKS_FILE, hooksJson), generated(COMMANDS_FILE, commandsJson)];
+}
+
+/** Whether the view holds exactly the clone's skills and commands (`parts`) and exactly these hook files: nothing more, less or different. */
+function viewMatches(view: string, parts: readonly PackFile[], expected: readonly HookFile[]): boolean {
+  try {
+    const hooks = readHookFiles(join(view, HOOKS_DIR));
+    return hooks.ok && consentDigest(partFiles(view), hooks.files) === consentDigest(parts, expected);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the installed clone's `hooks/` holds now, and whether the lockfile's consent covers exactly that: the commit, and the digest of the
+ * whole pack. Consent counts as `on` only while the view also holds exactly what enabling made of it. Nothing is run.
+ */
 export function inspectPackHooks(id: string, { root = packsRoot() }: RootOption = {}): PackHooksInfo {
   assertPackId(id);
   const entry = listPacks({ root }).find((pack) => pack.id === id);
   if (!entry) return { state: "none" };
-  const read = readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
+  const src = join(packDir(id, root), "src");
+  const read = readHooksDir(join(src, HOOKS_DIR));
   if (!read.present) return { state: "none" };
   if (!read.usable) return { state: "unusable", reason: read.reason };
-  const shared = { commit: entry.commit, config: read.config, files: read.files, digest: read.digest };
-  if (entry.hooks && sameConsent(entry, read.digest)) return { state: "on", ...shared, enabledAt: entry.hooks.enabledAt };
+  let parts: PackFile[];
+  try {
+    parts = partFiles(src);
+  } catch (error) {
+    return { state: "unusable", reason: printable(error instanceof Error ? error.message : "the pack cannot be read") };
+  }
+  const shared = { commit: entry.commit, config: read.config, files: read.files, digest: consentDigest(parts, read.files) };
+  if (entry.hooks && sameConsent(entry, shared.digest)) {
+    const filter = filterPath();
+    if (filter && viewMatches(packPluginDir(id, root), parts, viewHookFiles(read, filter))) return { state: "on", ...shared, enabledAt: entry.hooks.enabledAt };
+  }
   return { state: "off", ...shared, ...(entry.hooks ? { changed: true as const } : {}) };
+}
+
+/** Packs whose hooks have a consent in the lockfile: `on` when it still covers the pack and its view, `changed` when the hooks are off because it no longer does. */
+export function packHooksStates({ root = packsRoot() }: RootOption = {}): Map<string, "on" | "changed"> {
+  const states = new Map<string, "on" | "changed">();
+  for (const pack of listPacks({ root })) {
+    if (pack.hooks) states.set(pack.id, inspectPackHooks(pack.id, { root }).state === "on" ? "on" : "changed");
+  }
+  return states;
 }
 
 /** The IDs of the packs whose hooks are enabled and still match what was approved. */
 export function packsWithHooksOn({ root = packsRoot() }: RootOption = {}): Set<string> {
-  return new Set(listPacks({ root }).filter((pack) => pack.hooks && inspectPackHooks(pack.id, { root }).state === "on").map((pack) => pack.id));
+  return new Set([...packHooksStates({ root })].filter(([, state]) => state === "on").map(([id]) => id));
 }
 
 const viewHooksPath = (view: string) => join(view, HOOKS_DIR);
@@ -850,29 +925,34 @@ export async function enablePackHooks(id: string, { root = packsRoot(), reviewed
   const read = readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
   if (!read.present) throw new PackError(`${id} has no hooks`);
   if (!read.usable) throw new PackError(`The hooks of ${id} cannot be enabled: ${read.reason}`);
-  if (reviewed.commit !== entry.commit || reviewed.digest !== read.digest) {
+  const parts = partFiles(join(packDir(id, root), "src"));
+  const digest = consentDigest(parts, read.files);
+  if (reviewed.commit !== entry.commit || reviewed.digest !== digest) {
     throw new PackError(`The hooks of ${id} changed since you reviewed them; open /agents hooks ${id} again`);
   }
 
+  const filter = filterPath();
+  if (!filter) throw new PackError("marcsh's own plugin folder was not found, so pack hooks cannot be set up");
   const view = packPluginDir(id, root);
-  writeViewHooks(view, read.files);
-  const copy = readHooksDir(viewHooksPath(view));
-  if (!copy.present || !copy.usable || copy.digest !== read.digest) {
+  const files = viewHookFiles(read, filter);
+  writeViewHooks(view, files);
+  // The review covered the whole pack: the view's skills and commands must be the clone's, and its hooks exactly what was just written.
+  if (!viewMatches(view, parts, files)) {
     removeAll(viewHooksPath(view));
-    throw new PackError(`The hooks of ${id} could not be copied exactly; nothing was enabled`);
+    throw new PackError(`The view of ${id} does not match the pack's files, so nothing was enabled; remove the pack and install it again`);
   }
   try {
     changeLock(root, (packs) => {
       const latest = packs.find((pack) => pack.id === id);
       if (!latest || latest.commit !== entry.commit) throw new PackError(`${id} changed while its hooks were being enabled`);
-      const consent: HooksConsent = { commit: entry.commit, digest: read.digest, enabledAt: new Date().toISOString() };
+      const consent: HooksConsent = { commit: entry.commit, digest, enabledAt: new Date().toISOString() };
       return packs.map((pack) => (pack.id === id ? { ...pack, hooks: consent } : pack));
     });
   } catch (error) {
     removeAll(viewHooksPath(view));
     throw error;
   }
-  return { status: "enabled", commit: entry.commit, digest: read.digest };
+  return { status: "enabled", commit: entry.commit, digest };
 }
 
 export type DisableHooksResult = { status: "disabled" | "already-off" };
@@ -931,9 +1011,9 @@ export function prepareViewForTurn(viewPath: string): TurnView {
   }
 
   const { root, id } = location;
+  // `on` means the lockfile's consent covers the clone's pack files (hooks, skills, commands) and the view holds exactly what enabling made of them.
   const info = inspectPackHooks(id, { root });
-  const copy = present ? readHooksDir(hooksPath) : ({ present: false } as const);
-  if (info.state === "on" && copy.present && copy.usable && copy.digest === info.digest) return { view: viewPath, hooks: { id, root, config: copy.config } };
+  if (info.state === "on") return { view: viewPath, hooks: { id, root, config: info.config } };
 
   if (!present && !entry.hooks) return { view: viewPath };
   if (present && !removeAll(hooksPath)) {

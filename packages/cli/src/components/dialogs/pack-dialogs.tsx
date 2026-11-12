@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { TextAttributes } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useDialog, type DialogContextValue } from "../../providers/dialog";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
@@ -33,6 +33,7 @@ const ERROR_TOAST_MS = 8000;
 // Two short lines: a long one wraps in the dialog.
 const HOOKS_NOTES = ["Pack hooks stay off until you enable them.", "MCP servers are not run."];
 const HOOKS_WARNING = "These commands run on your machine with your permissions while one of this pack's agents is selected.";
+const HOOKS_PACK_NOTE = "Hooks may run any file of this pack; the whole pack is pinned to this commit.";
 
 type Flow = {
   dialog: DialogContextValue;
@@ -150,7 +151,7 @@ function startRun(flow: Flow): Run {
 }
 
 /** The question a dialog closed without an answer leaves behind is a no. */
-function Question({ lines, options, shown, onAnswer }: { lines: string[]; options: string[]; shown: Shown; onAnswer: (yes: boolean) => void }) {
+function useDeclineOnClose(shown: Shown, onAnswer: (yes: boolean) => void) {
   useEffect(
     () => () => {
       shown.gone = true;
@@ -158,6 +159,10 @@ function Question({ lines, options, shown, onAnswer }: { lines: string[]; option
     },
     [shown, onAnswer],
   );
+}
+
+function Question({ lines, options, shown, onAnswer }: { lines: string[]; options: string[]; shown: Shown; onAnswer: (yes: boolean) => void }) {
+  useDeclineOnClose(shown, onAnswer);
   return (
     <box flexDirection="column" gap={1}>
       <box flexDirection="column">
@@ -252,12 +257,138 @@ async function runRemove(flow: Flow, id: string, commit?: string) {
   }
 }
 
+// Rows of the dialog around its content: its padding, the title and the gaps (see providers/dialog), and the width its text gets.
+const DIALOG_CHROME_ROWS = 5;
+const DIALOG_TEXT_INSET = 8;
+// Below the list: the hint (1), the two choices (2) and the gaps between the four sections of the review (3).
+const REVIEW_FOOTER_ROWS = 1 + 2 + 3;
+const REVIEW_MIN_ROWS = 3;
+const REACHED_POLL_MS = 50;
+
+/** Rows a line takes when wrapped by words to `width`. */
+function wrappedRows(line: string, width: number): number {
+  let rows = 1;
+  let column = 0;
+  for (const word of line.split(/(?<= )/)) {
+    const length = word.trimEnd().length;
+    if (column > 0 && column + length > width) {
+      rows++;
+      column = 0;
+    }
+    // A word longer than a row is broken inside.
+    if (length > width) {
+      rows += Math.floor((length - 1) / width);
+      column = length % width;
+    } else column += word.length;
+  }
+  return rows;
+}
+
+type ReviewProps = {
+  /** Always on screen above the list: the commit and what the hooks are. */
+  header: string[];
+  /** The scrollable list: commands, files, notes. */
+  body: string[];
+  commands: number;
+  /** Whether the yes choice waits until the whole list has been scrolled through. */
+  gated: boolean;
+  yes: string;
+  shown: Shown;
+  onAnswer: (yes: boolean) => void;
+};
+
+/**
+ * The review of a pack's hooks. The header and the choices never scroll away; the commands, files and notes scroll between them
+ * (Up/Down/PageUp/PageDown/Home/End, or the wheel). A dialog taller than the terminal would clip the commit line and the choices, and a
+ * list the user could not read must not be one they can enable: `gated` keeps the yes choice dead until the end has been on screen.
+ */
+function HooksReview({ header, body, commands, gated, yes, shown, onAnswer }: ReviewProps) {
+  useDeclineOnClose(shown, onAnswer);
+  const scroll = useRef<ScrollBoxRenderable>(null);
+  const { isTopLayer } = useKeyboardLayer();
+  const { width, height } = useTerminalDimensions();
+  const [reached, setReached] = useState(!gated);
+
+  const atEnd = useCallback(() => {
+    const box = scroll.current;
+    // Before the first layout both sizes are 0: that is not "everything fits".
+    return !!box && box.viewport.height > 0 && box.scrollHeight > 0 && box.scrollTop + box.viewport.height >= box.scrollHeight;
+  }, []);
+  const measure = useCallback(() => {
+    if (atEnd()) setReached(true);
+  }, [atEnd]);
+  useEffect(() => {
+    if (reached) return;
+    const timer = setInterval(measure, REACHED_POLL_MS);
+    return () => clearInterval(timer);
+  }, [reached, measure]);
+
+  useKeyboard((key) => {
+    if (!isTopLayer("dialog")) return;
+    const box = scroll.current;
+    if (!box) return;
+    // Up and Down also move the choice (see Choice): the list and the choice row both follow the arrows.
+    if (key.name === "up") box.scrollBy(-1);
+    else if (key.name === "down") box.scrollBy(1);
+    else if (key.name === "pageup") box.scrollBy(-Math.max(1, box.viewport.height - 1));
+    else if (key.name === "pagedown") box.scrollBy(Math.max(1, box.viewport.height - 1));
+    else if (key.name === "home") box.scrollTo(0);
+    else if (key.name === "end") box.scrollTo(box.scrollHeight);
+    else return;
+    measure();
+  });
+
+  const textWidth = Math.min(60, width - 4) - DIALOG_TEXT_INSET;
+  const headerRows = header.reduce((rows, line) => rows + wrappedRows(line, textWidth), 0);
+  const room = Math.max(REVIEW_MIN_ROWS, height - DIALOG_CHROME_ROWS - headerRows - REVIEW_FOOTER_ROWS);
+  const choose = (index: number) => {
+    if (index === 1 && !reached && !atEnd()) return;
+    onAnswer(index === 1);
+  };
+
+  return (
+    <box flexDirection="column" gap={1}>
+      <box flexDirection="column">
+        {header.map((line, index) => (
+          <text key={index} wrapMode="word" width="100%">
+            {line}
+          </text>
+        ))}
+      </box>
+      <scrollbox ref={scroll} maxHeight={room}>
+        {body.map((line, index) => (
+          <text key={index} wrapMode="word" width="100%">
+            {line}
+          </text>
+        ))}
+      </scrollbox>
+      {!reached && (
+        <text attributes={TextAttributes.DIM} wrapMode="word" width="100%">
+          {`Scroll to the end to review all ${commands} command${commands === 1 ? "" : "s"}`}
+        </text>
+      )}
+      <Choice options={["Cancel", yes]} onChoose={choose} />
+    </box>
+  );
+}
+
+function askReview(run: Run, title: string, review: Omit<ReviewProps, "shown" | "onAnswer" | "yes" | "gated">, yes: string, gated: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    run.open(title, (shown) => <HooksReview {...review} yes={yes} gated={gated} shown={shown} onAnswer={resolve} />);
+  });
+}
+
 const matcherText = (matcher: string | undefined) => (matcher === undefined || matcher === "" || matcher === "*" ? "all tools" : `matcher: ${matcher}`);
 
 const sizeText = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`);
 
-/** Everything the user decides on when enabling a pack's hooks: the commit, each event with its matcher and the exact commands, the files, the engines. */
-export function hooksReviewLines(id: string, info: Extract<PackHooksInfo, { state: "off" | "on" }>): string[] {
+type ReviewInfo = Extract<PackHooksInfo, { state: "off" | "on" }>;
+
+/**
+ * Everything the user decides on when enabling a pack's hooks, in two parts: the header (the commit and what the hooks are) and the body
+ * (each event with its matcher and the exact commands, the files, the engines, the warning). `commands` is how many commands the body lists.
+ */
+export function hooksReview(id: string, info: ReviewInfo): { header: string[]; body: string[]; commands: number } {
   const events = (config: HooksConfig) =>
     hookEvents(config).flatMap((event) =>
       config[event]!.flatMap((group) => [
@@ -265,16 +396,27 @@ export function hooksReviewLines(id: string, info: Extract<PackHooksInfo, { stat
         ...group.hooks.map((hook) => `   $ ${hook.command}${hook.timeout === undefined ? "" : ` (timeout ${hook.timeout} s)`}`),
       ]),
     );
-  return [
-    `${id} @ ${shortSha(info.commit)}`,
-    info.state === "on" ? "Hooks are on. They run these commands:" : "Hooks are off. Enabling runs these commands:",
-    ...(info.state === "off" && info.changed ? ["They changed since you last enabled them, so they were turned off."] : []),
-    ...events(info.config),
-    `Files in ${HOOKS_DIR}/:`,
-    ...info.files.map((file) => `   ${file.path} (${sizeText(file.size)})`),
-    engineLine(hookEvents(info.config)),
-    HOOKS_WARNING,
-  ];
+  const changed = info.state === "off" && info.changed;
+  const state = info.state === "on" ? "Hooks are on. They run these commands:" : changed ? "Hooks changed — off. Enabling runs these commands:" : "Hooks are off. Enabling runs these commands:";
+  return {
+    header: [`${id} @ ${shortSha(info.commit)}`, state],
+    body: [
+      ...(changed ? ["They changed since you last enabled them, so they were turned off."] : []),
+      ...events(info.config),
+      `Files in ${HOOKS_DIR}/:`,
+      ...info.files.map((file) => `   ${file.path} (${sizeText(file.size)})`),
+      engineLine(hookEvents(info.config)),
+      HOOKS_PACK_NOTE,
+      HOOKS_WARNING,
+    ],
+    commands: Object.values(info.config).reduce((total, groups) => total + groups.reduce((sum, group) => sum + group.hooks.length, 0), 0),
+  };
+}
+
+/** The review as plain lines. */
+export function hooksReviewLines(id: string, info: ReviewInfo): string[] {
+  const { header, body } = hooksReview(id, info);
+  return [...header, ...body];
 }
 
 /** `/agents hooks <owner/repo>`: shows the hooks and enables them on consent (or turns them off, when they are on). */
@@ -285,7 +427,8 @@ async function runHooks(flow: Flow, id: string) {
   if (info.state === "unusable") return failure(flow, `The hooks of ${id} cannot be enabled: ${info.reason}`);
 
   const run = startRun(flow);
-  const yes = await ask(run, "Pack hooks", hooksReviewLines(id, info), info.state === "on" ? "Turn off" : "Enable");
+  // Turning hooks off is always safe; enabling waits until the whole list has been on screen.
+  const yes = await askReview(run, "Pack hooks", hooksReview(id, info), info.state === "on" ? "Turn off" : "Enable", info.state !== "on");
   run.close();
   if (!yes) return;
   try {
@@ -364,7 +507,18 @@ export const PackInstallDialogContent = ({ onChanged }: { onChanged: () => void 
 
 type PickerProps = { onChanged: () => void; action: "update" | "remove" | "hooks" };
 
-const HOOKS_STATE_TEXT = { none: "", unusable: "hooks unusable", off: "hooks off", on: "hooks on" } as const;
+const hooksStateText = (info: PackHooksInfo) => {
+  switch (info.state) {
+    case "none":
+      return "";
+    case "unusable":
+      return "hooks unusable";
+    case "on":
+      return "hooks on";
+    case "off":
+      return info.changed ? "hooks changed \u2014 off" : "hooks off";
+  }
+};
 
 /** "Update packs…", "Remove a pack…" and "Pack hooks…": the installed packs (for hooks, those that have a hooks folder), one is picked. */
 export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
@@ -384,7 +538,7 @@ export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
         <box flexDirection="row" gap={1} overflow="hidden">
           <text selectable={false} fg={isSelected ? "black" : "white"}>{`   ${pack.id}`}</text>
           <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-            {action === "hooks" ? HOOKS_STATE_TEXT[inspectPackHooks(pack.id).state] : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
+            {action === "hooks" ? hooksStateText(inspectPackHooks(pack.id)) : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
           </text>
         </box>
       )}
