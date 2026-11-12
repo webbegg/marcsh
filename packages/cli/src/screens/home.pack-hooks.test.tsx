@@ -322,7 +322,8 @@ describe("/agents hooks (S16)", () => {
 
     await runCommand("/agents");
     await waitForFrame("FTD");
-    expect(frame()).toContain("(hooks on)");
+    // The hook states of the rows are read in the background.
+    await waitForFrame("(hooks on)");
   });
 
   test("hooks that were enabled and then changed on disk say \"hooks changed \u2014 off\" in the /agents rows, the picker and the review, never \"hooks on\"", async () => {
@@ -339,7 +340,7 @@ describe("/agents hooks (S16)", () => {
 
     await runCommand("/agents");
     await waitForFrame("FTD");
-    expect(frame()).toContain("(hooks changed \u2014 off)");
+    await waitForFrame("(hooks changed \u2014 off)");
     expect(frame()).not.toContain("(hooks on)");
     await type("Pack hooks");
     await enter();

@@ -268,6 +268,8 @@ describe("a Claude turn with a pack agent whose hooks are enabled (S16)", () => 
     expect(options.plugins).toHaveLength(2);
     expect(calls[0]!.hooksAtCall).toEqual([OWN, false]);
     expect(existsSync(join(packPluginDir("acme/flows"), "hooks"))).toBe(false);
+    // The view check is asynchronous: the warning reaches the screen a frame or two after the turn starts.
+    for (let waited = 0; !frameText().includes("no longer match what you approved") && waited < 2000; waited += 50) await settle(50);
     expect(frameText()).toContain("no longer match what you approved");
   });
 

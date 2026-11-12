@@ -13,7 +13,7 @@ import {
   disablePackHooks,
   enablePackHooks,
   hasLeftover,
-  inspectPackHooks,
+  inspectPackHooksAsync,
   installPack,
   listPacks,
   removePack,
@@ -422,7 +422,7 @@ export function hooksReviewLines(id: string, info: ReviewInfo): string[] {
 /** `/agents hooks <owner/repo>`: shows the hooks and enables them on consent (or turns them off, when they are on). */
 async function runHooks(flow: Flow, id: string) {
   if (!listPacks().some((pack) => pack.id === id)) return failure(flow, `${id} is not installed`);
-  const info = inspectPackHooks(id);
+  const info = await inspectPackHooksAsync(id);
   if (info.state === "none") return failure(flow, `${id} has no hooks`);
   if (info.state === "unusable") return failure(flow, `The hooks of ${id} cannot be enabled: ${info.reason}`);
 
@@ -523,7 +523,31 @@ const hooksStateText = (info: PackHooksInfo) => {
 /** "Update packs…", "Remove a pack…" and "Pack hooks…": the installed packs (for hooks, those that have a hooks folder), one is picked. */
 export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
   const flow = useFlow(onChanged);
-  const [packs] = useState(() => (action === "hooks" ? listPacks().filter((pack) => inspectPackHooks(pack.id).state !== "none") : listPacks()));
+  const [packs, setPacks] = useState<PackEntry[]>(() => (action === "hooks" ? [] : listPacks()));
+  // Which packs have hooks, and in what state, is read from their files in the background; the list is empty until then.
+  const [hooksText, setHooksText] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [loading, setLoading] = useState(action === "hooks");
+  useEffect(() => {
+    if (action !== "hooks") return;
+    let alive = true;
+    void (async () => {
+      const found: PackEntry[] = [];
+      const text = new Map<string, string>();
+      for (const pack of listPacks()) {
+        const info = await inspectPackHooksAsync(pack.id);
+        if (info.state === "none") continue;
+        found.push(pack);
+        text.set(pack.id, hooksStateText(info));
+      }
+      if (!alive) return;
+      setPacks(found);
+      setHooksText(text);
+      setLoading(false);
+    })().catch(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [action]);
   const select = (pack: PackEntry) => {
     if (action === "update") return runUpdate(flow, pack);
     if (action === "hooks") return runHooks(flow, pack.id);
@@ -538,13 +562,13 @@ export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
         <box flexDirection="row" gap={1} overflow="hidden">
           <text selectable={false} fg={isSelected ? "black" : "white"}>{`   ${pack.id}`}</text>
           <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-            {action === "hooks" ? hooksStateText(inspectPackHooks(pack.id)) : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
+            {action === "hooks" ? (hooksText.get(pack.id) ?? "") : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
           </text>
         </box>
       )}
       getKey={(pack) => pack.id}
       placeholder="Search packs"
-      emptyText={action === "hooks" ? "No installed pack has hooks" : "No packs installed"}
+      emptyText={loading ? "Reading packs…" : action === "hooks" ? "No installed pack has hooks" : "No packs installed"}
     />
   );
 };

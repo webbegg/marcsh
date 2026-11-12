@@ -89,6 +89,14 @@ describe("the agent-workflows skill", () => {
     }
   });
 
+  test("says the download is capped at 100 MB while it runs, with the message marcsh shows [S17]", () => {
+    const body = text();
+    expect(body).toContain("Pack rejected: the download is larger than marcsh accepts (over 100 MB)");
+    expect(body).toContain("`.git` included");
+    // The checklist at the end asks for it too.
+    expect(body.slice(body.lastIndexOf("50 MB"))).toContain("100 MB");
+  });
+
   test("rejects an agent file whose frontmatter is never closed, and says which models Claude takes [R3-002, R3-003]", () => {
     const body = text();
     expect(body).toContain("An agent file whose frontmatter is never closed");

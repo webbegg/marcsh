@@ -1,24 +1,20 @@
 import { spawn } from "node:child_process";
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
-  closeSync,
   readFileSync,
-  readSync,
   readdirSync,
-  readlinkSync,
-  realpathSync,
   renameSync,
   rmSync,
   rmdirSync,
   utimesSync,
   writeFileSync,
+  type Stats,
 } from "node:fs";
+import { copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
@@ -31,7 +27,9 @@ import {
   hookEvents,
   parseHooksConsent,
   readHookFiles,
+  readHookFilesSync,
   readHooksDir,
+  readHooksDirSync,
   type HookFile,
   type HooksConfig,
   type HooksConsent,
@@ -101,15 +99,22 @@ export type PackPreview = {
 type Confirm = (preview: PackPreview) => boolean | Promise<boolean>;
 type RootOption = { root?: string };
 
-/** What a pack may hold, counted over the checked-out tree without `.git`: entries (files and folders) and bytes of regular files. */
-export type PackLimits = { maxEntries: number; maxBytes: number };
+/**
+ * What a pack may hold, counted over the checked-out tree without `.git`: entries (files and folders) and bytes of regular files.
+ * `maxDownloadBytes` is what a fetch may put on disk, `.git` included, before it is stopped.
+ */
+export type PackLimits = { maxEntries: number; maxBytes: number; maxDownloadBytes: number };
 type LimitsOption = { limits?: Partial<PackLimits> };
 type SignalOption = { signal?: AbortSignal };
 
 export const MAX_PACK_ENTRIES = 5000;
 export const MAX_PACK_BYTES = 50 * 1024 * 1024;
+/** What a fetch may put on disk (the pack git downloads plus the files it checks out) before it is stopped. */
+export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 
 const FETCH_TIMEOUT_MS = 120_000;
+// How often a running git call has the size of its staging directory looked at.
+const DOWNLOAD_POLL_MS = 250;
 const MAX_PART_BYTES = 1024 * 1024;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 
@@ -260,7 +265,33 @@ function killTree(child: ReturnType<typeof spawn>) {
   }
 }
 
-function git(cwd: string, args: string[], { url, timeoutMs, signal }: { url: string; timeoutMs: number } & SignalOption): Promise<string> {
+/** The bytes of the regular files under `dir`, never following a link; stops counting once `limit` is passed. What vanishes while it is counted counts as nothing. */
+async function bytesUnder(dir: string, limit: number): Promise<number> {
+  let total = 0;
+  const walk = async (path: string) => {
+    let items;
+    try {
+      items = await readdir(path, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      if (total > limit) return;
+      const child = join(path, item.name);
+      if (item.isDirectory()) await walk(child);
+      else if (item.isFile()) total += await lstat(child).then((stat) => stat.size, () => 0);
+    }
+  };
+  await walk(dir);
+  return total;
+}
+
+/** The staging directory of a fetch and what it may grow to while git runs. */
+type Watch = { dir: string; maxBytes: number };
+
+const downloadTooBig = (maxBytes: number) => rejected(`the download is larger than marcsh accepts (over ${formatLimit(maxBytes)})`);
+
+function git(cwd: string, args: string[], { url, timeoutMs, signal, watch }: { url: string; timeoutMs: number; watch?: Watch } & SignalOption): Promise<string> {
   const env: Record<string, string | undefined> = {
     ...process.env,
     GIT_TERMINAL_PROMPT: "0",
@@ -292,16 +323,46 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal }: { url: str
       fail(new PackError(`git ${args[0]} failed: timed out after ${Math.round(timeoutMs / 1000)} s`));
     }, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
-    const settle = () => (clearTimeout(timer), signal?.removeEventListener("abort", onAbort));
+    let settled = false;
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const settle = () => {
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      signal?.removeEventListener("abort", onAbort);
+    };
     const done = (text: string) => (settle(), resolve(text));
     const fail = (error: PackError) => (settle(), reject(error));
+    // The download is stopped as it grows past the cap, not after it has all arrived. A look that is still running is not started again.
+    let measuring = false;
+    const overCap = async () => (watch ? (await bytesUnder(watch.dir, watch.maxBytes)) > watch.maxBytes : false);
+    if (watch) {
+      poll = setInterval(async () => {
+        if (measuring || settled) return;
+        measuring = true;
+        try {
+          if (await overCap()) {
+            killTree(child);
+            fail(downloadTooBig(watch.maxBytes));
+          }
+        } finally {
+          measuring = false;
+        }
+      }, DOWNLOAD_POLL_MS);
+    }
+    // A call that was too quick for the polling is still held to the cap before it counts as done.
+    const finish = (text: string) =>
+      overCap().then(
+        (over) => (over ? fail(downloadTooBig(watch!.maxBytes)) : done(text)),
+        () => done(text),
+      );
     let out = "";
     let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
     child.stderr.on("data", (chunk) => (err += chunk));
     child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
     child.on("close", (code) => {
-      if (code === 0) return done(out.trim());
+      if (code === 0) return void finish(out.trim());
       // GitHub answers a missing or private repo by asking for a login, which is off: say what that means.
       if (/could not read Username|Authentication failed|Repository not found/.test(err)) {
         return fail(new PackError(`${printable(url)} was not found, or it is private: marcsh installs public repositories only`));
@@ -338,14 +399,18 @@ function removeStaleStaging(stagingRoot: string) {
   }
 }
 
-/** Fetches `url` at `ref` (else HEAD) into a fresh staging directory under `root`: one commit, no hooks, no submodules, no LFS. */
+/**
+ * Fetches `url` at `ref` (else HEAD) into a fresh staging directory under `root`: one commit, no hooks, no submodules, no LFS.
+ * While git runs, the staging directory is kept under `MAX_DOWNLOAD_BYTES`: past it git is stopped and the fetch is rejected.
+ */
 export async function fetchPack({
   url,
   ref,
   root = packsRoot(),
   timeoutMs = FETCH_TIMEOUT_MS,
   signal,
-}: { url: string; ref?: string } & RootOption & SignalOption & { timeoutMs?: number }): Promise<Fetched> {
+  limits,
+}: { url: string; ref?: string } & RootOption & SignalOption & LimitsOption & { timeoutMs?: number }): Promise<Fetched> {
   if (!URL_FORM.test(url) || (ref !== undefined && !isRef(ref))) throw new PackError("Pack rejected: the repository URL or ref is not valid");
   const stagingRoot = join(root, ".staging");
   mkdirSync(stagingRoot, { recursive: true });
@@ -354,7 +419,7 @@ export async function fetchPack({
   const src = join(staging, "src");
   try {
     mkdirSync(src);
-    const run = (...args: string[]) => git(src, args, { url, timeoutMs, signal });
+    const run = (...args: string[]) => git(src, args, { url, timeoutMs, signal, watch: { dir: staging, maxBytes: limits?.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES } });
     await run("init", "-q", "--template=");
     // After `--`, so neither can be taken for an option.
     await run("fetch", "-q", "--depth", "1", "--no-tags", "--no-recurse-submodules", "--", url, ref ?? "HEAD");
@@ -364,20 +429,31 @@ export async function fetchPack({
     if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new PackError(`git did not check out a commit (${commit.slice(0, 40)})`);
     return { staging, src, commit };
   } catch (error) {
-    rmSync(staging, { recursive: true, force: true });
+    // git may still be dying (it was killed, not waited for) and writing: remove again if something reappears.
+    await rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
     throw error;
   }
 }
 
 // ---- scan and preview ----
 
-function head(path: string, bytes: number) {
-  const fd = openSync(path, "r");
+async function head(path: string, bytes: number) {
+  const handle = await open(path, "r");
   try {
     const buffer = Buffer.alloc(bytes);
-    return buffer.subarray(0, readSync(fd, buffer, 0, bytes, 0)).toString("utf8");
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
   } finally {
-    closeSync(fd);
+    await handle.close();
+  }
+}
+
+/** The entries of a folder, or none when it cannot be read: `listDir` (plugin.ts) without blocking. */
+async function listDirAsync(path: string) {
+  try {
+    return await readdir(path, { withFileTypes: true });
+  } catch {
+    return [];
   }
 }
 
@@ -387,22 +463,52 @@ const rejected = (why: string) => new PackError(`Pack rejected: ${why}`);
  * Every file under `skills/` or `commands/`, as paths relative to the clone. Only real folders and regular files of at most
  * MAX_PART_BYTES are accepted: a link, a device or anything else rejects the pack, so the view can be built from exactly this list.
  */
-function listPart(src: string, part: "skills" | "commands"): string[] {
+async function listPart(src: string, part: "skills" | "commands"): Promise<string[]> {
+  let top;
+  try {
+    top = await lstat(join(src, part));
+  } catch {
+    return [];
+  }
+  checkPartTop(top, part);
+  const files: string[] = [];
+  const walk = async (dir: string) => {
+    for (const name of (await readdir(join(src, dir))).sort()) {
+      const rel = `${dir}/${name}`;
+      if (partEntryKind(await lstat(join(src, rel)), rel, part) === "dir") await walk(rel);
+      else files.push(rel);
+    }
+  };
+  await walk(part);
+  return files;
+}
+
+function checkPartTop(top: Stats, part: string) {
+  if (!top.isDirectory()) throw rejected(`${part} is ${top.isSymbolicLink() ? "a symlink" : "not a folder"}; only real folders and files are used`);
+}
+
+/** A folder to walk into or a regular file of at most MAX_PART_BYTES to keep; anything else rejects the pack. */
+function partEntryKind(stat: Stats, rel: string, part: string): "dir" | "file" {
+  if (stat.isDirectory()) return "dir";
+  if (!stat.isFile()) throw rejected(`${printable(rel)} is ${stat.isSymbolicLink() ? "a symlink" : "not a regular file"}; ${part}/ may hold only regular files`);
+  if (stat.size > MAX_PART_BYTES) throw rejected(`${printable(rel)} is larger than ${formatLimit(MAX_PART_BYTES)}`);
+  return "file";
+}
+
+/** `listPart` without yielding to the event loop; see `inspectPackHooks`. */
+function listPartSync(src: string, part: "skills" | "commands"): string[] {
   let top;
   try {
     top = lstatSync(join(src, part));
   } catch {
     return [];
   }
-  if (!top.isDirectory()) throw rejected(`${part} is ${top.isSymbolicLink() ? "a symlink" : "not a folder"}; only real folders and files are used`);
+  checkPartTop(top, part);
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(join(src, dir)).sort()) {
       const rel = `${dir}/${name}`;
-      const stat = lstatSync(join(src, rel));
-      if (stat.isDirectory()) walk(rel);
-      else if (!stat.isFile()) throw rejected(`${printable(rel)} is ${stat.isSymbolicLink() ? "a symlink" : "not a regular file"}; ${part}/ may hold only regular files`);
-      else if (stat.size > MAX_PART_BYTES) throw rejected(`${printable(rel)} is larger than ${formatLimit(MAX_PART_BYTES)}`);
+      if (partEntryKind(lstatSync(join(src, rel)), rel, part) === "dir") walk(rel);
       else files.push(rel);
     }
   };
@@ -460,14 +566,14 @@ function declaredKeys(text: string): { hooks: boolean; allowedTools: boolean } {
 type Parts = { files: string[]; skills: string[]; commands: string[]; warnings: string[] };
 
 /** Lists `skills/` and `commands/` and reads every `.md` in them whole (any case of the extension). Throws if a file declares hooks. */
-function readParts(src: string): Parts {
-  const files = [...listPart(src, "skills"), ...listPart(src, "commands")];
+async function readParts(src: string): Promise<Parts> {
+  const files = [...(await listPart(src, "skills")), ...(await listPart(src, "commands"))];
   const warnings: string[] = [];
   for (const file of files) {
     if (!file.toLowerCase().endsWith(".md")) continue;
     let found;
     try {
-      found = declaredKeys(readFileSync(join(src, file), "utf8"));
+      found = declaredKeys(await readFile(join(src, file), "utf8"));
     } catch (error) {
       throw rejected(`the frontmatter of ${printable(file)} cannot be read unambiguously (${(error as Error).message})`);
     }
@@ -487,42 +593,43 @@ function readParts(src: string): Parts {
 }
 
 // Like the loader, a pack's `agents` folder is not read through a link.
-const agentsIsLink = (src: string) => {
+const agentsIsLink = async (src: string) => {
   try {
-    return lstatSync(join(src, "agents")).isSymbolicLink();
+    return (await lstat(join(src, "agents"))).isSymbolicLink();
   } catch {
     return false;
   }
 };
 
-function agentFiles(src: string) {
-  if (agentsIsLink(src)) return [];
-  return listDir(join(src, "agents"))
+async function agentFiles(src: string) {
+  if (await agentsIsLink(src)) return [];
+  return (await listDirAsync(join(src, "agents")))
     .filter((item) => item.isFile() && item.name.endsWith(".md"))
     .map((item) => item.name)
     .sort();
 }
 
 type Tally = { entries: number; bytes: number };
+type ScanLimits = Pick<PackLimits, "maxEntries" | "maxBytes">;
 
 /** Walks the clone without reading a file. Counts what it passes (not `.git`) and stops, with what it has counted so far, once a limit is crossed. */
-function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string[], limits: PackLimits, tally: Tally) {
-  for (const item of listDir(dir)) {
+async function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string[], limits: ScanLimits, tally: Tally) {
+  for (const item of await listDirAsync(dir)) {
     if (dir === clone && item.name === ".git") continue;
     const path = join(dir, item.name);
     tally.entries++;
-    if (item.isFile()) tally.bytes += lstatSync(path).size;
+    if (item.isFile()) tally.bytes += (await lstat(path)).size;
     if (tally.entries > limits.maxEntries || tally.bytes > limits.maxBytes) {
       throw rejected(`the repository is larger than marcsh accepts (${tally.entries} files / ${(tally.bytes / 1024 / 1024).toFixed(1)} MB)`);
     }
-    if (item.isDirectory()) walkForLinks(clone, path, cloneReal, bad, limits, tally);
+    if (item.isDirectory()) await walkForLinks(clone, path, cloneReal, bad, limits, tally);
     else if (item.isSymbolicLink()) {
       let target: string;
       try {
-        target = realpathSync(path);
+        target = await realpath(path);
       } catch {
         // A dangling link: judge where it points.
-        target = resolve(realpathSync(dir), readlinkSync(path));
+        target = resolve(await realpath(dir), await readlink(path));
       }
       if (target !== cloneReal && !target.startsWith(cloneReal + sep)) bad.push(path.slice(clone.length + 1));
     }
@@ -533,20 +640,20 @@ function walkForLinks(clone: string, dir: string, cloneReal: string, bad: string
  * Throws unless the clone is safe to keep: it is within the size limits (counted before any file is read), no symlink leaves it, `agents/`, `skills/` and `commands/` hold no links, it has a primary
  * agent, no agent file is huge, no skill or command declares hooks. Returns what the view is built from.
  */
-export function scanPack(src: string, limits: Partial<PackLimits> = {}): Parts {
+export async function scanPack(src: string, limits: Partial<ScanLimits> = {}): Promise<Parts> {
   const outside: string[] = [];
-  const cap: PackLimits = { maxEntries: MAX_PACK_ENTRIES, maxBytes: MAX_PACK_BYTES, ...limits };
-  walkForLinks(src, src, realpathSync(src), outside, cap, { entries: 0, bytes: 0 });
+  const cap: ScanLimits = { maxEntries: MAX_PACK_ENTRIES, maxBytes: MAX_PACK_BYTES, ...limits };
+  await walkForLinks(src, src, await realpath(src), outside, cap, { entries: 0, bytes: 0 });
   if (outside.length > 0) {
     throw new PackError(`Pack rejected: ${printable(outside[0]!)} is a symlink that points outside the pack${outside.length > 1 ? ` (and ${outside.length - 1} more)` : ""}`);
   }
 
-  if (agentsIsLink(src)) throw rejected("agents is a symlink, so its files would not be read");
+  if (await agentsIsLink(src)) throw rejected("agents is a symlink, so its files would not be read");
   let primary = 0;
-  for (const file of agentFiles(src)) {
+  for (const file of await agentFiles(src)) {
     const path = join(src, "agents", file);
-    if (lstatSync(path).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${printable(file)} is larger than ${formatLimit(MAX_AGENT_BYTES)}`);
-    const agent = parseAgentFile(readFileSync(path, "utf8"), { pack: SCAN_PACK_ID, file });
+    if ((await lstat(path)).size > MAX_AGENT_BYTES) throw new PackError(`Pack rejected: agents/${printable(file)} is larger than ${formatLimit(MAX_AGENT_BYTES)}`);
+    const agent = parseAgentFile(await readFile(path, "utf8"), { pack: SCAN_PACK_ID, file });
     // The loader keeps such a file as a Build agent whose prompt starts with the frontmatter; a pack fails closed instead.
     if (agent?.ignored.includes("frontmatter")) throw rejected(`agents/${printable(file)} has a frontmatter that is never closed`);
     if (agent) primary++;
@@ -556,9 +663,9 @@ export function scanPack(src: string, limits: Partial<PackLimits> = {}): Parts {
   return readParts(src);
 }
 
-function pluginManifestKeys(src: string): Set<string> {
+async function pluginManifestKeys(src: string): Promise<Set<string>> {
   try {
-    const manifest = JSON.parse(head(join(src, ".claude-plugin", "plugin.json"), MAX_MANIFEST_BYTES));
+    const manifest = JSON.parse(await head(join(src, ".claude-plugin", "plugin.json"), MAX_MANIFEST_BYTES));
     return new Set(manifest && typeof manifest === "object" ? Object.keys(manifest) : []);
   } catch {
     return new Set();
@@ -566,13 +673,14 @@ function pluginManifestKeys(src: string): Set<string> {
 }
 
 /** What the pack holds and what marcsh will not use of it, read without running or following anything. `parts` is what `scanPack` read. */
-export function previewPack(src: string, { id, commit }: { id: string; commit: string }, parts: Parts = readParts(src)): PackPreview {
+export async function previewPack(src: string, { id, commit }: { id: string; commit: string }, parts?: Parts): Promise<PackPreview> {
+  parts ??= await readParts(src);
   const agents: PackPreview["agents"] = [];
   const subagents: string[] = [];
-  for (const file of agentFiles(src)) {
+  for (const file of await agentFiles(src)) {
     let agent;
     try {
-      agent = parseAgentFile(readFileSync(join(src, "agents", file), "utf8"), { pack: id, file });
+      agent = parseAgentFile(await readFile(join(src, "agents", file), "utf8"), { pack: id, file });
     } catch {
       continue;
     }
@@ -580,10 +688,10 @@ export function previewPack(src: string, { id, commit }: { id: string; commit: s
     else agents.push({ name: agent.name, permission: agent.mode === Mode.PLAN ? "read-only" : "build", ...(agent.model ? { model: agent.model } : {}) });
   }
 
-  const manifest = pluginManifestKeys(src);
-  const hooks = readHooksDir(join(src, HOOKS_DIR));
+  const manifest = await pluginManifestKeys(src);
+  const hooks = await readHooksDir(join(src, HOOKS_DIR));
   const ignored = [
-    ...(listDir(src).some((item) => item.name === ".mcp.json") ? [".mcp.json"] : []),
+    ...((await listDirAsync(src)).some((item) => item.name === ".mcp.json") ? [".mcp.json"] : []),
     ...(manifest.has("hooks") ? [".claude-plugin hooks"] : []),
     ...(manifest.has("mcpServers") ? [".claude-plugin mcpServers"] : []),
     ...subagents.map((file) => `subagent ${file}`),
@@ -608,20 +716,20 @@ export function previewPack(src: string, { id, commit }: { id: string; commit: s
  * Writes `<staging>/plugin`: a manifest and copies of the files `scanPack` read under skills/ and commands/, nothing else. Copies, not
  * links: what the engines can load is then exactly what was scanned and previewed, even if the clone is changed afterwards.
  */
-function writePluginView(staging: string, id: string, { files }: Parts) {
+async function writePluginView(staging: string, id: string, { files }: Parts) {
   const view = join(staging, "plugin");
-  mkdirSync(join(view, ".claude-plugin"), { recursive: true });
+  await mkdir(join(view, ".claude-plugin"), { recursive: true });
   const name = id.replace(/\//g, "-").replace(/[^A-Za-z0-9-]+/g, "-");
-  writeFileSync(join(view, ".claude-plugin", "plugin.json"), `${JSON.stringify({ name, description: `Skills and commands of the marcsh pack ${id}` }, null, 2)}\n`);
+  await writeFile(join(view, ".claude-plugin", "plugin.json"), `${JSON.stringify({ name, description: `Skills and commands of the marcsh pack ${id}` }, null, 2)}\n`);
   for (const file of files) {
     const from = join(staging, "src", file);
-    if (!lstatSync(from).isFile()) throw rejected(`${printable(file)} changed while the pack was being installed`);
-    mkdirSync(dirname(join(view, file)), { recursive: true });
-    copyFileSync(from, join(view, file));
+    if (!(await lstat(from)).isFile()) throw rejected(`${printable(file)} changed while the pack was being installed`);
+    await mkdir(dirname(join(view, file)), { recursive: true });
+    await copyFile(from, join(view, file));
   }
 }
 
-const discard = (path: string) => rmSync(path, { recursive: true, force: true });
+const discard = (path: string) => rm(path, { recursive: true, force: true });
 
 export type InstallResult = { status: "installed"; pack: PackEntry; preview: PackPreview } | { status: "cancelled" };
 
@@ -639,12 +747,12 @@ export async function installPack(
   const target = packDir(spec.id, root);
   if (existsSync(target)) throw new PackError(`${target} exists but is not an installed pack; run /agents remove ${spec.id} to clear it`);
 
-  const { staging, src, commit } = await fetchPack({ url: spec.url, ref: spec.ref, root, signal });
+  const { staging, src, commit } = await fetchPack({ url: spec.url, ref: spec.ref, root, signal, limits });
   try {
-    const parts = scanPack(src, limits);
-    const preview = previewPack(src, { id: spec.id, commit }, parts);
+    const parts = await scanPack(src, limits);
+    const preview = await previewPack(src, { id: spec.id, commit }, parts);
     // The view is copied from what was just read, before the user is asked.
-    writePluginView(staging, spec.id, parts);
+    await writePluginView(staging, spec.id, parts);
     if (!(await confirm(preview))) return { status: "cancelled" };
 
     mkdirSync(dirname(target), { recursive: true });
@@ -657,12 +765,12 @@ export async function installPack(
         return [...latest, pack];
       });
     } catch (error) {
-      discard(target);
+      await discard(target);
       throw error;
     }
     return { status: "installed", pack, preview };
   } finally {
-    discard(staging);
+    await discard(staging);
   }
 }
 
@@ -683,17 +791,17 @@ export async function updatePack(
   const current = readLock(root, true).find((pack) => pack.id === id);
   if (!current) throw new PackError(`${id} is not installed`);
 
-  const { staging, src, commit } = await fetchPack({ url: current.url, ref: current.ref, root, signal });
+  const { staging, src, commit } = await fetchPack({ url: current.url, ref: current.ref, root, signal, limits });
   const retired = join(root, ".staging", `old-${basename(staging)}`);
   try {
     if (commit === current.commit) return { status: "up-to-date", pack: current };
-    const parts = scanPack(src, limits);
+    const parts = await scanPack(src, limits);
     const preview = {
-      ...previewPack(src, { id, commit }, parts),
+      ...(await previewPack(src, { id, commit }, parts)),
       previousCommit: current.commit,
       ...(current.hooks ? { hooksTurnedOff: true as const } : {}),
     };
-    writePluginView(staging, id, parts);
+    await writePluginView(staging, id, parts);
     if (!(await confirm(preview))) return { status: "cancelled" };
 
     const target = packDir(id, root);
@@ -719,14 +827,14 @@ export async function updatePack(
         return latest.map((item) => (item.id === id ? pack : item));
       });
     } catch (error) {
-      discard(target);
+      await discard(target);
       if (hadOld) renameSync(retired, target);
       throw error;
     }
     return { status: "updated", pack, preview };
   } finally {
-    discard(staging);
-    discard(retired);
+    await discard(staging);
+    await discard(retired);
   }
 }
 
@@ -767,7 +875,7 @@ export async function removePack(id: string, { root = packsRoot() }: RootOption 
       return packs.filter((pack) => pack.id !== id);
     });
   }
-  discard(target);
+  await discard(target);
   try {
     // The owner's folder goes with its last pack; rmdir refuses a folder that still holds one.
     rmdirSync(dirname(target));
@@ -791,7 +899,13 @@ type PackFile = { path: string; data: Buffer };
 type UsableHooks = Extract<HooksRead, { usable: true }>;
 
 /** The files of `skills/` and `commands/` under `base` (the clone or the view), read whole. Throws `PackError` like `listPart`. */
-const partFiles = (base: string): PackFile[] => [...listPart(base, "skills"), ...listPart(base, "commands")].map((path) => ({ path, data: readFileSync(join(base, path)) }));
+async function partFiles(base: string): Promise<PackFile[]> {
+  const files: PackFile[] = [];
+  for (const path of [...(await listPart(base, "skills")), ...(await listPart(base, "commands"))]) files.push({ path, data: await readFile(join(base, path)) });
+  return files;
+}
+
+const partFilesSync = (base: string): PackFile[] => [...listPartSync(base, "skills"), ...listPartSync(base, "commands")].map((path) => ({ path, data: readFileSync(join(base, path)) }));
 
 const hookPath = (file: PackFile): PackFile => ({ path: `${HOOKS_DIR}/${file.path}`, data: file.data });
 
@@ -815,53 +929,104 @@ function viewHookFiles(read: UsableHooks, filter: string): HookFile[] {
 }
 
 /** Whether the view holds exactly the clone's skills and commands (`parts`) and exactly these hook files: nothing more, less or different. */
-function viewMatches(view: string, parts: readonly PackFile[], expected: readonly HookFile[]): boolean {
+async function viewMatches(view: string, parts: readonly PackFile[], expected: readonly HookFile[]): Promise<boolean> {
   try {
-    const hooks = readHookFiles(join(view, HOOKS_DIR));
-    return hooks.ok && consentDigest(partFiles(view), hooks.files) === consentDigest(parts, expected);
+    const hooks = await readHookFiles(join(view, HOOKS_DIR));
+    return hooks.ok && consentDigest(await partFiles(view), hooks.files) === consentDigest(parts, expected);
   } catch {
     return false;
   }
 }
 
+function viewMatchesSync(view: string, parts: readonly PackFile[], expected: readonly HookFile[]): boolean {
+  try {
+    const hooks = readHookFilesSync(join(view, HOOKS_DIR));
+    return hooks.ok && consentDigest(partFilesSync(view), hooks.files) === consentDigest(parts, expected);
+  } catch {
+    return false;
+  }
+}
+
+const unreadableParts = (error: unknown): PackHooksInfo => ({ state: "unusable", reason: printable(error instanceof Error ? error.message : "the pack cannot be read") });
+
+type HooksShared = { commit: string; config: HooksConfig; files: HookFile[]; digest: string };
+
+/** The marcsh filter's path when the lockfile's consent covers exactly this digest (so the view is worth comparing), else null. */
+function consentFilter(entry: PackEntry, digest: string): string | null {
+  return entry.hooks && sameConsent(entry, digest) ? filterPath() : null;
+}
+
+/** `on` only while the view also holds exactly what enabling made of the hooks (`intact`); consent that no longer holds reads as `off` + `changed`. */
+function hooksState(entry: PackEntry, shared: HooksShared, intact: boolean): PackHooksInfo {
+  if (intact && entry.hooks) return { state: "on", ...shared, enabledAt: entry.hooks.enabledAt };
+  return { state: "off", ...shared, ...(entry.hooks ? { changed: true as const } : {}) };
+}
+
+const hooksShared = (entry: PackEntry, read: UsableHooks, parts: readonly PackFile[]): HooksShared => ({
+  commit: entry.commit,
+  config: read.config,
+  files: read.files,
+  digest: consentDigest(parts, read.files),
+});
+
 /**
  * What the installed clone's `hooks/` holds now, and whether the lockfile's consent covers exactly that: the commit, and the digest of the
  * whole pack. Consent counts as `on` only while the view also holds exactly what enabling made of it. Nothing is run.
+ */
+export async function inspectPackHooksAsync(id: string, { root = packsRoot() }: RootOption = {}): Promise<PackHooksInfo> {
+  assertPackId(id);
+  const entry = listPacks({ root }).find((pack) => pack.id === id);
+  if (!entry) return { state: "none" };
+  const src = join(packDir(id, root), "src");
+  const read = await readHooksDir(join(src, HOOKS_DIR));
+  if (!read.present) return { state: "none" };
+  if (!read.usable) return { state: "unusable", reason: read.reason };
+  let parts: PackFile[];
+  try {
+    parts = await partFiles(src);
+  } catch (error) {
+    return unreadableParts(error);
+  }
+  const shared = hooksShared(entry, read, parts);
+  const filter = consentFilter(entry, shared.digest);
+  return hooksState(entry, shared, filter !== null && (await viewMatches(packPluginDir(id, root), parts, viewHookFiles(read, filter))));
+}
+
+/**
+ * `inspectPackHooksAsync` for the one caller that cannot wait: the agent-selection warnings (`agentWarnings`, read synchronously by the
+ * input bar). Everything else uses the async one, which keeps the UI running while it reads the pack.
  */
 export function inspectPackHooks(id: string, { root = packsRoot() }: RootOption = {}): PackHooksInfo {
   assertPackId(id);
   const entry = listPacks({ root }).find((pack) => pack.id === id);
   if (!entry) return { state: "none" };
   const src = join(packDir(id, root), "src");
-  const read = readHooksDir(join(src, HOOKS_DIR));
+  const read = readHooksDirSync(join(src, HOOKS_DIR));
   if (!read.present) return { state: "none" };
   if (!read.usable) return { state: "unusable", reason: read.reason };
   let parts: PackFile[];
   try {
-    parts = partFiles(src);
+    parts = partFilesSync(src);
   } catch (error) {
-    return { state: "unusable", reason: printable(error instanceof Error ? error.message : "the pack cannot be read") };
+    return unreadableParts(error);
   }
-  const shared = { commit: entry.commit, config: read.config, files: read.files, digest: consentDigest(parts, read.files) };
-  if (entry.hooks && sameConsent(entry, shared.digest)) {
-    const filter = filterPath();
-    if (filter && viewMatches(packPluginDir(id, root), parts, viewHookFiles(read, filter))) return { state: "on", ...shared, enabledAt: entry.hooks.enabledAt };
-  }
-  return { state: "off", ...shared, ...(entry.hooks ? { changed: true as const } : {}) };
+  const shared = hooksShared(entry, read, parts);
+  const filter = consentFilter(entry, shared.digest);
+  return hooksState(entry, shared, filter !== null && viewMatchesSync(packPluginDir(id, root), parts, viewHookFiles(read, filter)));
 }
 
 /** Packs whose hooks have a consent in the lockfile: `on` when it still covers the pack and its view, `changed` when the hooks are off because it no longer does. */
-export function packHooksStates({ root = packsRoot() }: RootOption = {}): Map<string, "on" | "changed"> {
+export async function packHooksStates({ root = packsRoot() }: RootOption = {}): Promise<Map<string, "on" | "changed">> {
   const states = new Map<string, "on" | "changed">();
   for (const pack of listPacks({ root })) {
-    if (pack.hooks) states.set(pack.id, inspectPackHooks(pack.id, { root }).state === "on" ? "on" : "changed");
+    if (pack.hooks) states.set(pack.id, (await inspectPackHooksAsync(pack.id, { root })).state === "on" ? "on" : "changed");
   }
   return states;
 }
 
 /** The IDs of the packs whose hooks are enabled and still match what was approved. */
-export function packsWithHooksOn({ root = packsRoot() }: RootOption = {}): Set<string> {
-  return new Set([...packHooksStates({ root })].filter(([, state]) => state === "on").map(([id]) => id));
+export async function packsWithHooksOn({ root = packsRoot() }: RootOption = {}): Promise<Set<string>> {
+  return new Set([...(await packHooksStates({ root }))].filter(([, state]) => state === "on").map(([id]) => id));
 }
 
 const viewHooksPath = (view: string) => join(view, HOOKS_DIR);
@@ -922,10 +1087,10 @@ export async function enablePackHooks(id: string, { root = packsRoot(), reviewed
   assertPackId(id);
   const entry = readLock(root, true).find((pack) => pack.id === id);
   if (!entry) throw new PackError(`${id} is not installed`);
-  const read = readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
+  const read = await readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
   if (!read.present) throw new PackError(`${id} has no hooks`);
   if (!read.usable) throw new PackError(`The hooks of ${id} cannot be enabled: ${read.reason}`);
-  const parts = partFiles(join(packDir(id, root), "src"));
+  const parts = await partFiles(join(packDir(id, root), "src"));
   const digest = consentDigest(parts, read.files);
   if (reviewed.commit !== entry.commit || reviewed.digest !== digest) {
     throw new PackError(`The hooks of ${id} changed since you reviewed them; open /agents hooks ${id} again`);
@@ -937,7 +1102,7 @@ export async function enablePackHooks(id: string, { root = packsRoot(), reviewed
   const files = viewHookFiles(read, filter);
   writeViewHooks(view, files);
   // The review covered the whole pack: the view's skills and commands must be the clone's, and its hooks exactly what was just written.
-  if (!viewMatches(view, parts, files)) {
+  if (!(await viewMatches(view, parts, files))) {
     removeAll(viewHooksPath(view));
     throw new PackError(`The view of ${id} does not match the pack's files, so nothing was enabled; remove the pack and install it again`);
   }
@@ -1000,7 +1165,7 @@ export type TurnView = {
  * warning when it was approved or present; a view that cannot be cleaned, or that is not known to be marcsh's, is not loaded.
  * Nothing is deleted from a path that is not an entry of the lockfile.
  */
-export function prepareViewForTurn(viewPath: string): TurnView {
+export async function prepareViewForTurn(viewPath: string): Promise<TurnView> {
   const hooksPath = viewHooksPath(viewPath);
   const present = exists(hooksPath);
   const location = packViewLocation(viewPath);
@@ -1012,7 +1177,7 @@ export function prepareViewForTurn(viewPath: string): TurnView {
 
   const { root, id } = location;
   // `on` means the lockfile's consent covers the clone's pack files (hooks, skills, commands) and the view holds exactly what enabling made of them.
-  const info = inspectPackHooks(id, { root });
+  const info = await inspectPackHooksAsync(id, { root });
   if (info.state === "on") return { view: viewPath, hooks: { id, root, config: info.config } };
 
   if (!present && !entry.hooks) return { view: viewPath };

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, type Stats } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { hidesText, printable } from "./safe-text";
 
@@ -172,18 +173,47 @@ function parseHooksJson(text: string): HooksConfig {
   return config;
 }
 
+const cannotRead = (rel: string) => unusable(`${printable(rel)} is a symlink or cannot be read`);
+
+function checkRegular(stat: Stats, rel: string) {
+  if (!stat.isFile()) throw unusable(`${printable(rel)} is not a regular file`);
+  if (stat.size > MAX_HOOK_FILE_BYTES) throw unusable(`${printable(rel)} is larger than ${formatMegabytes(MAX_HOOK_FILE_BYTES)}`);
+}
+
 /** Opens without following a link and reads the whole file, so a file swapped for a link after it was listed is not read. */
-function readRegular(path: string, rel: string): { data: Buffer; mode: number } {
+async function readRegular(path: string, rel: string): Promise<{ data: Buffer; mode: number }> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    throw cannotRead(rel);
+  }
+  try {
+    const stat = await handle.stat();
+    checkRegular(stat, rel);
+    const data = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < data.length) {
+      const { bytesRead } = await handle.read(data, read, data.length - read, read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    return { data: data.subarray(0, read), mode: stat.mode };
+  } finally {
+    await handle.close();
+  }
+}
+
+function readRegularSync(path: string, rel: string): { data: Buffer; mode: number } {
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   } catch {
-    throw unusable(`${printable(rel)} is a symlink or cannot be read`);
+    throw cannotRead(rel);
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) throw unusable(`${printable(rel)} is not a regular file`);
-    if (stat.size > MAX_HOOK_FILE_BYTES) throw unusable(`${printable(rel)} is larger than ${formatMegabytes(MAX_HOOK_FILE_BYTES)}`);
+    checkRegular(stat, rel);
     const data = Buffer.alloc(stat.size);
     let read = 0;
     while (read < data.length) {
@@ -210,50 +240,128 @@ export function digestFiles(files: readonly { path: string; data: Buffer }[]): s
 
 class Absent extends Error {}
 
+const byPath = (a: HookFile, b: HookFile) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+/** Why the folder itself cannot be listed: it is missing (`Absent`), or it cannot be read. */
+function topFailure(error: unknown): never {
+  if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Absent();
+  throw unusable("hooks/ cannot be read");
+}
+
+function checkTop(top: Stats) {
+  if (top.isSymbolicLink()) throw unusable("hooks is a symlink; only a real folder is used");
+  if (!top.isDirectory()) throw unusable("hooks is not a folder");
+}
+
+/** Counts what a walk passes and holds it to the limits. */
+class HookBudget {
+  private entries = 0;
+  private bytes = 0;
+  entry(name: string) {
+    if (++this.entries > MAX_HOOK_ENTRIES) throw unusable(`hooks/ holds more than ${MAX_HOOK_ENTRIES} entries`);
+    if (hidesText(name)) throw unusable(`a file name under hooks/ has control or invisible characters (${JSON.stringify(name).slice(0, 60)})`);
+  }
+  file(size: number) {
+    this.bytes += size;
+    if (this.bytes > MAX_HOOKS_BYTES) throw unusable(`hooks/ holds more than ${formatMegabytes(MAX_HOOKS_BYTES)} in total`);
+  }
+}
+
+/** A folder to walk into, or a regular file to read; a link or anything else makes the hooks unusable. */
+function entryKind(stat: Stats, path: string): "dir" | "file" {
+  if (stat.isDirectory()) return "dir";
+  if (stat.isSymbolicLink()) throw unusable(`${printable(path)} is a symlink; hooks/ may hold only regular files`);
+  if (!stat.isFile()) throw unusable(`${printable(path)} is not a regular file; hooks/ may hold only regular files`);
+  return "file";
+}
+
 /** Every regular file under `dir` (never through a link), sorted by path. Throws `Absent` when there is no folder, `Unusable` when it holds anything else. */
-function listHookFiles(dir: string): HookFile[] {
+async function listHookFiles(dir: string): Promise<HookFile[]> {
+  checkTop(await lstat(dir).catch(topFailure));
+  const files: HookFile[] = [];
+  const budget = new HookBudget();
+  const walk = async (rel: string) => {
+    for (const name of (await readdir(join(dir, rel))).sort()) {
+      const path = rel ? `${rel}/${name}` : name;
+      budget.entry(name);
+      const stat = await lstat(join(dir, path));
+      if (entryKind(stat, path) === "dir") await walk(path);
+      else {
+        budget.file(stat.size);
+        const { data, mode } = await readRegular(join(dir, path), path);
+        files.push({ path, size: data.length, mode, data });
+      }
+    }
+  };
+  await walk("");
+  return files.sort(byPath);
+}
+
+/** `listHookFiles` without yielding to the event loop; see `readHooksDirSync`. */
+function listHookFilesSync(dir: string): HookFile[] {
   let top;
   try {
     top = lstatSync(dir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Absent();
-    throw unusable("hooks/ cannot be read");
+    topFailure(error);
   }
-  if (top.isSymbolicLink()) throw unusable("hooks is a symlink; only a real folder is used");
-  if (!top.isDirectory()) throw unusable("hooks is not a folder");
-
+  checkTop(top);
   const files: HookFile[] = [];
-  let entries = 0;
-  let bytes = 0;
+  const budget = new HookBudget();
   const walk = (rel: string) => {
     for (const name of readdirSync(join(dir, rel)).sort()) {
       const path = rel ? `${rel}/${name}` : name;
-      if (++entries > MAX_HOOK_ENTRIES) throw unusable(`hooks/ holds more than ${MAX_HOOK_ENTRIES} entries`);
-      if (hidesText(name)) throw unusable(`a file name under hooks/ has control or invisible characters (${JSON.stringify(name).slice(0, 60)})`);
+      budget.entry(name);
       const stat = lstatSync(join(dir, path));
-      if (stat.isDirectory()) walk(path);
-      else if (stat.isSymbolicLink()) throw unusable(`${printable(path)} is a symlink; hooks/ may hold only regular files`);
-      else if (!stat.isFile()) throw unusable(`${printable(path)} is not a regular file; hooks/ may hold only regular files`);
+      if (entryKind(stat, path) === "dir") walk(path);
       else {
-        bytes += stat.size;
-        if (bytes > MAX_HOOKS_BYTES) throw unusable(`hooks/ holds more than ${formatMegabytes(MAX_HOOKS_BYTES)} in total`);
-        const { data, mode } = readRegular(join(dir, path), path);
+        budget.file(stat.size);
+        const { data, mode } = readRegularSync(join(dir, path), path);
         files.push({ path, size: data.length, mode, data });
       }
     }
   };
   walk("");
-  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return files.sort(byPath);
+}
+
+type HookFilesRead = { ok: true; files: HookFile[] } | { ok: false; reason: string };
+
+function hookFilesFailure(error: unknown): HookFilesRead {
+  if (error instanceof Absent) return { ok: false, reason: "hooks/ is missing" };
+  return { ok: false, reason: error instanceof Unusable ? error.message : "hooks/ cannot be read" };
 }
 
 /** The files of a folder under the same rules as `readHooksDir`, but not the shape of `hooks.json`: for a copy of `hooks/` in a view. */
-export function readHookFiles(dir: string): { ok: true; files: HookFile[] } | { ok: false; reason: string } {
+export async function readHookFiles(dir: string): Promise<HookFilesRead> {
   try {
-    return { ok: true, files: listHookFiles(dir) };
+    return { ok: true, files: await listHookFiles(dir) };
   } catch (error) {
-    if (error instanceof Absent) return { ok: false, reason: "hooks/ is missing" };
-    return { ok: false, reason: error instanceof Unusable ? error.message : "hooks/ cannot be read" };
+    return hookFilesFailure(error);
   }
+}
+
+export function readHookFilesSync(dir: string): HookFilesRead {
+  try {
+    return { ok: true, files: listHookFilesSync(dir) };
+  } catch (error) {
+    return hookFilesFailure(error);
+  }
+}
+
+/** What `hooks.json` and the files make of a `hooks/` folder, once they are read. */
+function judgeHooksDir(files: HookFile[]): HooksRead {
+  if (files.some((file) => file.path === COMMANDS_FILE)) throw unusable(`${COMMANDS_FILE} is a name marcsh keeps for itself; rename that file`);
+  const manifest = files.find((file) => file.path === HOOKS_FILE);
+  if (!manifest) throw unusable("hooks/ has no hooks.json");
+  const config = parseHooksJson(manifest.data.toString("utf8"));
+  return { present: true, usable: true, config, files, digest: digestFiles(files) };
+}
+
+function hooksDirFailure(error: unknown): HooksRead {
+  if (error instanceof Absent) return { present: false };
+  if (error instanceof Unusable) return { present: true, usable: false, reason: error.message };
+  return { present: true, usable: false, reason: "hooks/ cannot be read" };
 }
 
 /**
@@ -261,18 +369,23 @@ export function readHookFiles(dir: string): { ok: true; files: HookFile[] } | { 
  * The folder is unusable, and so never enabled, when anything in it is a link or a special file, a file is over 1 MB or the folder over
  * 5 MB, a name has control or invisible characters or is one marcsh keeps for itself, or `hooks.json` is missing or is anything but the supported shape.
  */
-export function readHooksDir(dir: string): HooksRead {
+export async function readHooksDir(dir: string): Promise<HooksRead> {
   try {
-    const files = listHookFiles(dir);
-    if (files.some((file) => file.path === COMMANDS_FILE)) throw unusable(`${COMMANDS_FILE} is a name marcsh keeps for itself; rename that file`);
-    const manifest = files.find((file) => file.path === HOOKS_FILE);
-    if (!manifest) throw unusable("hooks/ has no hooks.json");
-    const config = parseHooksJson(manifest.data.toString("utf8"));
-    return { present: true, usable: true, config, files, digest: digestFiles(files) };
+    return judgeHooksDir(await listHookFiles(dir));
   } catch (error) {
-    if (error instanceof Absent) return { present: false };
-    if (error instanceof Unusable) return { present: true, usable: false, reason: error.message };
-    return { present: true, usable: false, reason: "hooks/ cannot be read" };
+    return hooksDirFailure(error);
+  }
+}
+
+/**
+ * `readHooksDir` for the one caller that cannot wait: the agent-selection warnings (`agentWarnings`) are read synchronously by the input bar.
+ * Everything else uses the async one, which keeps the UI running while it reads.
+ */
+export function readHooksDirSync(dir: string): HooksRead {
+  try {
+    return judgeHooksDir(listHookFilesSync(dir));
+  } catch (error) {
+    return hooksDirFailure(error);
   }
 }
 

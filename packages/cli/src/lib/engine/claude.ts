@@ -72,7 +72,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
     // approved (S16: Claude then runs them from the view, through marcsh's filter: a hook can block a call but never approve it).
     // Otherwise they are taken out of the view before Claude can load it.
     // Never MCP servers or agents. A view that is gone, or whose hooks could not be kept out, is left out.
-    const packTurn = packPluginPath ? prepareViewForTurn(packPluginPath) : undefined;
+    const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
     if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
     const packView = packTurn?.view;
     const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;

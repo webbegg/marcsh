@@ -98,6 +98,7 @@ commands/*.md                   slash commands
 - A file in `skills/` or `commands/` over 1 MB.
 - An agent file over 256 KB.
 - A repository over 5,000 entries (files and folders) or 50 MB of files, counted on the checked-out tree without `.git`. Keep a pack to prompts, skills and commands; do not commit assets, binaries or `node_modules`.
+- A download over 100 MB, `.git` included. marcsh watches the size while git downloads and stops it as soon as it passes the cap, so a huge repository is rejected before it finishes arriving, with "Pack rejected: the download is larger than marcsh accepts (over 100 MB)". Keep the repository small, history included: no large binaries committed, even if they were deleted later.
 - An agent file whose frontmatter is never closed (an opening `---` with no closing `---`).
 - No primary agent in `agents/*.md` (only subagents, or none).
 - `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested). Declare hooks in `hooks/hooks.json` instead: that is the supported way, and it is opt-in (see Hooks below).
@@ -160,7 +161,7 @@ Check each item on the files; report any that fails and fix it first.
 - [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`, `tools`.
 - [ ] `model`, if present, fits the engine: `provider/id` for pi, a `claude-*` name or alias (`opus`, `sonnet`, `haiku`...) for Claude.
 - [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
-- [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries).
+- [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries), with a download (`du -sh .git`, plus the files) well under 100 MB.
 - [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.
 - [ ] Every frontmatter opens and closes with a bare `---` line and parses as YAML.
 - [ ] `tools`, if present, names only the groups above (selecting the agent shows no `unknown tools` warning).

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
@@ -48,7 +48,18 @@ export const AgentsDialogContent = ({
   // An unreadable packs.json hides every pack agent without a word otherwise.
   const [problem] = useState(() => lockProblem());
   // The packs whose hooks were enabled: on while they still match what was approved, else off because they changed. Their agents' rows say so.
-  const [hooks] = useState(() => packHooksStates());
+  // Read in the background: it reads the files of every pack with hooks, and the rows are shown meanwhile without the note.
+  const [hooks, setHooks] = useState<ReadonlyMap<string, "on" | "changed">>(() => new Map());
+  useEffect(() => {
+    let alive = true;
+    void packHooksStates().then(
+      (states) => alive && setHooks(states),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
 
