@@ -22,6 +22,7 @@ name: Reviewer
 description: Reads the diff and reports risks; changes nothing
 mode: primary
 permission: read-only
+tools: Read, Grep, Glob
 ---
 You are the Reviewer. Your lane is review: read the change and report what could break.
 
@@ -31,7 +32,7 @@ You are the Reviewer. Your lane is review: read the change and report what could
 - End with one line: the riskiest item, or "no findings".
 ```
 
-Frontmatter (flat `key: value` lines):
+Frontmatter (flat `key: value` lines; `tools` may also be a small block, see below):
 
 | Field | Values | Notes |
 | --- | --- | --- |
@@ -40,10 +41,39 @@ Frontmatter (flat `key: value` lines):
 | `mode` | `primary` or `all` | Selectable. `subagent` is never selectable: the file is skipped. Omitted means selectable. |
 | `permission` | `read-only` or `build` | `read-only` behaves like Plan (reads, changes nothing). `build` behaves like Build (asks before writing or running). Omitted means `build`. |
 | `model` | optional | pi takes `provider/id`. Claude takes `claude-*` names or the aliases `default`, `opus`, `sonnet`, `haiku`, `opusplan` (optionally with a suffix like `sonnet[1m]`); a name like `gpt-4o` is not one. A model the engine cannot use is ignored with a warning and the session model is used. Leave it out unless the role needs one. |
+| `tools` | optional | Takes tools away from this agent (see below). Leave it out for the engine's normal tools. |
 
 The body is appended to the engine's own system prompt, never in place of it. Write only the role: do not repeat what the engine already knows.
 
-Any other field (`tools`, `temperature`, ...) is read but not applied; selecting the agent shows a one-line warning. A value that is not valid for `mode` or `permission` is ignored the same way. A file that opens with `---` but never closes it loads as a Build agent with the frontmatter in its prompt, and warns the same way. Per-agent tool lists are not supported.
+Any other field (`temperature`, ...) is read but not applied; selecting the agent shows a one-line warning. A value that is not valid for `mode` or `permission` is ignored the same way. A file that opens with `---` but never closes it loads as a Build agent with the frontmatter in its prompt, and warns the same way.
+
+### Limiting tools
+
+`tools` narrows what the agent can use. It only removes tools and never adds any: a `read-only` agent that lists `bash: true` still cannot run bash, and every tool that is left still asks before it runs. Two forms work:
+
+```yaml
+tools:            # OpenCode map: false removes the group, true changes nothing
+  bash: false
+  webfetch: false
+```
+
+```yaml
+tools: Read, Grep   # Claude Code list: only these groups are kept (also `[Read, Grep]` or `- Read` lines)
+```
+
+Names are not case-sensitive and map onto groups; naming one tool takes or keeps its whole group:
+
+| Group | Names |
+| --- | --- |
+| `read` | read, grep, glob, find, ls, list, notebookread |
+| `edit` | edit, write, patch, multiedit, notebookedit |
+| `bash` | bash, shell, powershell |
+| `web` | webfetch, websearch, fetch |
+| `task` | task, agent, subagent (the subagent tool) |
+| `ask` | askuserquestion, question, ask_user |
+| `mcp` | mcp, `mcp__server__tool`, `server_*` |
+
+`ask` is never removed, because marcsh asks its questions with it. If a list would leave nothing but `ask`, `read` is kept. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. On pi the `web` group has nothing to remove (pi has no web tools) and selecting the agent says so.
 
 ## Pack layout
 
@@ -92,12 +122,13 @@ Check each item on the files; report any that fails and fix it first.
 
 - [ ] `agents/` has at least one agent without `mode: subagent`, and each agent file is under 256 KB.
 - [ ] Each agent file opens and closes its frontmatter with a bare `---` line.
-- [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`.
+- [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`, `tools`.
 - [ ] `model`, if present, fits the engine: `provider/id` for pi, a `claude-*` name or alias (`opus`, `sonnet`, `haiku`...) for Claude.
 - [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
 - [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries).
 - [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.
 - [ ] Every frontmatter opens and closes with a bare `---` line and parses as YAML.
+- [ ] `tools`, if present, names only the groups above (selecting the agent shows no `unknown tools` warning).
 - [ ] No `allowed-tools`, or the user knows why it is there.
 - [ ] Each agent prompt names the skills and commands it expects to use.
 - [ ] No hooks or MCP servers are needed for the workflow to work.

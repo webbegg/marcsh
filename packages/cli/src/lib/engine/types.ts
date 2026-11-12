@@ -1,4 +1,5 @@
 import type { AskQuestion } from "../ask-user-question";
+import type { Group } from "../agent-tools";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
 import type { ModeType } from "../modes";
@@ -52,6 +53,11 @@ export type TurnRequest = {
   systemPromptAppend?: string;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
+  /**
+   * The tool groups the selected agent does not get this turn. Only ever narrows: the engine removes these tools on top of what the
+   * mode already offers, and the tools that are left still ask. Absent: the mode's own tools, exactly as before.
+   */
+  deniedTools?: Group[];
   resumeRef?: string;
   /** Aborting stops the turn. */
   signal: AbortSignal;

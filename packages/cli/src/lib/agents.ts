@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
+import { unsupportedGroups } from "./agent-tools";
 import { Mode } from "./modes";
 import { listPacks, packAgentsDir, packPluginDir, packsRoot } from "./packs";
 import { printable } from "./safe-text";
@@ -46,6 +47,7 @@ function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boo
               description: agent.description && printable(agent.description),
               model: agent.model && printable(agent.model),
               ignored: agent.ignored.map(printable),
+              ...(agent.unknownTools ? { unknownTools: agent.unknownTools.map(printable) } : {}),
             }
           : agent,
       );
@@ -116,6 +118,10 @@ export function agentModelFits(model: string, engineId: string) {
 export function agentWarnings(agent: Agent, engineId: string): string[] {
   const warnings: string[] = [];
   if (agent.ignored.length > 0) warnings.push(`${agent.name}: ignored ${agent.ignored.join(", ")}`);
+  if (agent.unknownTools && agent.unknownTools.length > 0) warnings.push(`${agent.name}: unknown tools ${agent.unknownTools.join(", ")}`);
+  // The one group an engine cannot apply today: pi has no web tools to take away.
+  const unsupported = unsupportedGroups(agent.tools?.deny ?? [], engineId);
+  if (unsupported.length > 0) warnings.push(`${agent.name}: tools ${unsupported.join(", ")} is not applied on ${engineId} (it has no ${unsupported.join("/")} tools)`);
   if (agent.model && !agentModelFits(agent.model, engineId)) {
     warnings.push(`${agent.name}: model "${agent.model}" is ignored on ${engineId}; the session model is used`);
   }

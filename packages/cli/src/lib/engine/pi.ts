@@ -1,7 +1,8 @@
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentSession, AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { isPiToolDenied, notAvailableReason, type Group } from "../agent-tools";
 import { Mode } from "../modes";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
@@ -101,6 +102,45 @@ function buildToolsOption(settingsManager: { getDefaultTools(): string[] | undef
 function restoredPlanTools(session: AgentSession): boolean {
   const active = new Set(session.getActiveToolNames());
   return !session.getAllTools().some((tool) => active.has(tool.name) && tool.sourceInfo.path.startsWith(BUILTIN_PREFIX) && !isReadOnlyBuiltin(tool));
+}
+
+/**
+ * A resumed session that lacks one of the built-in tools a new build session offers: pi restored the loadout of a turn whose agent
+ * had tools taken away (an agent's `tools` field, S15). The next agent may not have that narrowing, so a build turn sets the tools
+ * a new session offers instead (the agent's own narrowing is applied on top, after this). A false alarm only costs that reset.
+ */
+function restoredNarrowedTools(session: AgentSession, settingsManager: { getDefaultTools(): string[] | undefined }): boolean {
+  const expected = (settingsManager.getDefaultTools() ?? ["read", "bash", "edit", "write", ...EXPLORATION_TOOLS]).map((name) => name.replace(/^\+/, ""));
+  const builtin = new Set(session.getAllTools().filter((tool) => tool.sourceInfo.path.startsWith(BUILTIN_PREFIX)).map((tool) => tool.name));
+  const active = new Set(session.getActiveToolNames());
+  return expected.some((name) => builtin.has(name) && !active.has(name));
+}
+
+/**
+ * Takes the tools of the denied groups (an agent's `tools` field, S15) away from a session: they leave the active tools, are not
+ * declared to the model, and a call to one is blocked with a reason, without asking. It only ever narrows. It is loaded twice: before
+ * the approval extension, so a denied call is blocked before anything is asked, and after it, because plan mode's own handler there
+ * sets the active tools to every read-only tool and would otherwise put a denied one back.
+ */
+export function createDeniedToolsExtension(denied: readonly Group[]): ExtensionFactory {
+  return (pi) => {
+    const isDenied = (name: string) => isPiToolDenied(name, denied);
+    pi.on("tool_call", (event) => (isDenied(event.toolName) ? { block: true, reason: notAvailableReason(event.toolName) } : undefined));
+    const narrow = () => {
+      pi.setActiveTools(pi.getActiveTools().filter((name) => !isDenied(name)));
+    };
+    pi.on("before_agent_start", narrow);
+    pi.on("turn_start", narrow);
+    // The first turn declares its tools before `turn_start` runs: the model is shown only the tools that are active when the request goes out.
+    pi.on("context_with_system", (event) => {
+      const active = new Set(pi.getActiveTools());
+      return {
+        messages: event.messages.map((message) =>
+          message.role === "system" && message.toolsAdded ? { ...message, toolsAdded: message.toolsAdded.filter((tool) => active.has(tool.name)) } : message,
+        ),
+      };
+    });
+  };
 }
 
 /**
@@ -263,8 +303,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
+    // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
+    const denied = deniedTools ?? [];
+    const allowed = (name: string) => !isPiToolDenied(name, denied);
+    const denying = denied.length > 0 ? [createDeniedToolsExtension(denied)] : [];
     let session: AgentSession | undefined;
     let aborted = signal.aborted;
     // Aborts when the turn is interrupted or over: pending approvals are then declined.
@@ -388,7 +432,9 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         extensionFactories: [
           // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
+          ...denying,
           createApprovalExtension(approval),
+          ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
           // A child session has the parent turn's host, rules, guard and mode, so it asks the same way; in plan mode it only reads.
           createSubagentExtension({
@@ -402,8 +448,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
                 models,
                 model: resolved,
                 projectTrusted,
-                extensions: [createApprovalExtension(approval)],
-                ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS] } : buildToolsOption(settingsManager)),
+                extensions: [...denying, createApprovalExtension(approval), ...denying],
+                ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
               }),
           }),
         ],
@@ -420,13 +466,17 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL] } : buildToolsOption(settingsManager)),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL].filter(allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
-      if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name));
-      // pi gives a resumed session the tools of its last turn: after a plan turn, a build turn sets them again.
-      else if (resumeRef && restoredPlanTools(session)) {
-        session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved, projectTrusted }));
+      if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name).filter(allowed));
+      else {
+        // pi gives a resumed session the tools of its last turn: after a plan turn, or a turn whose agent had tools taken away, a
+        // build turn sets them again.
+        if (resumeRef && (restoredPlanTools(session) || restoredNarrowedTools(session, settingsManager))) {
+          session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved, projectTrusted }));
+        }
+        if (denied.length > 0) session.setActiveToolsByName(session.getActiveToolNames().filter(allowed));
       }
       if (aborted) return;
 

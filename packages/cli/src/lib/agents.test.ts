@@ -71,7 +71,9 @@ describe("parseAgentFile", () => {
       ["---", "name: x", "tools:", "  bash: false", "temperature: 0.2", "permission:", "  edit: deny", "---", "Body"].join("\n"),
       { pack: "user", file: "x.md" },
     );
-    expect(agent?.ignored).toEqual(["tools", "temperature", "permission"]);
+    // `tools` is applied now (S15): it is no longer listed.
+    expect(agent?.ignored).toEqual(["temperature", "permission"]);
+    expect(agent?.tools).toEqual({ deny: ["bash"] });
     // An OpenCode permission map is not one of marcsh's two values: the agent keeps the build behaviour.
     expect(agent?.mode).toBe(Mode.BUILD);
   });
@@ -117,6 +119,63 @@ describe("parseAgentFile", () => {
     expect(agent?.name).toBe("Win");
     expect(agent?.mode).toBe(Mode.PLAN);
     expect(agent?.prompt).toBe("Body");
+  });
+});
+
+describe("the tools field [S15]", () => {
+  const parse = (frontmatter: string) => parseAgentFile(`---\n${frontmatter}\n---\nBody`, { pack: "user", file: "x.md" })!;
+
+  test("an OpenCode map narrows the agent and is not ignored", () => {
+    const agent = parse("name: X\ntools:\n  bash: false\n  write: true");
+    expect(agent.tools).toEqual({ deny: ["bash"] });
+    expect(agent.ignored).toEqual([]);
+    expect(agent.unknownTools).toEqual([]);
+  });
+
+  test("a Claude Code list keeps only the named groups", () => {
+    expect(parse("tools: Read, Grep, Glob").tools).toEqual({ deny: ["edit", "bash", "web", "task", "mcp"] });
+    expect(parse("tools: [Read, Bash]").tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+    expect(parse("tools:\n  - Read\n  - Bash").tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+  });
+
+  test("an agent without the field, or with a field that restricts nothing, has no tools", () => {
+    expect(parse("name: X").tools).toBeUndefined();
+    expect(parse("tools:\n  bash: true").tools).toBeUndefined();
+    expect(parse("tools: Frob").tools).toBeUndefined();
+    expect(parse("tools: Frob").unknownTools).toEqual(["Frob"]);
+  });
+
+  test("an empty field is still reported as ignored", () => {
+    const agent = parse("name: X\ntools:");
+    expect(agent.tools).toBeUndefined();
+    expect(agent.ignored).toEqual(["tools"]);
+  });
+
+  test("other nested blocks stay ignored and do not leak into tools", () => {
+    const agent = parse("permission:\n  bash: deny\ntools:\n  edit: false");
+    expect(agent.ignored).toEqual(["permission"]);
+    expect(agent.tools).toEqual({ deny: ["edit"] });
+  });
+
+  test("permission read-only and a tools field are independent: the mode still comes from permission", () => {
+    const agent = parse("permission: read-only\ntools:\n  bash: true");
+    expect(agent.mode).toBe(Mode.PLAN);
+    expect(agent.tools).toBeUndefined();
+  });
+
+  test("a pack agent's unknown tool names cannot carry escape sequences into the warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "marcsh-agents-tools-"));
+    try {
+      const packs = join(dir, "packs");
+      mkdirSync(join(packs, "acme", "flows", "src", "agents"), { recursive: true });
+      writeFileSync(join(packs, "acme", "flows", "src", "agents", "a.md"), "---\nname: A\ntools: Read, \"\u001b[31mred\"\n---\nP");
+      writeFileSync(join(packs, "packs.json"), JSON.stringify({ packs: [{ id: "acme/flows", url: "https://github.com/acme/flows.git", commit: "c", installedAt: "t" }] }));
+      const agent = loadAgents(join(dir, "none"), packs).find((candidate) => candidate.id === "acme/flows/a")!;
+      expect(agent.tools).toBeDefined();
+      expect(agent.unknownTools?.join("")).not.toContain("\u001b");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -366,7 +425,24 @@ describe("agentWarnings", () => {
 
   test("ignored fields are named in one line", () => {
     const agent = parseAgentFile("---\nname: X\ntools:\n  bash: false\nhooks: x\n---\nP", { pack: "user", file: "x.md" })!;
-    expect(agentWarnings(agent, "claude")).toEqual(["X: ignored tools, hooks"]);
+    expect(agentWarnings(agent, "claude")).toEqual(["X: ignored hooks"]);
+  });
+
+  test("unknown tool names are named in their own line [S15]", () => {
+    const agent = parseAgentFile("---\nname: X\ntools: Read, Frob, Zap\n---\nP", { pack: "user", file: "x.md" })!;
+    expect(agentWarnings(agent, "claude")).toEqual(["X: unknown tools Frob, Zap"]);
+  });
+
+  test("a tool group the engine cannot apply is reported: pi has no web tools [S15]", () => {
+    const agent = parseAgentFile("---\nname: X\ntools:\n  webfetch: false\n  bash: false\n---\nP", { pack: "user", file: "x.md" })!;
+    expect(agentWarnings(agent, "claude")).toEqual([]);
+    expect(agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
+  });
+
+  test("an agent with a clean tools field warns about nothing [S15]", () => {
+    const agent = parseAgentFile("---\nname: X\ntools: Read, Grep, Bash\n---\nP", { pack: "user", file: "x.md" })!;
+    expect(agentWarnings(agent, "claude")).toEqual([]);
+    expect(agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
   });
 
   test("a model the engine cannot use is reported: pi takes provider/id, Claude does not", () => {
