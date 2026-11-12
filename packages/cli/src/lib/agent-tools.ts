@@ -3,8 +3,9 @@
  * and a tool in no group (Claude's Skill, a pi extension's own tools) is left alone, in the list form too.
  */
 
-export const TOOL_GROUPS = ["read", "edit", "bash", "web", "task", "ask", "mcp"] as const;
-export type Group = (typeof TOOL_GROUPS)[number];
+import { CLAUDE_MCP_PREFIX, CLAUDE_MCP_RESOURCE_TOOLS, FIELD_NAMES, TOOL_GROUPS, claudeGroupTools, type Group } from "./tool-names";
+
+export { TOOL_GROUPS, type Group };
 
 /** The groups an agent does not get. Never `ask` (marcsh asks its questions through it), and `read` stays when everything else would go. */
 export type AgentTools = {
@@ -25,17 +26,8 @@ export type ParsedTools = {
 };
 
 const MAX_UNKNOWN = 8;
+const MAX_NOTES = 8;
 const MAX_NAME = 40;
-
-// Lower case. Claude Code's names, OpenCode's names, a few common spellings, and the group names themselves.
-const NAMES: Record<Exclude<Group, "mcp">, readonly string[]> = {
-  read: ["read", "grep", "glob", "find", "ls", "list", "notebookread"],
-  edit: ["edit", "write", "patch", "multiedit", "notebookedit"],
-  bash: ["bash", "shell", "powershell"],
-  web: ["web", "webfetch", "websearch", "fetch"],
-  task: ["task", "agent", "subagent"],
-  ask: ["ask", "askuserquestion", "question", "ask_user"],
-};
 
 /** The name without a closing permission scope: `Bash(git:*)` is `Bash`. Scans, so a long run of `(` costs nothing. */
 function withoutScope(name: string): string {
@@ -50,7 +42,7 @@ export function groupOf(name: string): Group | undefined {
   if (!key) return undefined;
   // `mcp`, `mcp__server__tool`, `mcp_server_tool`, and OpenCode's `server_*` wildcards.
   if (key === "mcp" || key.startsWith("mcp__") || key.startsWith("mcp_") || key.endsWith("_*")) return "mcp";
-  return (Object.keys(NAMES) as (keyof typeof NAMES)[]).find((group) => NAMES[group].includes(key));
+  return (Object.keys(FIELD_NAMES) as (keyof typeof FIELD_NAMES)[]).find((group) => FIELD_NAMES[group].includes(key));
 }
 
 const unquote = (text: string) => text.trim().replace(/^(["'])(.*)\1$/, "$2").trim();
@@ -131,7 +123,7 @@ export function parseTools(value: string | null | undefined, nested: readonly st
     if (unknown.length < MAX_UNKNOWN && !unknown.includes(shown(name))) unknown.push(shown(name));
   };
   const keptNote = (line: string) => {
-    if (notes.length < MAX_UNKNOWN && !notes.includes(line)) notes.push(line);
+    if (notes.length < MAX_NOTES && !notes.includes(line)) notes.push(line);
   };
 
   const deny = new Set<Group>();
@@ -189,23 +181,9 @@ export function parseTools(value: string | null | undefined, nested: readonly st
 
 // ---- Claude ----
 
-// `TaskOutput` and `TaskStop` act on background shells and subagents alike, so they follow both groups; `Workflow` starts subagents.
-const CLAUDE_NAMES: Record<Exclude<Group, "ask" | "mcp">, readonly string[]> = {
-  read: ["Read", "Grep", "Glob", "NotebookRead", "LS"],
-  edit: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
-  bash: ["Bash", "BashOutput", "KillShell", "KillBash", "PowerShell", "TaskOutput", "TaskStop"],
-  web: ["WebFetch", "WebSearch"],
-  task: ["Task", "Agent", "Workflow", "TaskOutput", "TaskStop"],
-};
-
-const CLAUDE_MCP_PREFIX = "mcp__";
-
-// The SDK's tools that read a connected server's resources: they run without asking, so the mcp group has to take them too.
-const CLAUDE_MCP_RESOURCE_TOOLS = ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"];
-
 /** What goes into the SDK's `disallowedTools` for the denied groups; `canUseTool` refuses the same calls too ({@link isClaudeToolDenied}) in case a rule is not honoured. */
 export function claudeDeniedTools(deny: readonly Group[]): string[] {
-  const names = deny.flatMap((group) => (group === "mcp" ? [`${CLAUDE_MCP_PREFIX}*`, ...CLAUDE_MCP_RESOURCE_TOOLS] : group === "ask" ? [] : CLAUDE_NAMES[group]));
+  const names = deny.flatMap((group) => (group === "mcp" ? [`${CLAUDE_MCP_PREFIX}*`, ...CLAUDE_MCP_RESOURCE_TOOLS] : claudeGroupTools(group)));
   return [...new Set(names)];
 }
 
