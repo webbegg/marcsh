@@ -200,7 +200,8 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await waitForFrame("MCP servers are not run.");
 
     await escape();
-    await settle(300);
+    // The flow ends with this toast, after the clone it fetched is deleted.
+    await waitForFrame("Install cancelled");
 
     expect(listPacks()).toEqual([]);
     expect(existsSync(join(process.env.MARCSH_PACKS_DIR!, "acme"))).toBe(false);
@@ -260,8 +261,7 @@ describe("/agents installs packs from GitHub (S10)", () => {
       // The finished flow closed nothing that is not its own: the dialog opened next is still there.
       await type("/agents");
       await enter();
-      await settle(300);
-      expect(frame()).toContain("Select Agent");
+      await waitForFrame("Select Agent");
     } finally {
       process.env.PATH = savedPath;
     }

@@ -112,6 +112,19 @@ async function waitForFrame(text: string, ms = 40_000) {
   }
 }
 
+// The text is on screen before the dialog is laid out and the list measured: wait until two polls show the same screen.
+async function waitForStableFrame(ms = 40_000) {
+  const until = Date.now() + ms;
+  let previous = screen!.captureCharFrame();
+  for (let same = 0; same < 2; ) {
+    if (Date.now() > until) throw new Error(`The screen never settled. Last frame:\n${previous}`);
+    await settle(50);
+    const current = screen!.captureCharFrame();
+    same = current === previous ? same + 1 : 0;
+    previous = current;
+  }
+}
+
 async function openHome(size: { width: number; height: number }) {
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ index: true, element: <Home /> }] }],
@@ -161,7 +174,7 @@ describe("/agents hooks review with many commands (S16)", () => {
 
     await runCommand("/agents hooks acme/flows");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
     const first = frame();
     expect(first).toContain(`acme/flows @ ${lockEntry("flows").commit.slice(0, 7)}`);
     expect(first).toContain("Cancel");
@@ -198,7 +211,7 @@ describe("/agents hooks review with many commands (S16)", () => {
 
     await runCommand("/agents hooks acme/small");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
     const first = frame();
     expect(first).toContain(`acme/small @ ${lockEntry("small").commit.slice(0, 7)}`);
     expect(first).toContain("Cancel");
@@ -222,7 +235,7 @@ describe("/agents hooks review with many commands (S16)", () => {
     await installFixture("flows");
     await runCommand("/agents hooks acme/flows");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
 
     const seen = new Set<string>();
     const collect = () => {
@@ -248,7 +261,7 @@ describe("/agents hooks review with many commands (S16)", () => {
     await installFixture("small");
     await runCommand("/agents hooks acme/small");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
 
     await click("   Enable");
     expect(lockEntry("small").hooks).toBeUndefined();
@@ -271,7 +284,7 @@ describe("/agents hooks review with many commands (S16)", () => {
     await installFixture("small");
     await runCommand("/agents hooks acme/small");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
     expect(frame()).toContain("$ sh -c FIRST_SMALL_X");
 
     for (let i = 0; i < 8; i++) await down();
@@ -291,7 +304,7 @@ describe("/agents hooks review with many commands (S16)", () => {
     await installFixture("small");
     await runCommand("/agents hooks acme/small");
     await waitForFrame("PreToolUse (matcher: Bash)");
-    await settle(300);
+    await waitForStableFrame();
     await scrollToEnd();
     await down();
     await enter();
@@ -299,7 +312,7 @@ describe("/agents hooks review with many commands (S16)", () => {
 
     await runCommand("/agents hooks acme/small");
     await waitForFrame("Hooks are on");
-    await settle(300);
+    await waitForStableFrame();
     await down();
     await enter();
     await waitForFrame("Turned off hooks of acme/small");

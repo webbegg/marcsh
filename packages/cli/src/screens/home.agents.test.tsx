@@ -49,6 +49,15 @@ const enter = async () => {
   await settle(60);
 };
 
+// The warning is worked out in the background: poll for it instead of sleeping.
+async function waitForFrame(text: string, ms = 10_000) {
+  const until = Date.now() + ms;
+  while (!frame().includes(text)) {
+    if (Date.now() > until) throw new Error(`"${text}" never appeared. Last frame:\n${screen!.captureCharFrame()}`);
+    await settle(50);
+  }
+}
+
 async function openHome() {
   const router = createMemoryRouter(
     [{ path: "/", element: <RootLayout />, children: [{ index: true, element: <Home /> }] }],
@@ -199,7 +208,8 @@ describe("selecting agents (S1, S9)", () => {
     expect(frame()).toContain("Slow › ");
     await tab();
     expect(frame()).toContain("Zed › ");
-    await settle(400);
+    // Proves a late warning never shows, so this must outlast the 300 ms the Slow agent's warning takes (see the mock above).
+    await settle(1000);
     expect(frame()).toContain("Zed › ");
     expect(frame()).not.toContain("Slow: ignored temperature");
   });
@@ -211,7 +221,6 @@ describe("selecting agents (S1, S9)", () => {
 
     await tab();
     await tab();
-    await settle(400);
-    expect(frame()).toContain("Warning: Slow: ignored temperature");
+    await waitForFrame("Warning: Slow: ignored temperature");
   });
 });
