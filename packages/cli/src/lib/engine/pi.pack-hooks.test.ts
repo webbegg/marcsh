@@ -235,7 +235,11 @@ describe("PreToolUse hooks on pi", () => {
     // The hook's background child must die with its group, not outlive the timeout.
     await waitFor(() => existsSync(marker("child.pid")) && readFileSync(marker("child.pid"), "utf8").trim() !== "", "the hook's child to start");
     const child = Number(readFileSync(marker("child.pid"), "utf8"));
-    await waitFor(() => !isAlive(child), "the hook's child to be killed");
+    try {
+      await waitFor(() => !isAlive(child), "the hook's child to be killed");
+    } finally {
+      if (isAlive(child)) process.kill(child, "SIGKILL");
+    }
   });
 
   test("a hook of a Task child session applies to the child's tool calls too", async () => {
