@@ -131,4 +131,11 @@ describe("the name Claude's hooks use for a pi tool", () => {
       expect([name, claudeToolNames(name)]).toEqual([name, [name]]);
     }
   });
+
+  test("a pi tool named like an Object.prototype member keeps its name", () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect([name, claudeToolName(name)]).toEqual([name, name]);
+      expect([name, claudeToolNames(name)]).toEqual([name, [name]]);
+    }
+  });
 });
