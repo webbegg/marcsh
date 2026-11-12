@@ -34,7 +34,23 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const made = () => join(cwd, "made.txt");
 const marker = (name: string) => join(dir, name);
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Polls until `check` holds, failing at the deadline: waits for the outcome instead of a fixed time. */
+async function waitFor(check: () => boolean, what: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const hooksJson = (hooks: unknown) => JSON.stringify({ hooks });
 const sh = (script: string) => `sh "\${CLAUDE_PLUGIN_ROOT}/hooks/${script}"`;
 const preBash = (script: string, extra: Record<string, unknown> = {}) =>
@@ -207,7 +223,7 @@ describe("PreToolUse hooks on pi", () => {
   test("a hook that times out blocks the call and its whole process group is killed", async () => {
     const view = await installFake("acme/flows", {
       "hooks.json": preBash("slow.sh", { timeout: 1 }),
-      "slow.sh": `(sleep 2; touch ${marker("child-survived")}) &\nsleep 30\n`,
+      "slow.sh": `sh -c 'echo $$ > ${marker("child.pid")}; exec sleep 30' &\nsleep 30\n`,
     });
     const { turn } = await setup([bashCall(), done()]);
 
@@ -216,8 +232,10 @@ describe("PreToolUse hooks on pi", () => {
     expect(asks).toEqual([]);
     expect(existsSync(made())).toBe(false);
     expect(tools[0]!.errorText).toMatch(/timed out/);
-    await sleep(2500);
-    expect(existsSync(marker("child-survived"))).toBe(false);
+    // The hook's background child must die with its group, not outlive the timeout.
+    await waitFor(() => existsSync(marker("child.pid")) && readFileSync(marker("child.pid"), "utf8").trim() !== "", "the hook's child to start");
+    const child = Number(readFileSync(marker("child.pid"), "utf8"));
+    await waitFor(() => !isAlive(child), "the hook's child to be killed");
   });
 
   test("a hook of a Task child session applies to the child's tool calls too", async () => {
