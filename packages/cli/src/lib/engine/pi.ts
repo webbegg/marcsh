@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { isPiToolDenied, notAvailableReason, type Group } from "../agent-tools";
 import { Mode } from "../modes";
+import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
@@ -13,6 +14,7 @@ import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked, type ToolSource } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
+import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, isMarcshTask, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
@@ -488,17 +490,25 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         planMode: mode === Mode.PLAN,
         guard: options.guard,
       };
+      // The pack's hooks are checked against what the user approved before anything of the view loads (S16): changed hooks are dropped for
+      // this turn. Enabled ones run (PreToolUse and PostToolUse only) ahead of the approval extension, so a call they block never asks.
+      const packTurn = packPluginPath ? prepareViewForTurn(packPluginPath) : undefined;
+      if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
+      const packHooks = packTurn?.hooks
+        ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: turnEnded.signal, notify: (message, level) => host.notify?.(message, level) })]
+        : [];
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
         agentDir,
         settingsManager,
-        ...resourcesFor(packPluginPath),
+        ...resourcesFor(packTurn?.view ?? undefined),
         // Added to whatever APPEND_SYSTEM.md pi found; `appendSystemPrompt` would replace it. A fresh loader per turn is why a switched agent applies from the next turn.
         ...(systemPromptAppend ? { appendSystemPromptOverride: (base: string[]) => [...base, systemPromptAppend] } : {}),
         extensionFactories: [
           // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
           ...denying,
+          ...packHooks,
           createApprovalExtension(approval),
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
@@ -514,7 +524,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
                 models,
                 model: resolved,
                 projectTrusted,
-                extensions: [...denyingChild, createApprovalExtension(approval), ...denyingChild],
+                extensions: [...denyingChild, ...packHooks, createApprovalExtension(approval), ...denyingChild],
                 ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
               }),
           }),

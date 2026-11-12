@@ -102,4 +102,66 @@ describe("the agent-workflows skill", () => {
   test("says skills and commands load only while the pack's agent is selected", () => {
     expect(text()).toMatch(/only while[^.]*agent[^.]*selected/i);
   });
+
+  describe("pack hooks (S16)", () => {
+    test("says hooks are opt-in and off by default, and no longer says marcsh never runs them", () => {
+      const body = text();
+      expect(body).toMatch(/opt-in/i);
+      expect(body).toMatch(/off by default/i);
+      expect(body).not.toContain("marcsh never runs hooks");
+      // MCP servers and `hooks` declared anywhere but hooks/ stay unused.
+      expect(body).toMatch(/MCP servers[^\n]*never run/i);
+    });
+
+    test("shows how to ship hooks: hooks/hooks.json with command hooks and ${CLAUDE_PLUGIN_ROOT}", () => {
+      const body = text();
+      for (const part of ["hooks/hooks.json", '"type": "command"', "${CLAUDE_PLUGIN_ROOT}", "PreToolUse", "matcher"]) expect(body).toContain(part);
+      expect(body).toMatch(/only[^\n]*`command`/i);
+    });
+
+    test("describes the review and enable flow, and turning them off", () => {
+      const body = text();
+      expect(body).toContain("/agents hooks owner/repo");
+      expect(body).toContain("/agents hooks owner/repo off");
+      expect(body).toMatch(/Cancel/);
+      expect(body).toMatch(/exact command/i);
+      expect(body).toContain("while one of the pack's agents is selected");
+    });
+
+    test("says which events run on which engine", () => {
+      const body = text();
+      expect(body).toMatch(/PreToolUse and PostToolUse[^\n]*Claude and pi/);
+      expect(body).toMatch(/other events[^\n]*Claude only/i);
+    });
+
+    test("says what a hook can do on pi: block with exit 2 or deny, never widen, timeout blocks", () => {
+      const body = text();
+      expect(body).toMatch(/exit code 2/i);
+      expect(body).toContain("permissionDecision");
+      expect(body).toMatch(/never widen|only narrow/i);
+      expect(body).toMatch(/allow[^\n]*no effect/i);
+      expect(body).toMatch(/timeout[^\n]*60 s/i);
+      expect(body).toMatch(/time[sd]? out[^\n]*blocks/i);
+    });
+
+    test("says consent is pinned and re-asked after an update or any change", () => {
+      const body = text();
+      expect(body).toMatch(/commit/);
+      expect(body).toMatch(/digest|every file/i);
+      expect(body).toMatch(/update[^\n]*(turns|turned)[^\n]*off/i);
+      expect(body).toMatch(/review[^\n]*again/i);
+    });
+
+    test("states the limits of hooks/ and what makes the hooks unusable", () => {
+      const body = text();
+      expect(body).toMatch(/hooks\/[^\n]*1 MB/);
+      expect(body).toMatch(/hooks\/[^\n]*5 MB/);
+      expect(body).toMatch(/unusable/i);
+      expect(body).toMatch(/symlink/);
+    });
+
+    test("the checklist covers the hooks folder", () => {
+      expect(text()).toMatch(/- \[ \][^\n]*hooks\/hooks\.json/);
+    });
+  });
 });

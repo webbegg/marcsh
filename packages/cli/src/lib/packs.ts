@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -21,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
+import { HOOKS_DIR, hookEvents, parseHooksConsent, readHooksDir, type HookFile, type HooksConfig, type HooksConsent } from "./pack-hooks";
 import { Mode } from "./modes";
 import { listDir } from "./plugin";
 import { printable } from "./safe-text";
@@ -33,6 +35,11 @@ import { printable } from "./safe-text";
  * pointed at a generated `plugin/` view that holds COPIES of the regular files under `skills/` and `commands/` that the scan
  * read, and nothing else: no links, no pack hooks, MCP servers or agent files, so what the engines can load is what was scanned
  * and previewed. Installing and updating need the user's consent after a preview; nothing is automatic.
+ *
+ * A pack's hooks (`hooks/`, see pack-hooks.ts) are the one exception to "nothing runs", and they are off until the user enables them
+ * after reading the commands: the lock entry then holds `hooks` (the commit and the digest of the hook files that were reviewed), the
+ * view gets a copy of `hooks/`, and the consent counts only while the commit and the digest of both the clone's and the view's files
+ * still match (`prepareViewForTurn` checks before every turn). An update that changes the commit turns them off.
  *
  *   <root>/packs.json              the lockfile: every pack pinned to the commit that was previewed and accepted
  *   <root>/<owner>/<repo>/src      the clone at that commit
@@ -51,6 +58,8 @@ export type PackEntry = {
   /** The full SHA that was previewed and accepted. */
   commit: string;
   installedAt: string;
+  /** Present only while the user has enabled the pack's hooks: consent for this commit and these hook files. */
+  hooks?: HooksConsent;
 };
 
 export type PackSpec = { id: string; url: string; ref?: string };
@@ -63,7 +72,11 @@ export type PackPreview = {
   agents: { name: string; permission: "read-only" | "build"; model?: string }[];
   skills: string[];
   commands: string[];
-  /** Parts of the pack that marcsh does not use (it never runs hooks or MCP servers). */
+  /** The pack's `hooks/`, when it has one: off until the user enables it (`/agents hooks <id>`), or unusable and never enabled. */
+  hooks?: { usable: true; events: string[] } | { usable: false; reason: string };
+  /** Set on an update of a pack whose hooks were enabled: the new commit starts with them off. */
+  hooksTurnedOff?: true;
+  /** Parts of the pack that marcsh does not use (it never runs MCP servers, or hooks declared anywhere but `hooks/`). */
   ignored: string[];
   /** Parts marcsh does use that deserve a look before consenting. */
   warnings: string[];
@@ -153,6 +166,13 @@ const cancelled = () => new PackError("Cancelled");
 /** A lock entry's url and ref are held to the rules an install applies, every time they are read: they end up on git's command line. */
 const isSafeEntry = (item: PackEntry) => URL_FORM.test(item.url) && (item.ref === undefined || (typeof item.ref === "string" && isRef(item.ref)));
 
+/** The entry with its `hooks` field kept only when it is exactly the consent shape: anything else reads as hooks off. */
+function withValidConsent(item: PackEntry): PackEntry {
+  const { hooks, ...rest } = item as PackEntry & { hooks?: unknown };
+  const consent = parseHooksConsent(hooks);
+  return consent ? { ...rest, hooks: consent } : rest;
+}
+
 type LockRead = { entries: PackEntry[]; unsafe?: PackEntry; problem?: string };
 
 /** The lockfile, and why it cannot be used when it cannot. The reason never quotes the file: it is short and safe to show. */
@@ -171,10 +191,12 @@ function loadLock(root: string): LockRead {
     return { entries: [], problem: "not valid JSON" };
   }
   if (!parsed || !Array.isArray(parsed.packs)) return { entries: [], problem: "no packs list" };
-  const entries = parsed.packs.filter(
-    (item): item is PackEntry =>
-      !!item && isPackId(item.id) && typeof item.url === "string" && typeof item.commit === "string" && typeof item.installedAt === "string",
-  );
+  const entries = parsed.packs
+    .filter(
+      (item): item is PackEntry =>
+        !!item && isPackId(item.id) && typeof item.url === "string" && typeof item.commit === "string" && typeof item.installedAt === "string",
+    )
+    .map(withValidConsent);
   const unsafe = entries.find((item) => !isSafeEntry(item));
   return { entries: entries.filter(isSafeEntry), ...(unsafe ? { unsafe } : {}) };
 }
@@ -543,8 +565,8 @@ export function previewPack(src: string, { id, commit }: { id: string; commit: s
   }
 
   const manifest = pluginManifestKeys(src);
+  const hooks = readHooksDir(join(src, HOOKS_DIR));
   const ignored = [
-    ...(listDir(src).some((item) => item.name === "hooks" && item.isDirectory()) ? ["hooks/"] : []),
     ...(listDir(src).some((item) => item.name === ".mcp.json") ? [".mcp.json"] : []),
     ...(manifest.has("hooks") ? [".claude-plugin hooks"] : []),
     ...(manifest.has("mcpServers") ? [".claude-plugin mcpServers"] : []),
@@ -558,6 +580,7 @@ export function previewPack(src: string, { id, commit }: { id: string; commit: s
     agents: agents.map((agent) => ({ ...agent, name: printable(agent.name), ...(agent.model ? { model: printable(agent.model) } : {}) })),
     skills: clean(parts.skills),
     commands: clean(parts.commands),
+    ...(hooks.present ? { hooks: hooks.usable ? { usable: true as const, events: clean(hookEvents(hooks.config)) } : { usable: false as const, reason: printable(hooks.reason) } } : {}),
     ignored: clean(ignored),
     warnings: clean(parts.warnings),
   };
@@ -649,7 +672,11 @@ export async function updatePack(
   try {
     if (commit === current.commit) return { status: "up-to-date", pack: current };
     const parts = scanPack(src, limits);
-    const preview = { ...previewPack(src, { id, commit }, parts), previousCommit: current.commit };
+    const preview = {
+      ...previewPack(src, { id, commit }, parts),
+      previousCommit: current.commit,
+      ...(current.hooks ? { hooksTurnedOff: true as const } : {}),
+    };
     writePluginView(staging, id, parts);
     if (!(await confirm(preview))) return { status: "cancelled" };
 
@@ -667,7 +694,9 @@ export async function updatePack(
       if (hadOld) renameSync(retired, target);
       throw error;
     }
-    const pack: PackEntry = { ...current, commit, installedAt: new Date().toISOString() };
+    // A new commit never inherits consent: the hooks are off until the user reviews them again. (The view above has no hooks/ either.)
+    const { hooks: _consent, ...kept } = current;
+    const pack: PackEntry = { ...kept, commit, installedAt: new Date().toISOString() };
     try {
       changeLock(root, (latest) => {
         if (!latest.some((item) => item.id === id)) throw new PackError(`${id} was removed while it was being updated`);
@@ -728,4 +757,190 @@ export async function removePack(id: string, { root = packsRoot() }: RootOption 
     rmdirSync(dirname(target));
   } catch {}
   return { status: installed ? "removed" : "removed-leftover" };
+}
+
+// ---- hooks: consent, the view's copy, and the check before every turn ----
+
+export type PackHooksInfo =
+  | { state: "none" }
+  /** `hooks/` exists but is not the supported shape (see pack-hooks.ts): never enabled. */
+  | { state: "unusable"; reason: string }
+  /** Usable and not enabled. `changed` means the lockfile holds consent that no longer matches the commit or the files. */
+  | { state: "off"; commit: string; config: HooksConfig; files: HookFile[]; digest: string; changed?: true }
+  | { state: "on"; commit: string; config: HooksConfig; files: HookFile[]; digest: string; enabledAt: string };
+
+const sameConsent = (entry: PackEntry, digest: string) => entry.hooks !== undefined && entry.hooks.commit === entry.commit && entry.hooks.digest === digest;
+
+/** What the installed clone's `hooks/` holds now, and whether the lockfile's consent covers exactly that. Nothing is run. */
+export function inspectPackHooks(id: string, { root = packsRoot() }: RootOption = {}): PackHooksInfo {
+  assertPackId(id);
+  const entry = listPacks({ root }).find((pack) => pack.id === id);
+  if (!entry) return { state: "none" };
+  const read = readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
+  if (!read.present) return { state: "none" };
+  if (!read.usable) return { state: "unusable", reason: read.reason };
+  const shared = { commit: entry.commit, config: read.config, files: read.files, digest: read.digest };
+  if (entry.hooks && sameConsent(entry, read.digest)) return { state: "on", ...shared, enabledAt: entry.hooks.enabledAt };
+  return { state: "off", ...shared, ...(entry.hooks ? { changed: true as const } : {}) };
+}
+
+/** The IDs of the packs whose hooks are enabled and still match what was approved. */
+export function packsWithHooksOn({ root = packsRoot() }: RootOption = {}): Set<string> {
+  return new Set(listPacks({ root }).filter((pack) => pack.hooks && inspectPackHooks(pack.id, { root }).state === "on").map((pack) => pack.id));
+}
+
+const viewHooksPath = (view: string) => join(view, HOOKS_DIR);
+
+const exists = (path: string) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Removes a folder (or a link, without following it); true when nothing is left at the path. */
+function removeAll(path: string): boolean {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {}
+  return !exists(path);
+}
+
+/** Writes the view's `hooks/` from the bytes that were reviewed (not from the disk again), next to the folder first and then renamed in. */
+function writeViewHooks(view: string, files: readonly HookFile[]) {
+  let top;
+  try {
+    top = lstatSync(view);
+  } catch {
+    throw new PackError(`The generated view of this pack is missing (${view}); remove the pack and install it again`);
+  }
+  if (!top.isDirectory()) throw new PackError(`${view} is not a folder; remove the pack and install it again`);
+  const target = viewHooksPath(view);
+  const temp = join(view, `.hooks-${process.pid}`);
+  removeAll(temp);
+  try {
+    for (const file of files) {
+      const dest = join(temp, ...file.path.split("/"));
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, file.data);
+      // The executable bits as the pack has them; never group/other write, never setuid.
+      chmodSync(dest, file.mode & 0o755);
+    }
+    if (!removeAll(target)) throw new PackError(`${target} could not be replaced`);
+    renameSync(temp, target);
+  } catch (error) {
+    removeAll(temp);
+    throw error;
+  }
+}
+
+export type EnableHooksResult = { status: "enabled"; commit: string; digest: string };
+
+/**
+ * Enables a pack's hooks for the files the user reviewed: `reviewed` is the commit and digest that were shown. The clone is read again
+ * and must still be exactly that, so a change between the review and the answer enables nothing. The view's copy is written from the
+ * bytes just read and checked against the digest before the lockfile says the hooks are on.
+ */
+export async function enablePackHooks(id: string, { root = packsRoot(), reviewed }: RootOption & { reviewed: { commit: string; digest: string } }): Promise<EnableHooksResult> {
+  assertPackId(id);
+  const entry = readLock(root, true).find((pack) => pack.id === id);
+  if (!entry) throw new PackError(`${id} is not installed`);
+  const read = readHooksDir(join(packDir(id, root), "src", HOOKS_DIR));
+  if (!read.present) throw new PackError(`${id} has no hooks`);
+  if (!read.usable) throw new PackError(`The hooks of ${id} cannot be enabled: ${read.reason}`);
+  if (reviewed.commit !== entry.commit || reviewed.digest !== read.digest) {
+    throw new PackError(`The hooks of ${id} changed since you reviewed them; open /agents hooks ${id} again`);
+  }
+
+  const view = packPluginDir(id, root);
+  writeViewHooks(view, read.files);
+  const copy = readHooksDir(viewHooksPath(view));
+  if (!copy.present || !copy.usable || copy.digest !== read.digest) {
+    removeAll(viewHooksPath(view));
+    throw new PackError(`The hooks of ${id} could not be copied exactly; nothing was enabled`);
+  }
+  try {
+    changeLock(root, (packs) => {
+      const latest = packs.find((pack) => pack.id === id);
+      if (!latest || latest.commit !== entry.commit) throw new PackError(`${id} changed while its hooks were being enabled`);
+      const consent: HooksConsent = { commit: entry.commit, digest: read.digest, enabledAt: new Date().toISOString() };
+      return packs.map((pack) => (pack.id === id ? { ...pack, hooks: consent } : pack));
+    });
+  } catch (error) {
+    removeAll(viewHooksPath(view));
+    throw error;
+  }
+  return { status: "enabled", commit: entry.commit, digest: read.digest };
+}
+
+export type DisableHooksResult = { status: "disabled" | "already-off" };
+
+/** Turns a pack's hooks off without asking: the lockfile first (so they are off even if the rest fails), then the view's copy. */
+export async function disablePackHooks(id: string, { root = packsRoot() }: RootOption = {}): Promise<DisableHooksResult> {
+  assertPackId(id);
+  let wasOn = false;
+  changeLock(root, (packs) => {
+    const entry = packs.find((pack) => pack.id === id);
+    if (!entry) throw new PackError(`${id} is not installed`);
+    wasOn = entry.hooks !== undefined;
+    return packs.map((pack) => {
+      const { hooks: _consent, ...rest } = pack;
+      return pack.id === id ? rest : pack;
+    });
+  });
+  const view = viewHooksPath(packPluginDir(id, root));
+  const hadCopy = exists(view);
+  if (!removeAll(view)) throw new PackError(`${id}: hooks are off, but their copy in ${view} could not be removed; it will not be loaded`);
+  return { status: wasOn || hadCopy ? "disabled" : "already-off" };
+}
+
+/** Where a path is a generated view `<root>/<owner>/<repo>/plugin`: the packs root and the pack ID, else null. */
+export function packViewLocation(viewPath: string): { root: string; id: string } | null {
+  const parts = resolve(viewPath).split(sep);
+  const [view, repo, owner] = [parts.at(-1), parts.at(-2), parts.at(-3)];
+  if (view !== "plugin" || !repo || !owner) return null;
+  const id = `${owner}/${repo}`;
+  return isPackId(id) ? { root: parts.slice(0, -3).join(sep) || sep, id } : null;
+}
+
+export type TurnView = {
+  /** The plugin view to load this turn, or null when it must not be loaded at all (hooks could not be kept out of it). */
+  view: string | null;
+  /** The hooks to run this turn: enabled, and the clone's and the view's files both still match the digest that was approved. */
+  hooks?: { id: string; root: string; config: HooksConfig };
+  /** Something the user should know: hooks that were on or present are not running this turn. */
+  warning?: string;
+};
+
+/**
+ * The check before a pack agent's turn. The view keeps `hooks/` only while the lockfile's consent covers exactly these files (same
+ * commit; same digest in the clone and in the view). Anything else is removed from the view before an engine can load it, with a
+ * warning when it was approved or present; a view that cannot be cleaned, or that is not known to be marcsh's, is not loaded.
+ * Nothing is deleted from a path that is not an entry of the lockfile.
+ */
+export function prepareViewForTurn(viewPath: string): TurnView {
+  const hooksPath = viewHooksPath(viewPath);
+  const present = exists(hooksPath);
+  const location = packViewLocation(viewPath);
+  const entry = location ? listPacks({ root: location.root }).find((pack) => pack.id === location.id) : undefined;
+  if (!location || !entry) {
+    if (!present) return { view: viewPath };
+    return { view: null, warning: `Pack hooks cannot be checked for ${printable(viewPath)}, so that pack's skills and commands were not loaded` };
+  }
+
+  const { root, id } = location;
+  const info = inspectPackHooks(id, { root });
+  const copy = present ? readHooksDir(hooksPath) : ({ present: false } as const);
+  if (info.state === "on" && copy.present && copy.usable && copy.digest === info.digest) return { view: viewPath, hooks: { id, root, config: copy.config } };
+
+  if (!present && !entry.hooks) return { view: viewPath };
+  if (present && !removeAll(hooksPath)) {
+    return { view: null, warning: `${id}: its hook files could not be removed from the pack view, so the pack's skills and commands were not loaded` };
+  }
+  const warning = entry.hooks
+    ? `${id}: hooks are off for this turn because their files no longer match what you approved. Review them with /agents hooks ${id}`
+    : `${id}: hook files in the pack view that were never enabled were removed`;
+  return { view: viewPath, warning };
 }

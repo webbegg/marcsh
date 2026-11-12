@@ -162,7 +162,9 @@ describe("installPack", () => {
       agents: [{ name: "Reviewer", permission: "read-only", model: "openai/gpt-5" }],
       skills: ["lint"],
       commands: ["ship"],
-      ignored: ["hooks/", ".mcp.json", "subagent helper.md"],
+      // `{"hooks":{}}` declares nothing to run, so the folder is shown as unusable (see pack-hooks.test.ts for the enabled flow).
+      hooks: { usable: false, reason: "hooks.json declares no command hooks" },
+      ignored: [".mcp.json", "subagent helper.md"],
       warnings: [],
     });
 

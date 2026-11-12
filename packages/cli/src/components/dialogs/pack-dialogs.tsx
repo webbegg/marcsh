@@ -8,15 +8,31 @@ import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { TextField } from "./text-field";
 import { parsePackCommand } from "../../lib/pack-command";
-import { hasLeftover, installPack, listPacks, removePack, updatePack, type PackEntry, type PackPreview } from "../../lib/packs";
+import { engineLine, hookEvents, HOOKS_DIR, type HooksConfig } from "../../lib/pack-hooks";
+import {
+  disablePackHooks,
+  enablePackHooks,
+  hasLeftover,
+  inspectPackHooks,
+  installPack,
+  listPacks,
+  removePack,
+  updatePack,
+  type PackEntry,
+  type PackHooksInfo,
+  type PackPreview,
+} from "../../lib/packs";
 
-// The `/agents` flows for packs (GitHub repos with agents, skills and commands): install, update, remove. Each step is a dialog
+// The `/agents` flows for packs (GitHub repos with agents, skills and commands): install, update, remove, and the review of a pack's
+// hooks (the one thing of a pack that runs commands, so it is off until the user has read them and enables it). Each step is a dialog
 // that replaces the one before it. Nothing is installed or swapped before the preview is accepted, and a dialog that is closed
 // (Esc) without an answer declines. Esc on the dialog shown while git runs stops git. A flow closes only a dialog it opened and
 // that is still showing: the dialog provider has one slot and closes whatever is in it, so the flow tracks its own.
 
 const ERROR_TOAST_MS = 8000;
-const HOOKS_NOTE = "Pack hooks and MCP servers are not run.";
+// Two short lines: a long one wraps in the dialog.
+const HOOKS_NOTES = ["Pack hooks stay off until you enable them.", "MCP servers are not run."];
+const HOOKS_WARNING = "These commands run on your machine with your permissions while one of this pack's agents is selected.";
 
 type Flow = {
   dialog: DialogContextValue;
@@ -48,9 +64,17 @@ export function previewLines(preview: PackPreview): string[] {
     ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model].filter(Boolean).join(", ")})`),
     ...list("Skills", preview.skills),
     ...list("Commands", preview.commands),
+    ...(preview.hooks
+      ? [
+          preview.hooks.usable
+            ? `hooks: present, off \u2014 enable with /agents hooks ${preview.id}`
+            : `hooks: present but unusable (${preview.hooks.reason}); they can never be enabled`,
+        ]
+      : []),
+    ...(preview.hooksTurnedOff ? [`Hooks turned off; review them again with /agents hooks ${preview.id}`] : []),
     ...list("Not used", preview.ignored),
     ...preview.warnings.map((warning) => `Check: ${warning}`),
-    HOOKS_NOTE,
+    ...HOOKS_NOTES,
   ];
 }
 
@@ -138,7 +162,7 @@ function Question({ lines, options, shown, onAnswer }: { lines: string[]; option
     <box flexDirection="column" gap={1}>
       <box flexDirection="column">
         {lines.map((line, index) => (
-          <text key={index} wrapMode="word" width="100%" attributes={line === HOOKS_NOTE ? TextAttributes.DIM : undefined}>
+          <text key={index} wrapMode="word" width="100%" attributes={HOOKS_NOTES.includes(line) ? TextAttributes.DIM : undefined}>
             {line}
           </text>
         ))}
@@ -201,7 +225,8 @@ async function runUpdate(flow: Flow, pack: PackEntry) {
     if (result.status === "cancelled") return flow.toast.show({ variant: "info", message: "Update cancelled" });
     if (result.status === "up-to-date") return flow.toast.show({ variant: "info", message: `${pack.id} is up to date` });
     flow.onChanged();
-    flow.toast.show({ variant: "success", message: `Updated ${pack.id} to ${shortSha(result.pack.commit)}` });
+    const off = result.preview.hooksTurnedOff ? `. Hooks turned off; review them again with /agents hooks ${pack.id}` : "";
+    flow.toast.show({ variant: "success", message: `Updated ${pack.id} to ${shortSha(result.pack.commit)}${off}`, ...(off ? { duration: ERROR_TOAST_MS } : {}) });
   } catch (error) {
     run.close();
     if (run.signal.aborted) return flow.toast.show({ variant: "info", message: "Update cancelled" });
@@ -227,8 +252,70 @@ async function runRemove(flow: Flow, id: string, commit?: string) {
   }
 }
 
+const matcherText = (matcher: string | undefined) => (matcher === undefined || matcher === "" || matcher === "*" ? "all tools" : `matcher: ${matcher}`);
+
+const sizeText = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`);
+
+/** Everything the user decides on when enabling a pack's hooks: the commit, each event with its matcher and the exact commands, the files, the engines. */
+export function hooksReviewLines(id: string, info: Extract<PackHooksInfo, { state: "off" | "on" }>): string[] {
+  const events = (config: HooksConfig) =>
+    hookEvents(config).flatMap((event) =>
+      config[event]!.flatMap((group) => [
+        `${event} (${matcherText(group.matcher)})`,
+        ...group.hooks.map((hook) => `   $ ${hook.command}${hook.timeout === undefined ? "" : ` (timeout ${hook.timeout} s)`}`),
+      ]),
+    );
+  return [
+    `${id} @ ${shortSha(info.commit)}`,
+    info.state === "on" ? "Hooks are on. They run these commands:" : "Hooks are off. Enabling runs these commands:",
+    ...(info.state === "off" && info.changed ? ["They changed since you last enabled them, so they were turned off."] : []),
+    ...events(info.config),
+    `Files in ${HOOKS_DIR}/:`,
+    ...info.files.map((file) => `   ${file.path} (${sizeText(file.size)})`),
+    engineLine(hookEvents(info.config)),
+    HOOKS_WARNING,
+  ];
+}
+
+/** `/agents hooks <owner/repo>`: shows the hooks and enables them on consent (or turns them off, when they are on). */
+async function runHooks(flow: Flow, id: string) {
+  if (!listPacks().some((pack) => pack.id === id)) return failure(flow, `${id} is not installed`);
+  const info = inspectPackHooks(id);
+  if (info.state === "none") return failure(flow, `${id} has no hooks`);
+  if (info.state === "unusable") return failure(flow, `The hooks of ${id} cannot be enabled: ${info.reason}`);
+
+  const run = startRun(flow);
+  const yes = await ask(run, "Pack hooks", hooksReviewLines(id, info), info.state === "on" ? "Turn off" : "Enable");
+  run.close();
+  if (!yes) return;
+  try {
+    if (info.state === "on") {
+      await disablePackHooks(id);
+      flow.onChanged();
+      return flow.toast.show({ variant: "success", message: `Turned off hooks of ${id}` });
+    }
+    // The files the user read are the ones that are enabled: the digest of what was shown must still be what is on disk.
+    await enablePackHooks(id, { reviewed: { commit: info.commit, digest: info.digest } });
+    flow.onChanged();
+    flow.toast.show({ variant: "success", message: `Enabled hooks of ${id}: they run while one of its agents is selected`, duration: ERROR_TOAST_MS });
+  } catch (error) {
+    failure(flow, error);
+  }
+}
+
+/** `/agents hooks <owner/repo> off`: no question, nothing runs. */
+async function runHooksOff(flow: Flow, id: string) {
+  try {
+    const result = await disablePackHooks(id);
+    flow.onChanged();
+    flow.toast.show({ variant: "info", message: result.status === "disabled" ? `Turned off hooks of ${id}` : `Hooks of ${id} were already off` });
+  } catch (error) {
+    failure(flow, error);
+  }
+}
+
 /**
- * `/agents install <owner/repo[@ref]>`, `/agents update [<owner/repo>]` and `/agents remove <owner/repo>`, typed instead of picked:
+ * `/agents install <owner/repo[@ref]>`, `/agents update [<owner/repo>]`, `/agents remove <owner/repo>` and `/agents hooks [<owner/repo> [off]]`, typed instead of picked:
  * the same flows the dialog's rows open (preview and consent included). Anything else is an error toast with the usage line.
  */
 export function runPackCommand(args: string, flow: Flow): Promise<void> | void {
@@ -239,8 +326,15 @@ export function runPackCommand(args: string, flow: Flow): Promise<void> | void {
     case "install":
       return runInstall(flow, command.spec);
     case "picker":
-      flow.dialog.open({ title: "Update a pack", children: <PackPickerDialogContent action={command.action} onChanged={flow.onChanged} /> });
+      flow.dialog.open({
+        title: command.action === "hooks" ? "Pack hooks" : "Update a pack",
+        children: <PackPickerDialogContent action={command.action} onChanged={flow.onChanged} />,
+      });
       return;
+    case "hooks":
+      return runHooks(flow, command.id);
+    case "hooks-off":
+      return runHooksOff(flow, command.id);
     case "update":
     case "remove": {
       const { id } = command;
@@ -268,28 +362,35 @@ export const PackInstallDialogContent = ({ onChanged }: { onChanged: () => void 
   );
 };
 
-type PickerProps = { onChanged: () => void; action: "update" | "remove" };
+type PickerProps = { onChanged: () => void; action: "update" | "remove" | "hooks" };
 
-/** "Update packs…" and "Remove a pack…": the installed packs, one is picked. */
+const HOOKS_STATE_TEXT = { none: "", unusable: "hooks unusable", off: "hooks off", on: "hooks on" } as const;
+
+/** "Update packs…", "Remove a pack…" and "Pack hooks…": the installed packs (for hooks, those that have a hooks folder), one is picked. */
 export const PackPickerDialogContent = ({ onChanged, action }: PickerProps) => {
   const flow = useFlow(onChanged);
-  const packs = listPacks();
+  const [packs] = useState(() => (action === "hooks" ? listPacks().filter((pack) => inspectPackHooks(pack.id).state !== "none") : listPacks()));
+  const select = (pack: PackEntry) => {
+    if (action === "update") return runUpdate(flow, pack);
+    if (action === "hooks") return runHooks(flow, pack.id);
+    return runRemove(flow, pack.id, pack.commit);
+  };
   return (
     <DialogSearchList
       items={packs}
-      onSelect={(pack) => void (action === "update" ? runUpdate(flow, pack) : runRemove(flow, pack.id, pack.commit))}
+      onSelect={(pack) => void select(pack)}
       filterFn={(pack, query) => pack.id.includes(query.toLowerCase())}
       renderItem={(pack, isSelected) => (
         <box flexDirection="row" gap={1} overflow="hidden">
           <text selectable={false} fg={isSelected ? "black" : "white"}>{`   ${pack.id}`}</text>
           <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-            {`${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
+            {action === "hooks" ? HOOKS_STATE_TEXT[inspectPackHooks(pack.id).state] : `${shortSha(pack.commit)}${pack.ref ? ` @${pack.ref}` : ""}`}
           </text>
         </box>
       )}
       getKey={(pack) => pack.id}
       placeholder="Search packs"
-      emptyText="No packs installed"
+      emptyText={action === "hooks" ? "No installed pack has hooks" : "No packs installed"}
     />
   );
 };

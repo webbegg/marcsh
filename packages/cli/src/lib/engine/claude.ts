@@ -5,6 +5,7 @@ import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../ag
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
+import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import {
   applySdkMessage,
@@ -67,8 +68,13 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
   let chat: Query | null = null;
   const done = (async () => {
     const pluginPath = marcshPluginPath();
-    // The pack's view has only skills and commands (no hooks, MCP or agents); a view that is gone is left out.
-    const packPath = packPluginPath && existsSync(join(packPluginPath, ".claude-plugin", "plugin.json")) ? packPluginPath : null;
+    // The pack's view has its skills and commands, and its hooks/ only while the user has enabled them and the files still match what was
+    // approved (S16: Claude then runs them natively from the view). Otherwise they are taken out of the view before Claude can load it.
+    // Never MCP servers or agents. A view that is gone, or whose hooks could not be kept out, is left out.
+    const packTurn = packPluginPath ? prepareViewForTurn(packPluginPath) : undefined;
+    if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
+    const packView = packTurn?.view;
+    const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])].map((path) => ({ type: "local" as const, path }));
     try {
       chat = query({

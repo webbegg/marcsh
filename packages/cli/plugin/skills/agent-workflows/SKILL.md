@@ -86,7 +86,8 @@ commands/*.md                   slash commands
 ```
 
 - Skills and commands load only while one of the pack's agents is selected. Build and Plan keep marcsh's own plugin. So a skill must be reachable from the agent prompt: say in the prompt when to use which skill.
-- marcsh never runs hooks (`hooks/`, or `hooks` in `plugin.json`) or MCP servers (`.mcp.json`, `mcpServers`). Do not rely on them.
+- MCP servers (`.mcp.json`, `mcpServers`) are never run, and `hooks` in `plugin.json` is ignored. Hooks go in `hooks/hooks.json` and are opt-in (see Hooks below). Do not rely on either for the workflow to work.
+- `hooks/` (optional): `hooks/hooks.json` plus the files its commands run. Off until the user enables it.
 - Agent IDs are `owner/repo/<file stem>` (personal agents: `user/<file stem>`). The menus show the short `name`; when two agents share a name (any case) they show `owner/repo/Name`. Built-in names always stay short, so avoid naming an agent Build or Plan.
 - Pack IDs are lowercase `owner/repo`.
 
@@ -104,6 +105,37 @@ commands/*.md                   slash commands
 - Frontmatter that is not clean: an opening or closing `---` line with other text on it, no closing `---`, or YAML that does not parse (quote a `description` that contains `: `).
 
 Not a rejection, but shown as a warning in the preview: `allowed-tools` in a skill or command frontmatter pre-approves tools. Remove it unless the skill needs it.
+
+## Hooks (opt-in)
+
+A pack can ship hooks, but they are opt-in and off by default. Nothing in `hooks/` runs when a pack is installed or updated: the preview only says `hooks: present, off`. Ship them as `hooks/hooks.json` (Claude's plugin format) plus the regular files its commands run:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/check.sh\"", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+- Only `"type": "command"` hooks are supported, each `command` on one line of at most 2,000 characters with no control characters. Any other hook type, key or shape makes the hooks unusable: the pack still installs, the preview says so, and they can never be enabled.
+- Limits of `hooks/`: no symlinks or special files, each file at most 1 MB, 5 MB in total. A folder over a limit is unusable too.
+- `matcher` follows Claude's rules: empty or `*` is every tool, a name or an `a|b` list matches exactly, anything else is a regular expression on the tool name.
+- PreToolUse and PostToolUse run on Claude and pi. All other events (SessionStart, Stop...) run on Claude only; selecting the agent on pi warns about them.
+- Hooks run only while one of the pack's agents is selected, never for Build, Plan or personal agents.
+
+**Enabling.** `/agents hooks owner/repo` (or the "Pack hooks…" row of `/agents`) shows the commit, every event with its matcher and the exact command, the files under `hooks/` with sizes, which events run on which engine, and the line that these commands run on the user's machine with their permissions. The choices are Cancel (the default) and Enable. `/agents hooks owner/repo off` turns them off without asking.
+
+**Re-consent.** Consent is pinned to the pack commit and to a digest of every file under `hooks/`. An update that moves the commit turns hooks off ("Hooks turned off; review them again with /agents hooks owner/repo"), and files that change on disk after enabling are dropped for the turn with a warning, so the user has to review them again.
+
+**On pi** marcsh runs PreToolUse and PostToolUse itself, with Claude's contract: `sh -c <command>` in the project directory, `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` set, JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`, plus `tool_response` for PostToolUse) and Claude's tool names (Bash, Edit, Write, Read, Grep, Glob, LS, Task, `mcp__server__tool`).
+
+- Exit code 2 blocks the call and stderr is the reason. `{"decision": "block", "reason": ...}` or `hookSpecificOutput.permissionDecision: "deny"` block too. A blocked call never asks.
+- `allow`, `ask` and `updatedInput` have no effect: hooks can only narrow, and marcsh's approval still asks about the model's own call.
+- Other exit codes do not block; stderr is shown as a notice. A PostToolUse exit 2 reaches the model as feedback next to the tool's result.
+- Each hook has a timeout of 60 s unless its `timeout` (seconds) says otherwise, and its whole process group is killed. A PreToolUse hook that times out blocks the call (fail closed; Claude lets the call go on).
 
 ## Workflow with the user
 
@@ -131,4 +163,5 @@ Check each item on the files; report any that fails and fix it first.
 - [ ] `tools`, if present, names only the groups above (selecting the agent shows no `unknown tools` warning).
 - [ ] No `allowed-tools`, or the user knows why it is there.
 - [ ] Each agent prompt names the skills and commands it expects to use.
-- [ ] No hooks or MCP servers are needed for the workflow to work.
+- [ ] If the pack ships hooks: `hooks/hooks.json` has only `"type": "command"` hooks, nothing under `hooks/` is a symlink or over 1 MB (5 MB in all), and the user knows what each command does.
+- [ ] The workflow does not depend on hooks or MCP servers (hooks are opt-in, MCP servers are never run).
