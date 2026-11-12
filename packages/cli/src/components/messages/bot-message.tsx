@@ -17,7 +17,7 @@ type Props = {
   model: string;
   mode: ModeType;
   /** The name of the agent that answered; without it, the mode's name. */
-  agent?: string;
+  agentName?: string;
   durationMs?: number;
   streaming?: boolean;
 };
@@ -88,7 +88,7 @@ export function BotMessage({
   parts,
   model,
   mode,
-  agent,
+  agentName,
   durationMs,
   streaming = false,
 }: Props) {
@@ -180,7 +180,7 @@ export function BotMessage({
           <text fg={mode === Mode.PLAN ? colors.planMode : colors.primary}>◉</text>
           <box flexDirection="row" gap={1}>
             <text>
-              {agent ?? (mode === Mode.PLAN ? "Plan" : "Build")}
+              {agentName ?? (mode === Mode.PLAN ? "Plan" : "Build")}
             </text>
             <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
               ›

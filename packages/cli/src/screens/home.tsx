@@ -11,7 +11,7 @@ export function Home() {
 
   const handleSubmit = useCallback(
     (text: string) => {
-      navigate("/sessions/new", { state: { message: text, mode, model, agent: agent.id } });
+      navigate("/sessions/new", { state: { message: text, mode, model, agentId: agent.id } });
     },
     [navigate, agent.id, mode, model],
   );

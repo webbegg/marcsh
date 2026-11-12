@@ -17,6 +17,16 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   },
 }));
 
+// An agent named Slow takes a while to work out its warnings, as a pack with many hook files can.
+const realAgents = { ...(await import("../lib/agents")) };
+mock.module("../lib/agents", () => ({
+  ...realAgents,
+  agentWarnings: async (agent: { name: string }, engineId: string) => {
+    if (agent.name === "Slow") await new Promise((resolve) => setTimeout(resolve, 300));
+    return realAgents.agentWarnings(agent as never, engineId);
+  },
+}));
+
 const { testRender } = await import("@opentui/react/test-utils");
 const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
@@ -122,6 +132,21 @@ describe("selecting agents (S1, S9)", () => {
     expect(listed).toContain("Build Edits files and runs commands");
   });
 
+  test("/agents tags an agent whose tools field narrows it, and only that one [R3-003]", async () => {
+    writeAgent("limited.md", "---\nname: Limited\npermission: build\ntools:\n  bash: false\n---\nNo shell.");
+    writeAgent("open.md", "---\nname: Open\n---\nAnything.");
+    await openHome();
+
+    await type("/agents");
+    await enter();
+    const listed = frame();
+    expect(listed).toContain("Limited (build) (limited tools)");
+    expect(listed).toContain("Reviewer (read-only)");
+    expect(listed).toContain("Open (build)");
+    expect(listed).not.toContain("Open (build) (limited tools)");
+    expect(listed).not.toContain("Reviewer (read-only) (limited tools)");
+  });
+
   test("/agents says when packs.json cannot be read, as a warning that is not a row [R4-003]", async () => {
     const lock = join(process.env.MARCSH_PACKS_DIR!, "packs.json");
     mkdirSync(process.env.MARCSH_PACKS_DIR!, { recursive: true });
@@ -153,13 +178,40 @@ describe("selecting agents (S1, S9)", () => {
 
   test("an agent with fields marcsh cannot apply is selectable and warns in one line (S7)", async () => {
     rmSync(join(agentsDir, "reviewer.md"));
-    writeAgent("tooled.md", "---\nname: Tooled\ntools:\n  bash: false\n---\nNo shell.");
+    writeAgent("tooled.md", "---\nname: Tooled\ntemperature: 0.2\n---\nNo shell.");
     await openHome();
 
     await tab();
     await tab();
     const text = frame();
     expect(text).toContain("Tooled › ");
-    expect(text).toContain("Warning: Tooled: ignored tools");
+    expect(text).toContain("Warning: Tooled: ignored temperature");
+  });
+
+  test("a warning that arrives after the user moved on to another agent is not shown", async () => {
+    rmSync(join(agentsDir, "reviewer.md"));
+    writeAgent("slow.md", "---\nname: Slow\ntemperature: 0.2\n---\nSlowly.");
+    writeAgent("zed.md", "---\nname: Zed\n---\nQuickly.");
+    await openHome();
+
+    await tab();
+    await tab();
+    expect(frame()).toContain("Slow › ");
+    await tab();
+    expect(frame()).toContain("Zed › ");
+    await settle(400);
+    expect(frame()).toContain("Zed › ");
+    expect(frame()).not.toContain("Slow: ignored temperature");
+  });
+
+  test("the same warning is shown when the user stays on that agent", async () => {
+    rmSync(join(agentsDir, "reviewer.md"));
+    writeAgent("slow.md", "---\nname: Slow\ntemperature: 0.2\n---\nSlowly.");
+    await openHome();
+
+    await tab();
+    await tab();
+    await settle(400);
+    expect(frame()).toContain("Warning: Slow: ignored temperature");
   });
 });

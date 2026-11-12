@@ -1,9 +1,11 @@
 import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
+import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import {
   applySdkMessage,
@@ -28,11 +30,15 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   const canUseTool: CanUseTool = async (toolName, input, options) => {
+    // Backstop for `disallowedTools` (the SDK documents its MCP wildcard for agent definitions; this keeps a denied MCP call from ever
+    // reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
+    if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
+
     const asked = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
     if (asked) {
       const answers = await host.askQuestions(asked.questions, options.signal);
@@ -57,11 +63,16 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
     });
   };
 
+  const disallowedTools = claudeDeniedTools(deniedTools ?? []);
+
   let chat: Query | null = null;
   const done = (async () => {
     const pluginPath = marcshPluginPath();
-    // The pack's view has only skills and commands (no hooks, MCP or agents); a view that is gone is left out.
-    const packPath = packPluginPath && existsSync(join(packPluginPath, ".claude-plugin", "plugin.json")) ? packPluginPath : null;
+    // The view's hooks/ stay only while enabled and matching what the user approved (run through marcsh's filter); otherwise they are removed before Claude loads it.
+    const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
+    if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
+    const packView = packTurn?.view;
+    const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])].map((path) => ({ type: "local" as const, path }));
     try {
       chat = query({
@@ -75,6 +86,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
           systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
           settingSources: ["user", "project", "local"],
           canUseTool,
+          ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
           ...(plugins.length > 0 ? { plugins } : {}),
         },
       });

@@ -2,19 +2,27 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
-import { Mode } from "./modes";
-import { listPacks, packAgentsDir, packPluginDir, packsRoot } from "./packs";
+import { unsupportedGroups } from "./agent-tools";
+import { Mode, type ModeType } from "./modes";
+import { hookEngines, hookEvents } from "./pack-hooks";
+import { inspectPackHooks, listPacks, packAgentsDir, packPluginDir, packsRoot, packViewLocation } from "./packs";
 import { printable } from "./safe-text";
 
 // Other modules import the agent type and the file parser from here.
 export { parseAgentFile, type Agent };
 
+export const BUILD_AGENT_ID = "build";
+export const PLAN_AGENT_ID = "plan";
+
 export const BUILTIN_AGENTS: readonly Agent[] = [
-  { id: "build", name: "Build", description: "Edits files and runs commands, asking first", mode: Mode.BUILD, ignored: [] },
-  { id: "plan", name: "Plan", description: "Reads and plans; changes nothing", mode: Mode.PLAN, ignored: [] },
+  { id: BUILD_AGENT_ID, name: "Build", description: "Edits files and runs commands, asking first", mode: Mode.BUILD, ignored: [] },
+  { id: PLAN_AGENT_ID, name: "Plan", description: "Reads and plans; changes nothing", mode: Mode.PLAN, ignored: [] },
 ];
 
 const BUILD_AGENT = BUILTIN_AGENTS[0]!;
+
+/** The ID of the built-in agent that runs in `mode`. */
+export const builtinAgentId = (mode: ModeType) => (mode === Mode.PLAN ? PLAN_AGENT_ID : BUILD_AGENT_ID);
 
 /** Where the user's own agents live; global only, never inside a project. */
 export function agentsDir() {
@@ -46,6 +54,8 @@ function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boo
               description: agent.description && printable(agent.description),
               model: agent.model && printable(agent.model),
               ignored: agent.ignored.map(printable),
+              ...(agent.unknownTools ? { unknownTools: agent.unknownTools.map(printable) } : {}),
+              ...(agent.toolNotes ? { toolNotes: agent.toolNotes.map(printable) } : {}),
             }
           : agent,
       );
@@ -112,12 +122,37 @@ export function agentModelFits(model: string, engineId: string) {
   return !model.includes("/") && (/^claude/i.test(model) || CLAUDE_ALIAS.test(model));
 }
 
+/** What the engine will not do with the hooks of the agent's pack : events it cannot run, or consent that no longer covers the files. */
+async function hookWarnings(agent: Agent, engineId: string): Promise<string[]> {
+  const location = agent.pack && agent.pluginDir ? packViewLocation(agent.pluginDir) : null;
+  if (!location) return [];
+  try {
+    const info = await inspectPackHooks(location.id, { root: location.root });
+    if (info.state === "off" && info.changed) {
+      return [`${location.id}: hooks are off because their files changed since you approved them; review them with /agents hooks ${location.id}`];
+    }
+    if (info.state !== "on" || engineId !== "pi") return [];
+    // pi runs the tool-call events itself; the rest are Claude's.
+    const { claudeOnly } = hookEngines(hookEvents(info.config));
+    return claudeOnly.length > 0 ? [`${location.id}: hooks for ${claudeOnly.join(", ")} run on Claude only`] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** One line per part of the agent that the engine will not apply; shown when the agent is selected. */
-export function agentWarnings(agent: Agent, engineId: string): string[] {
+export async function agentWarnings(agent: Agent, engineId: string): Promise<string[]> {
   const warnings: string[] = [];
   if (agent.ignored.length > 0) warnings.push(`${agent.name}: ignored ${agent.ignored.join(", ")}`);
+  if (agent.unknownTools && agent.unknownTools.length > 0) warnings.push(`${agent.name}: unknown tools ${agent.unknownTools.join(", ")}`);
+  for (const note of agent.toolNotes ?? []) warnings.push(`${agent.name}: ${note}`);
+  // pi has no web tools to take away: say so only when the agent asked for it by name (a list or `*` never does).
+  for (const group of unsupportedGroups(agent.tools?.deny ?? [], engineId)) {
+    if (agent.tools?.named?.includes(group)) warnings.push(`${agent.name}: ${group} tools are not available on ${engineId}, so \`${group}: false\` changes nothing`);
+  }
   if (agent.model && !agentModelFits(agent.model, engineId)) {
     warnings.push(`${agent.name}: model "${agent.model}" is ignored on ${engineId}; the session model is used`);
   }
+  warnings.push(...(await hookWarnings(agent, engineId)));
   return warnings;
 }

@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import type { AgentTools } from "../lib/agent-tools";
 import type { ModeType } from "../lib/modes";
 import type { ChatMessage } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
@@ -95,8 +96,9 @@ function decline(request: PendingRequest) {
   }
 }
 
-/** `agent` is the one answering this turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one. */
-export type SubmitParams = { userText: string; mode: ModeType; model: string; agent?: { name: string; prompt?: string; pluginDir?: string } };
+/** The agent answering a turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
+export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools };
+export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -137,7 +139,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   }, []);
 
   const submit = useCallback(
-    async ({ userText, mode, model, agent }: SubmitParams) => {
+    async ({ userText, mode, model, turnAgent }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
@@ -147,7 +149,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
       let replyId = crypto.randomUUID();
       const replyIds = [replyId];
-      const metadata = { mode, model, ...(agent ? { agent: agent.name } : {}) };
+      const metadata = { mode, model, ...(turnAgent ? { agent: turnAgent.name } : {}) };
       updateMessages((prev) => [
         ...prev,
         { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
@@ -282,8 +284,9 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             cwd: session.cwd,
             mode,
             model,
-            systemPromptAppend: agent?.prompt,
-            ...(agent?.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
+            systemPromptAppend: turnAgent?.prompt,
+            ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
+            ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             signal: abortController.signal,
           },

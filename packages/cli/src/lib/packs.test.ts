@@ -162,7 +162,9 @@ describe("installPack", () => {
       agents: [{ name: "Reviewer", permission: "read-only", model: "openai/gpt-5" }],
       skills: ["lint"],
       commands: ["ship"],
-      ignored: ["hooks/", ".mcp.json", "subagent helper.md"],
+      // `{"hooks":{}}` declares nothing to run, so the folder is shown as unusable (see pack-hooks.test.ts for the enabled flow).
+      hooks: { usable: false, reason: "hooks.json declares no command hooks" },
+      ignored: [".mcp.json", "subagent helper.md"],
       warnings: [],
     });
 
@@ -176,6 +178,19 @@ describe("installPack", () => {
 
     expect(readFileSync(join(root, "acme/flows/src/agents/reviewer.md"), "utf8")).toBe(AGENT);
     expect(git(join(root, "acme/flows/src"), "rev-parse", "HEAD")).toBe(sha);
+  });
+
+  test("the preview says what each agent's tools field takes away", async () => {
+    makeRepo("acme/limited", {
+      "agents/narrow.md": "---\nname: Narrow\npermission: build\ntools:\n  bash: false\n  webfetch: false\n---\nNo shell.",
+      "agents/lister.md": "---\nname: Lister\ntools: Read, Grep\n---\nReads.",
+      "agents/plain.md": "---\nname: Plain\n---\nAnything.",
+    });
+    let preview: PackPreview | undefined;
+    await installPack("acme/limited", options((p) => ((preview = p), true)));
+    const byName = Object.fromEntries(preview!.agents.map((agent) => [agent.name, agent.tools]));
+    expect(byName).toEqual({ Narrow: "no bash, web", Lister: "tools: read, ask", Plain: undefined });
+    expect(preview!.agents.find((agent) => agent.name === "Plain")).not.toHaveProperty("tools");
   });
 
   test("the plugin view has a manifest and skills/commands only: no hooks, MCP or agents", async () => {
@@ -283,6 +298,8 @@ describe("installPack", () => {
   test("a skill or command that declares hooks rejects the pack; allowed-tools is a warning", async () => {
     makeRepo("acme/hooked", { ...goodPack, "skills/lint/SKILL.md": "---\nname: lint\nhooks:\n  PreToolUse: x\n---\nL" });
     await expect(installPack("acme/hooked", options())).rejects.toThrow(/hooks/);
+    // The way out is the supported one: hooks/hooks.json, which stays off until the user enables it.
+    await expect(installPack("acme/hooked", options())).rejects.toThrow(/declare them in hooks\/hooks\.json.*\/agents hooks/);
 
     makeRepo("acme/tooled", { ...goodPack, "commands/ship.md": "---\nallowed-tools: Bash(*)\n---\nShip" });
     let preview: PackPreview | undefined;
@@ -715,36 +732,36 @@ describe("the plugin view is a copy of what was scanned (T6 verify)", () => {
 });
 
 describe("previewPack", () => {
-  test("bidi controls and zero-width characters never reach the preview [A6]", () => {
+  test("bidi controls and zero-width characters never reach the preview [A6]", async () => {
     const [rlo, zwsp, lri, pdi, bom, rlm] = [0x202e, 0x200b, 0x2066, 0x2069, 0xfeff, 0x200f].map((code) => String.fromCharCode(code));
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     mkdirSync(join(dir, "skills", `ev${rlo}il${zwsp}`), { recursive: true });
     writeFileSync(join(dir, "skills", `ev${rlo}il${zwsp}`, "SKILL.md"), "x");
     writeFileSync(join(dir, "agents/a.md"), `---\nname: "Fi${lri}ne${pdi}${bom}"\nmodel: "m${rlm}"\n---\nA`);
-    const preview = previewPack(dir, { id: "acme/x", commit: "abc" });
+    const preview = await previewPack(dir, { id: "acme/x", commit: "abc" });
     expect(preview.agents[0]).toEqual({ name: "Fine", permission: "build", model: "m" });
     expect(preview.skills).toEqual(["evil"]);
   });
 
-  test("terminal control characters in names never reach the preview", () => {
+  test("terminal control characters in names never reach the preview", async () => {
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     mkdirSync(join(dir, "skills", "evil\u001b]0;pwn\u0007"), { recursive: true });
     writeFileSync(join(dir, "skills", "evil\u001b]0;pwn\u0007", "SKILL.md"), "x");
     writeFileSync(join(dir, "agents/a.md"), "---\nname: \"Fine\u001b[2J\u0007\"\nmodel: m\u001b[31m\n---\nA");
-    const preview = previewPack(dir, { id: "acme/x", commit: "abc" });
+    const preview = await previewPack(dir, { id: "acme/x", commit: "abc" });
     expect(JSON.stringify(preview)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     expect(preview.agents[0]!.name).toBe("Fine[2J");
     expect(preview.skills).toEqual(["evil]0;pwn"]);
   });
 
-  test("reads a directory without running or following anything", () => {
+  test("reads a directory without running or following anything", async () => {
     const dir = join(work, "dir");
     mkdirSync(join(dir, "agents"), { recursive: true });
     writeFileSync(join(dir, "agents/b.md"), "---\nname: B\n---\nB");
     writeFileSync(join(dir, "agents/a.md"), "---\nname: A\npermission: read-only\n---\nA");
-    expect(previewPack(dir, { id: "acme/x", commit: "abc" })).toEqual({
+    expect(await previewPack(dir, { id: "acme/x", commit: "abc" })).toEqual({
       id: "acme/x",
       commit: "abc",
       agents: [

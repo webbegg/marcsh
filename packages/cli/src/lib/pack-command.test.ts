@@ -49,6 +49,28 @@ describe("parsePackCommand", () => {
     expect((command as { message: string }).message.endsWith(` ${PACK_USAGE}`)).toBe(true);
   });
 
+  test("hooks takes the pack, lower-cased; `off` turns them off without asking", () => {
+    expect(parsePackCommand("hooks Acme/Flows")).toEqual({ kind: "hooks", id: "acme/flows" });
+    expect(parsePackCommand("hooks https://github.com/acme/flows")).toEqual({ kind: "hooks", id: "acme/flows" });
+    expect(parsePackCommand("hooks acme/flows off")).toEqual({ kind: "hooks-off", id: "acme/flows" });
+    expect(parsePackCommand("  hooks   acme/flows   off ")).toEqual({ kind: "hooks-off", id: "acme/flows" });
+  });
+
+  test("hooks alone opens the picker of packs that have hooks", () => {
+    expect(parsePackCommand("hooks")).toEqual({ kind: "picker", action: "hooks" });
+  });
+
+  test("hooks refuses a ref, a word other than off, and extra words; the usage line names hooks", () => {
+    expect(PACK_USAGE).toContain("hooks [<owner/repo> [off]]");
+    expect(parsePackCommand("hooks acme/flows@v2")).toEqual({
+      kind: "usage",
+      message: `acme/flows@v2 names a ref; hooks takes owner/repo. ${PACK_USAGE}`,
+    });
+    for (const args of ["hooks acme/flows on", "hooks acme/flows off now", "hooks off", "hooks acme/flows off off"]) {
+      expect(parsePackCommand(args).kind, args).toBe("usage");
+    }
+  });
+
   test("an unknown verb, no verb, or extra words show the usage line", () => {
     for (const args of ["", "   ", "list", "install a/b c/d", "update a/b extra", "remove a/b extra"]) {
       expect(parsePackCommand(args)).toEqual({ kind: "usage", message: PACK_USAGE });
