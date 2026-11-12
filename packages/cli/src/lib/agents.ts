@@ -122,7 +122,7 @@ export function agentModelFits(model: string, engineId: string) {
   return !model.includes("/") && (/^claude/i.test(model) || CLAUDE_ALIAS.test(model));
 }
 
-/** What the engine will not do with the hooks of the agent's pack (S16): events it cannot run, or consent that no longer covers the files. */
+/** What the engine will not do with the hooks of the agent's pack : events it cannot run, or consent that no longer covers the files. */
 async function hookWarnings(agent: Agent, engineId: string): Promise<string[]> {
   const location = agent.pack && agent.pluginDir ? packViewLocation(agent.pluginDir) : null;
   if (!location) return [];
@@ -146,9 +146,10 @@ export async function agentWarnings(agent: Agent, engineId: string): Promise<str
   if (agent.ignored.length > 0) warnings.push(`${agent.name}: ignored ${agent.ignored.join(", ")}`);
   if (agent.unknownTools && agent.unknownTools.length > 0) warnings.push(`${agent.name}: unknown tools ${agent.unknownTools.join(", ")}`);
   for (const note of agent.toolNotes ?? []) warnings.push(`${agent.name}: ${note}`);
-  // The one group an engine cannot apply today: pi has no web tools to take away.
-  const unsupported = unsupportedGroups(agent.tools?.deny ?? [], engineId);
-  if (unsupported.length > 0) warnings.push(`${agent.name}: tools ${unsupported.join(", ")} is not applied on ${engineId} (it has no ${unsupported.join("/")} tools)`);
+  // pi has no web tools to take away: say so only when the agent asked for it by name (a list or `*` never does).
+  for (const group of unsupportedGroups(agent.tools?.deny ?? [], engineId)) {
+    if (agent.tools?.named?.includes(group)) warnings.push(`${agent.name}: ${group} tools are not available on ${engineId}, so \`${group}: false\` changes nothing`);
+  }
   if (agent.model && !agentModelFits(agent.model, engineId)) {
     warnings.push(`${agent.name}: model "${agent.model}" is ignored on ${engineId}; the session model is used`);
   }

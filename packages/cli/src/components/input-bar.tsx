@@ -318,10 +318,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
+  const agentIdRef = useRef(agent.id);
+  agentIdRef.current = agent.id;
   // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
   const warnAboutAgent = useCallback(async (selected: Agent) => {
     const warnings = await agentWarnings(selected, engineId);
-    if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
+    if (warnings.length > 0 && agentIdRef.current === selected.id) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
   }, [engineId, toast]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();

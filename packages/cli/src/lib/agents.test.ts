@@ -72,9 +72,9 @@ describe("parseAgentFile", () => {
       ["---", "name: x", "tools:", "  bash: false", "temperature: 0.2", "permission:", "  edit: deny", "---", "Body"].join("\n"),
       { pack: "user", file: "x.md" },
     );
-    // `tools` is applied now (S15): it is no longer listed.
+    // `tools` is applied now: it is no longer listed.
     expect(agent?.ignored).toEqual(["temperature", "permission"]);
-    expect(agent?.tools).toEqual({ deny: ["bash"] });
+    expect(agent?.tools).toEqual({ deny: ["bash"], named: ["bash"] });
     // An OpenCode permission map is not one of marcsh's two values: the agent keeps the build behaviour.
     expect(agent?.mode).toBe(Mode.BUILD);
   });
@@ -123,20 +123,30 @@ describe("parseAgentFile", () => {
   });
 });
 
+describe("an agent file made to be slow [S15]", () => {
+  test("a pack agent file of 256 KB with a run of spaces parses in well under 100 ms", () => {
+    const start = performance.now();
+    const spaces = " ".repeat(250_000);
+    parseAgentFile(`---\nname: x\ntools:\n  bash:${spaces}false\n---\nbody`, { pack: "p", file: "x.md" });
+    parseAgentFile(`---\nname: x\ntools:\n  bash: false${spaces}x\n---\nbody`, { pack: "p", file: "x.md" });
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+});
+
 describe("the tools field [S15]", () => {
   const parse = (frontmatter: string) => parseAgentFile(`---\n${frontmatter}\n---\nBody`, { pack: "user", file: "x.md" })!;
 
   test("an OpenCode map narrows the agent and is not ignored", () => {
     const agent = parse("name: X\ntools:\n  bash: false\n  write: true");
-    expect(agent.tools).toEqual({ deny: ["bash"] });
+    expect(agent.tools).toEqual({ deny: ["bash"], named: ["bash"] });
     expect(agent.ignored).toEqual([]);
     expect(agent.unknownTools).toEqual([]);
   });
 
   test("a Claude Code list keeps only the named groups", () => {
-    expect(parse("tools: Read, Grep, Glob").tools).toEqual({ deny: ["edit", "bash", "web", "task", "mcp"] });
-    expect(parse("tools: [Read, Bash]").tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
-    expect(parse("tools:\n  - Read\n  - Bash").tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+    expect(parse("tools: Read, Grep, Glob").tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+    expect(parse("tools: [Read, Bash]").tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
+    expect(parse("tools:\n  - Read\n  - Bash").tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
   });
 
   test("an agent without the field, or with a field that restricts nothing, has no tools", () => {
@@ -155,7 +165,7 @@ describe("the tools field [S15]", () => {
   test("other nested blocks stay ignored and do not leak into tools", () => {
     const agent = parse("permission:\n  bash: deny\ntools:\n  edit: false");
     expect(agent.ignored).toEqual(["permission"]);
-    expect(agent.tools).toEqual({ deny: ["edit"] });
+    expect(agent.tools?.deny).toEqual(["edit"]);
   });
 
   test("permission read-only and a tools field are independent: the mode still comes from permission", () => {
@@ -434,16 +444,28 @@ describe("agentWarnings", () => {
     expect(await agentWarnings(agent, "claude")).toEqual(["X: unknown tools Frob, Zap"]);
   });
 
-  test("a tool group the engine cannot apply is reported: pi has no web tools [S15]", async () => {
+  const WEB_ON_PI = "X: web tools are not available on pi, so `web: false` changes nothing";
+
+  test("a web denial written by name is reported on pi, which has no web tools [S15]", async () => {
     const agent = parseAgentFile("---\nname: X\ntools:\n  webfetch: false\n  bash: false\n---\nP", { pack: "user", file: "x.md" })!;
     expect(await agentWarnings(agent, "claude")).toEqual([]);
-    expect(await agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
+    expect(await agentWarnings(agent, "pi")).toEqual([WEB_ON_PI]);
   });
 
-  test("an agent with a clean tools field warns about nothing [S15]", async () => {
+  test("a list never names web, so it is not reported on pi [S15]", async () => {
     const agent = parseAgentFile("---\nname: X\ntools: Read, Grep, Bash\n---\nP", { pack: "user", file: "x.md" })!;
     expect(await agentWarnings(agent, "claude")).toEqual([]);
-    expect(await agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
+    expect(await agentWarnings(agent, "pi")).toEqual([]);
+  });
+
+  test("web denied by `*: false` is not reported on pi either [S15]", async () => {
+    const agent = parseAgentFile('---\nname: X\ntools:\n  "*": false\n  read: true\n---\nP', { pack: "user", file: "x.md" })!;
+    expect(await agentWarnings(agent, "pi")).toEqual([]);
+  });
+
+  test("`web: false` in a flow map is reported on pi [S15]", async () => {
+    const agent = parseAgentFile("---\nname: X\ntools: { web: false }\n---\nP", { pack: "user", file: "x.md" })!;
+    expect(await agentWarnings(agent, "pi")).toEqual([WEB_ON_PI]);
   });
 
   test("`ask: false` (never applied) warns on selection [S15 regression]", async () => {

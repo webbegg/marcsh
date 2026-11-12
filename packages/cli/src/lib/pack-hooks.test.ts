@@ -445,6 +445,23 @@ describe("pack hooks: consent, update and view", () => {
     expect(readFileSync(join(src(), "hooks", "hooks.json"), "utf8")).toBe(GOOD);
   });
 
+  test("enable clears the leftovers of a crashed enable, whatever its pid, without following a link", async () => {
+    await install();
+    const outside = join(work, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "keep.txt"), "mine");
+    mkdirSync(join(view(), ".hooks-4242"), { recursive: true });
+    writeFileSync(join(view(), ".hooks-4242", "check.sh"), "stale");
+    symlinkSync(outside, join(view(), ".hooks-linked"));
+    writeFileSync(join(view(), ".hooks-file"), "stale");
+
+    await enablePackHooks("acme/flows", { root, reviewed: await reviewed() });
+
+    expect(readdirSync(view()).filter((name) => name.startsWith(".hooks-"))).toEqual([]);
+    expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("mine");
+    expect(await inspectPackHooks("acme/flows", { root })).toMatchObject({ state: "on" });
+  });
+
   test("enable keeps a file's executable bit in the view", async () => {
     await install({ ...PACK });
     chmodSync(join(src(), "hooks", "check.sh"), 0o755);

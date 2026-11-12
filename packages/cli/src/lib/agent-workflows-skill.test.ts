@@ -60,6 +60,15 @@ describe("the agent-workflows skill", () => {
     expect(parse("tools: Read, Grep").tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
   });
 
+  test("explains the `*` key of the map and that pi only warns about a web denial written by name", () => {
+    const body = text();
+    expect(body).toContain('"*": false');
+    expect(body).toMatch(/"\*": false[^\n]*(every|all) group/i);
+    expect(body).toContain("`web: false` changes nothing");
+    const parse = (frontmatter: string) => parseAgentFile(`---\n${frontmatter}\n---\nBody`, { pack: "user", file: "x.md" })!;
+    expect(parse('tools:\n  "*": false\n  read: true').tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+  });
+
   test("names where a personal agent lives and the three ways to run a pack command", () => {
     const body = text();
     expect(body).toContain("~/.marcsh/agents/");
@@ -150,6 +159,12 @@ describe("the agent-workflows skill", () => {
       expect(body).toMatch(/allow[^\n]*no effect/i);
       expect(body).toMatch(/timeout[^\n]*60 s/i);
       expect(body).toMatch(/time[sd]? out[^\n]*blocks/i);
+    });
+
+    test("says hooks must be short-lived: what they leave running in the background is stopped", () => {
+      const body = text();
+      expect(body).toMatch(/short-lived/i);
+      expect(body).toMatch(/background[^\n]*(stopped|killed)/i);
     });
 
     test("says consent is pinned and re-asked after an update or any change", () => {

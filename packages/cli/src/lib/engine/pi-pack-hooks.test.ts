@@ -120,6 +120,14 @@ describe("runHookCommand", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  test("what a hook that exited normally left running in the background is stopped when the hook is judged finished", async () => {
+    const marker = join(dir, "leaked");
+    expect(await run(`(sleep 1; touch ${marker}) & exit 0`)).toMatchObject({ kind: "exit", code: 0 });
+    expect(await run(`(sleep 1; touch ${marker}) >/dev/null 2>&1 & echo done`)).toMatchObject({ kind: "exit", code: 0, stdout: "done\n" });
+    await sleep(1500);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("aborting the signal kills the command and reports it", async () => {
     const marker = join(dir, "child-ran");
     const controller = new AbortController();

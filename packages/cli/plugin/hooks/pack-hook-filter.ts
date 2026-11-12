@@ -93,17 +93,21 @@ function main() {
   if (!file || !event || group === undefined || hook === undefined) fail("usage: <commands file> <event> <group> <hook>");
   const command = originalCommand(file, event, Number(group), Number(hook));
 
-  // stdin and stderr are the hook's own; only stdout comes back through here.
-  const child = spawn("sh", ["-c", command], { stdio: ["inherit", "pipe", "inherit"] });
+  // stdin and stderr are the hook's own; only stdout comes back through here. The command gets a process group of its own so it can be
+  // stopped with everything it started.
+  const child = spawn("sh", ["-c", command], { stdio: ["inherit", "pipe", "inherit"], detached: true });
   const out: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
-  // Claude ends a hook that times out by signalling this process: the command must not outlive it.
-  for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.on(signal, () => {
+  const killGroup = () => {
+    try {
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+    } catch {
       child.kill("SIGKILL");
-      process.exit(signal === "SIGTERM" ? 143 : 130);
-    });
-  }
+    }
+  };
+  // Claude ends a hook that times out by signalling this process: the command and what it started must not outlive it.
+  process.on("exit", killGroup);
+  for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]] as const) process.on(signal, () => process.exit(code));
   child.on("error", (error) => fail(`cannot run the command: ${error.message}`));
   child.on("close", (code) => {
     const raw = Buffer.concat(out);

@@ -1,23 +1,17 @@
 /**
- * An agent's `tools` field: which of marcsh's tool groups the engine takes away for that agent's turns.
- *
- * Only narrowing is possible. The field can remove tools, never add them: a read-only agent that lists `bash: true` still cannot run
- * bash (plan mode wins), and every tool that is left still asks before it runs. Tool names differ between the engines, so the field
- * is read as groups, each one a set of names on each engine.
- *
- * The groups are the only thing the field can take away. A tool that belongs to none of them (Claude's EnterWorktree, CronCreate,
- * SendMessage or Skill; a pi user extension's own tools) is left as it is, in the map form and in the list form alike: the list
- * `Read, Grep` means "of the seven groups, only read", not "nothing else exists".
+ * An agent's `tools` field: the tool groups the engine takes away for its turns. It only narrows (plan mode and approvals still apply),
+ * and a tool in no group (Claude's Skill, a pi extension's own tools) is left alone, in the list form too.
  */
 
 export const TOOL_GROUPS = ["read", "edit", "bash", "web", "task", "ask", "mcp"] as const;
 export type Group = (typeof TOOL_GROUPS)[number];
 
-/**
- * The groups an agent does not get. `ask` is never in it: marcsh asks the user its questions through that tool on both engines, so
- * an agent without it could not ask. `read` stays too when everything else would go: an agent with no tools at all is not useful.
- */
-export type AgentTools = { deny: Group[] };
+/** The groups an agent does not get. Never `ask` (marcsh asks its questions through it), and `read` stays when everything else would go. */
+export type AgentTools = {
+  deny: Group[];
+  /** The denied groups that a map entry named itself (`web: false`), not through `*` or a list; only set when there are some. */
+  named?: Group[];
+};
 
 export type ParsedTools = {
   /** Undefined: no restriction (nothing was denied, or no name could be read). */
@@ -43,9 +37,16 @@ const NAMES: Record<Exclude<Group, "mcp">, readonly string[]> = {
   ask: ["ask", "askuserquestion", "question", "ask_user"],
 };
 
+/** The name without a closing permission scope: `Bash(git:*)` is `Bash`. Scans, so a long run of `(` costs nothing. */
+function withoutScope(name: string): string {
+  const text = name.trimEnd();
+  const open = text.indexOf("(");
+  return text.endsWith(")") && open >= 0 && open < text.length - 1 ? text.slice(0, open) : name;
+}
+
 /** The group of a tool name, ignoring case and a permission scope (`Bash(git:*)`); undefined when it is none of them. */
 export function groupOf(name: string): Group | undefined {
-  const key = name.replace(/\(.*\)\s*$/, "").trim().toLowerCase();
+  const key = withoutScope(name).trim().toLowerCase();
   if (!key) return undefined;
   // `mcp`, `mcp__server__tool`, `mcp_server_tool`, and OpenCode's `server_*` wildcards.
   if (key === "mcp" || key.startsWith("mcp__") || key.startsWith("mcp_") || key.endsWith("_*")) return "mcp";
@@ -73,6 +74,12 @@ function splitNames(text: string): string[] {
   return names.map(unquote).filter(Boolean);
 }
 
+/** The text before a `#` that follows whitespace (a YAML comment), without trailing whitespace. A scan: a `\s+#.*` regex backtracks quadratically. */
+function withoutComment(text: string): string {
+  for (let i = 1; i < text.length; i++) if (text[i] === "#" && /\s/.test(text[i - 1]!)) return text.slice(0, i).trimEnd();
+  return text;
+}
+
 type Entries = { map: [string, string][]; list: string[] };
 
 /** The `key: value` and list entries of the field: its line value (a flow map, a flow list or a plain list) and its indented lines. */
@@ -81,7 +88,7 @@ function entriesOf(value: string | null | undefined, nested: readonly string[]):
   const pair = (text: string) => {
     const colon = text.indexOf(":");
     if (colon <= 0) return false;
-    entries.map.push([unquote(text.slice(0, colon)), text.slice(colon + 1).replace(/\s+#.*$/, "").trim()]);
+    entries.map.push([unquote(text.slice(0, colon)), withoutComment(text.slice(colon + 1)).trim()]);
     return true;
   };
 
@@ -92,20 +99,28 @@ function entriesOf(value: string | null | undefined, nested: readonly string[]):
     entries.list.push(...splitNames(line.replace(/^\[(.*)\]$/, "$1")));
   }
   for (const raw of nested) {
-    const text = raw.trim().replace(/\s+#.*$/, "");
+    const text = withoutComment(raw.trim());
     if (text.startsWith("- ")) entries.list.push(...splitNames(text.slice(2)));
     else pair(text);
   }
   return entries;
 }
 
+/** A short line for a review: what the agent lacks when that is a few groups, what it keeps when that is few. Undefined when it restricts nothing. */
+export function describeTools(tools: AgentTools | undefined): string | undefined {
+  if (!tools || tools.deny.length === 0) return undefined;
+  if (tools.deny.length < 4) return `no ${tools.deny.join(", ")}`;
+  return `tools: ${TOOL_GROUPS.filter((group) => !tools.deny.includes(group)).join(", ")}`;
+}
+
 const ordered = (groups: Set<Group>) => TOOL_GROUPS.filter((group) => groups.has(group));
 
 /**
  * Reads the `tools` field, in either form:
- * - OpenCode map (`bash: false` lines, or `{ bash: false }`): a group is denied when any name in it is false; true changes nothing.
+ * - OpenCode map (`bash: false`, or `{ bash: false }`): a group is denied when any name in it is false. `*` sets every group first, wherever
+ *   it is written (`"*": false, read: true` leaves only read; `"*": true` with some false denies just those).
  * - Claude Code list (`Read, Grep`, `[Read, Grep]`, or `- Read` lines): only the named groups are kept.
- * Names are grouped coarsely (`mcp__server__tool` is the whole mcp group). If both forms appear the map wins and the list names are unknown.
+ * If both forms appear the map wins and the list names are unknown.
  */
 export function parseTools(value: string | null | undefined, nested: readonly string[] = []): ParsedTools {
   const { map, list } = entriesOf(value, nested);
@@ -120,21 +135,34 @@ export function parseTools(value: string | null | undefined, nested: readonly st
   };
 
   const deny = new Set<Group>();
+  const named = new Set<Group>();
   // The entry, as written, that first denied each group: named when the group is kept anyway.
   const deniedBy = new Map<Group, string>();
   let known = 0;
   if (map.length > 0) {
+    let all: boolean | undefined;
+    // A group's own entries: false when any is false, else true.
+    const own = new Map<Group, boolean>();
     for (const [name, setting] of map) {
-      const group = groupOf(name);
+      const group = name === "*" ? "*" : groupOf(name);
       const flag = setting.toLowerCase();
-      if (!group || (flag !== "true" && flag !== "false")) note(name);
-      else {
-        known++;
-        if (flag === "false") {
-          deny.add(group);
-          if (!deniedBy.has(group)) deniedBy.set(group, shown(name));
-        }
+      if (!group || (flag !== "true" && flag !== "false")) {
+        note(name);
+        continue;
       }
+      known++;
+      if (group === "*") all = flag === "true";
+      else if (flag === "false") {
+        own.set(group, false);
+        named.add(group);
+        if (!deniedBy.has(group)) deniedBy.set(group, shown(name));
+      } else if (!own.has(group)) own.set(group, true);
+    }
+    for (const group of TOOL_GROUPS) {
+      const denied = own.has(group) ? own.get(group) === false : all === false;
+      if (!denied) continue;
+      deny.add(group);
+      if (!deniedBy.has(group) && group !== "ask") deniedBy.set(group, "*");
     }
     for (const name of list) note(name);
   } else {
@@ -154,12 +182,14 @@ export function parseTools(value: string | null | undefined, nested: readonly st
     deny.delete("read");
     keptNote(`${deniedBy.get("read") ?? "read"}: read tools are kept so the agent can work`);
   }
-  return { tools: known > 0 && deny.size > 0 ? { deny: ordered(deny) } : undefined, unknown, empty: map.length + list.length === 0, notes };
+  const namedDenials = ordered(named).filter((group) => deny.has(group));
+  const tools = known > 0 && deny.size > 0 ? { deny: ordered(deny), ...(namedDenials.length > 0 ? { named: namedDenials } : {}) } : undefined;
+  return { tools, unknown, empty: map.length + list.length === 0, notes };
 }
 
 // ---- Claude ----
 
-// `TaskOutput` and `TaskStop` read and stop background shells and subagents alike, so they follow both groups. `Workflow` starts subagents.
+// `TaskOutput` and `TaskStop` act on background shells and subagents alike, so they follow both groups; `Workflow` starts subagents.
 const CLAUDE_NAMES: Record<Exclude<Group, "ask" | "mcp">, readonly string[]> = {
   read: ["Read", "Grep", "Glob", "NotebookRead", "LS"],
   edit: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
@@ -173,11 +203,7 @@ const CLAUDE_MCP_PREFIX = "mcp__";
 // The SDK's tools that read a connected server's resources: they run without asking, so the mcp group has to take them too.
 const CLAUDE_MCP_RESOURCE_TOOLS = ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"];
 
-/**
- * What goes into the SDK's `disallowedTools` for the denied groups. The SDK's own docs describe `mcp__*` (and `mcp__server`) as removing
- * every MCP tool for an agent definition; the same permission rule syntax is used for the session option, and the Claude engine
- * also refuses such a call in `canUseTool` (see {@link isClaudeToolDenied}) in case the rule is not honoured there.
- */
+/** What goes into the SDK's `disallowedTools` for the denied groups; `canUseTool` refuses the same calls too ({@link isClaudeToolDenied}) in case a rule is not honoured. */
 export function claudeDeniedTools(deny: readonly Group[]): string[] {
   const names = deny.flatMap((group) => (group === "mcp" ? [`${CLAUDE_MCP_PREFIX}*`, ...CLAUDE_MCP_RESOURCE_TOOLS] : group === "ask" ? [] : CLAUDE_NAMES[group]));
   return [...new Set(names)];
@@ -191,10 +217,7 @@ export function isClaudeToolDenied(toolName: string, deny: readonly Group[]): bo
 
 // ---- pi ----
 
-// pi's tools are read through the same case-insensitive names the field is parsed with (`groupOf`), so pi's own (`read`, `bash`,
-// `grep`, `find`, `ls`, `edit`, `write`), marcsh's `Task` (TASK_TOOL in engine/pi-subagent.ts; this module stays free of engine imports)
-// and an extension's `Bash`, `BASH` or `shell` all land in their group. pi has no web tools of its own, so `web` finds none there
-// unless an extension is named like one. MCP tools are the `mcp__server__tool` ones of marcsh's MCP extension, plus pi's resource tools.
+// pi tools are grouped by the same case-insensitive names as the field (`groupOf`), so an extension's `Bash` or `shell` lands in its group; pi has no web tools of its own.
 const PI_MCP_RESOURCE_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
 
 /** Whether a pi tool, by name, belongs to a denied group. An extension tool with a built-in's name is denied too: narrowing is the safe side. */

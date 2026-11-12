@@ -68,10 +68,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
   let chat: Query | null = null;
   const done = (async () => {
     const pluginPath = marcshPluginPath();
-    // The pack's view has its skills and commands, and its hooks/ only while the user has enabled them and the files still match what was
-    // approved (S16: Claude then runs them from the view, through marcsh's filter: a hook can block a call but never approve it).
-    // Otherwise they are taken out of the view before Claude can load it.
-    // Never MCP servers or agents. A view that is gone, or whose hooks could not be kept out, is left out.
+    // The view's hooks/ stay only while enabled and matching what the user approved (run through marcsh's filter); otherwise they are removed before Claude loads it.
     const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
     if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
     const packView = packTurn?.view;

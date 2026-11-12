@@ -58,6 +58,12 @@ tools:            # OpenCode map: false removes the group, true changes nothing
 ```
 
 ```yaml
+tools:            # "*" is set first: "*": false removes every group, then read: true gives read back
+  "*": false
+  read: true
+```
+
+```yaml
 tools: Read, Grep   # Claude Code list: only these groups are kept (also `[Read, Grep]` or `- Read` lines)
 ```
 
@@ -73,7 +79,7 @@ Names are not case-sensitive and map onto groups; naming one tool takes or keeps
 | `ask` | askuserquestion, question, ask_user |
 | `mcp` | mcp, `mcp__server__tool`, `server_*` (and the tools that list and read a server's resources) |
 
-`ask` is never removed, because marcsh asks its questions with it: an `ask: false` entry is kept, and selecting the agent warns `ask: the question tool is always kept`. If everything else would be removed, `read` is kept and selecting the agent warns `read: read tools are kept so the agent can work`. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. Tools that belong to none of the seven groups (for example Claude's worktree, cron and skill tools, or a pi extension's own tools) are not touched by either form. On pi the `web` group has nothing to remove (pi has no web tools) and selecting the agent says so.
+`ask` is never removed, because marcsh asks its questions with it: an `ask: false` entry is kept, and selecting the agent warns `ask: the question tool is always kept`. If everything else would be removed, `read` is kept and selecting the agent warns `read: read tools are kept so the agent can work`. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. Tools that belong to none of the seven groups (for example Claude's worktree, cron and skill tools, or a pi extension's own tools) are not touched by either form. On pi the `web` group has nothing to remove (pi has no web tools): selecting the agent says that `web: false` changes nothing, but only when `web` is denied by name in the map, not by a list or `"*"`.
 
 ## Pack layout
 
@@ -140,6 +146,7 @@ A pack can ship hooks, but they are opt-in and off by default. Nothing in `hooks
 - `allow`, `ask` and `updatedInput` have no effect: hooks can only narrow, and marcsh's approval still asks about the model's own call.
 - Other exit codes do not block; stderr is shown as a notice. A PostToolUse exit 2 reaches the model as feedback next to the tool's result.
 - Each hook has a timeout of 60 s unless its `timeout` (seconds) says otherwise, and its whole process group is killed. A PreToolUse hook that times out blocks the call (fail closed; Claude lets the call go on).
+- Hooks must be short-lived: a check, not a daemon. Whatever a hook leaves running in the background (`watcher &`) is stopped when the hook finishes on pi, and when the filter ends on Claude.
 
 ## Workflow with the user
 

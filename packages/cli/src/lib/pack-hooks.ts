@@ -4,16 +4,8 @@ import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { hidesText, printable } from "./safe-text";
 
-/*
- * Pack hooks: the commands a pack asks to run, read from its `hooks/` folder without running anything.
- *
- * A pack's hooks are `hooks/hooks.json` (Claude's plugin format) plus the regular files under `hooks/` it may run. They are off until the
- * user enables them after reading every command, and the consent is pinned to the pack commit and to `digest` below (see packs.ts). This
- * module only reads and judges: whatever is not exactly the supported shape makes the hooks unusable, and unusable hooks are never enabled.
- *
- * Claude is not given the pack's `hooks.json`: `claudeHookFiles` makes the one it runs, where every command is a call to marcsh's filter
- * (plugin/hooks/pack-hook-filter.ts) that runs the original and lets only what narrows a call through.
- */
+// Pack hooks: the commands a pack asks to run, read from its `hooks/` without running anything. Anything but the supported shape makes
+// them unusable, and Claude gets a generated hooks.json whose commands go through marcsh's filter (`claudeHookFiles`), never the pack's own.
 
 export const HOOKS_DIR = "hooks";
 export const HOOKS_FILE = "hooks.json";
@@ -305,11 +297,7 @@ function hooksDirFailure(error: unknown): HooksRead {
   return { present: true, usable: false, reason: "hooks/ cannot be read" };
 }
 
-/**
- * Reads a `hooks/` folder: every regular file in it (never through a link), the digest of those files, and the commands of `hooks.json`.
- * The folder is unusable, and so never enabled, when anything in it is a link or a special file, a file is over 1 MB or the folder over
- * 5 MB, a name has control or invisible characters or is one marcsh keeps for itself, or `hooks.json` is missing or is anything but the supported shape.
- */
+/** Reads a `hooks/` folder: its regular files (never through a link), their digest and the commands of `hooks.json`; unusable when anything is off-limits or `hooks.json` is not the supported shape. */
 export async function readHooksDir(dir: string): Promise<HooksRead> {
   try {
     return judgeHooksDir(await listHookFiles(dir));
@@ -321,12 +309,7 @@ export async function readHooksDir(dir: string): Promise<HooksRead> {
 /** Quotes text as one word for `sh`. */
 export const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
-/**
- * What Claude is given for a pack's hooks, instead of the pack's own `hooks.json`: a `hooks.json` with the same events, matchers and timeouts
- * where every command is a call to marcsh's filter (`filterPath`, run by marcsh's own bun, by path, so a PATH without bun cannot leave the hooks
- * silently off, and without the project's env file or config), and the commands file
- * the filter reads the original commands from (the commands as the user read them, by event, group and hook number).
- */
+/** What Claude gets instead of the pack's `hooks.json`: the same events, matchers and timeouts with every command calling the filter (by marcsh's own bun, so PATH cannot turn the hooks off), plus the original commands for it to read. */
 export function claudeHookFiles(config: HooksConfig, filterPath: string): { hooksJson: string; commandsJson: string } {
   const run = `${shellQuote(process.execPath)} --no-env-file --config=/dev/null ${shellQuote(filterPath)} "\${CLAUDE_PLUGIN_ROOT}/${HOOKS_DIR}/${COMMANDS_FILE}"`;
   const hooks = Object.fromEntries(

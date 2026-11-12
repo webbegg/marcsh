@@ -8,6 +8,7 @@ import { useToast, type ToastContextValue } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { TextField } from "./text-field";
 import { parsePackCommand } from "../../lib/pack-command";
+import { wrapByWidth } from "../../lib/display-text";
 import { engineLine, hookEvents, HOOKS_DIR, type HooksConfig } from "../../lib/pack-hooks";
 import {
   disablePackHooks,
@@ -62,7 +63,7 @@ export function previewLines(preview: PackPreview): string[] {
   return [
     header,
     "Agents:",
-    ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model].filter(Boolean).join(", ")})`),
+    ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model, agent.tools].filter(Boolean).join(", ")})`),
     ...list("Skills", preview.skills),
     ...list("Commands", preview.commands),
     ...(preview.hooks
@@ -265,25 +266,6 @@ const REVIEW_FOOTER_ROWS = 1 + 2 + 3;
 const REVIEW_MIN_ROWS = 3;
 const REACHED_POLL_MS = 50;
 
-/** Rows a line takes when wrapped by words to `width`. */
-function wrappedRows(line: string, width: number): number {
-  let rows = 1;
-  let column = 0;
-  for (const word of line.split(/(?<= )/)) {
-    const length = word.trimEnd().length;
-    if (column > 0 && column + length > width) {
-      rows++;
-      column = 0;
-    }
-    // A word longer than a row is broken inside.
-    if (length > width) {
-      rows += Math.floor((length - 1) / width);
-      column = length % width;
-    } else column += word.length;
-  }
-  return rows;
-}
-
 type ReviewProps = {
   /** Always on screen above the list: the commit and what the hooks are. */
   header: string[];
@@ -339,7 +321,7 @@ function HooksReview({ header, body, commands, gated, yes, shown, onAnswer }: Re
   });
 
   const textWidth = Math.min(60, width - 4) - DIALOG_TEXT_INSET;
-  const headerRows = header.reduce((rows, line) => rows + wrappedRows(line, textWidth), 0);
+  const headerRows = header.reduce((rows, line) => rows + wrapByWidth(line, textWidth).length, 0);
   const room = Math.max(REVIEW_MIN_ROWS, height - DIALOG_CHROME_ROWS - headerRows - REVIEW_FOOTER_ROWS);
   const choose = (index: number) => {
     if (index === 1 && !reached && !atEnd()) return;

@@ -31,4 +31,11 @@ describe("readFrontmatter nested lines [S15]", () => {
   test("a file without frontmatter has none", () => {
     expect(readFrontmatter("just a body").nested.size).toBe(0);
   });
+
+  test("a pack file with tens of thousands of nested lines reads in linear time", () => {
+    const text = `---\ntools:\n${"  x: 1\n".repeat(40_000)}---\nBody`;
+    const started = performance.now();
+    expect(readFrontmatter(text).nested.get("tools")).toHaveLength(40_000);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });

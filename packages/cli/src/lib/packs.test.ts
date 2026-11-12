@@ -180,6 +180,19 @@ describe("installPack", () => {
     expect(git(join(root, "acme/flows/src"), "rev-parse", "HEAD")).toBe(sha);
   });
 
+  test("the preview says what each agent's tools field takes away", async () => {
+    makeRepo("acme/limited", {
+      "agents/narrow.md": "---\nname: Narrow\npermission: build\ntools:\n  bash: false\n  webfetch: false\n---\nNo shell.",
+      "agents/lister.md": "---\nname: Lister\ntools: Read, Grep\n---\nReads.",
+      "agents/plain.md": "---\nname: Plain\n---\nAnything.",
+    });
+    let preview: PackPreview | undefined;
+    await installPack("acme/limited", options((p) => ((preview = p), true)));
+    const byName = Object.fromEntries(preview!.agents.map((agent) => [agent.name, agent.tools]));
+    expect(byName).toEqual({ Narrow: "no bash, web", Lister: "tools: read, ask", Plain: undefined });
+    expect(preview!.agents.find((agent) => agent.name === "Plain")).not.toHaveProperty("tools");
+  });
+
   test("the plugin view has a manifest and skills/commands only: no hooks, MCP or agents", async () => {
     makeRepo("acme/flows", goodPack);
     await installPack("acme/flows", options());

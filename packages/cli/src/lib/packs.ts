@@ -18,6 +18,7 @@ import { copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
+import { describeTools } from "./agent-tools";
 import {
   COMMANDS_FILE,
   HOOKS_DIR,
@@ -81,7 +82,8 @@ export type PackPreview = {
   commit: string;
   /** Set on an update: the commit being replaced. */
   previousCommit?: string;
-  agents: { name: string; permission: "read-only" | "build"; model?: string }[];
+  /** `tools` is what the agent's tools field takes away or leaves (see `describeTools`); absent when it restricts nothing. */
+  agents: { name: string; permission: "read-only" | "build"; model?: string; tools?: string }[];
   skills: string[];
   commands: string[];
   /** The pack's `hooks/`, when it has one: off until the user enables it (`/agents hooks <id>`), or unusable and never enabled. */
@@ -662,7 +664,10 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
       continue;
     }
     if (!agent) subagents.push(file);
-    else agents.push({ name: agent.name, permission: agent.mode === Mode.PLAN ? "read-only" : "build", ...(agent.model ? { model: agent.model } : {}) });
+    else {
+      const tools = describeTools(agent.tools);
+      agents.push({ name: agent.name, permission: agent.mode === Mode.PLAN ? "read-only" : "build", ...(agent.model ? { model: agent.model } : {}), ...(tools ? { tools } : {}) });
+    }
   }
 
   const manifest = await pluginManifestKeys(src);
@@ -1002,7 +1007,8 @@ function writeViewHooks(view: string, files: readonly HookFile[]) {
   if (!top.isDirectory()) throw new PackError(`${view} is not a folder; remove the pack and install it again`);
   const target = viewHooksPath(view);
   const temp = join(view, `.hooks-${process.pid}`);
-  removeAll(temp);
+  // A crash leaves its folder behind under its own pid: clear every one, links removed without being followed.
+  for (const name of readdirSync(view)) if (name.startsWith(".hooks-")) removeAll(join(view, name));
   try {
     for (const file of files) {
       const dest = join(temp, ...file.path.split("/"));

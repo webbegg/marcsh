@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   claudeDeniedTools,
+  describeTools,
   groupOf,
   isClaudeToolDenied,
   isPiToolDenied,
@@ -51,20 +52,20 @@ describe("groupOf", () => {
 describe("parseTools, OpenCode map form", () => {
   test("false denies the group, true keeps it", () => {
     const parsed = parseTools("", ["bash: false", "edit: true", "write: false"]);
-    expect(parsed.tools).toEqual({ deny: ["edit", "bash"] });
+    expect(parsed.tools?.deny).toEqual(["edit", "bash"]);
     expect(parsed.unknown).toEqual([]);
   });
 
   test("a group is denied when any of its names is false", () => {
-    expect(parseTools("", ["edit: true", "write: false"]).tools).toEqual({ deny: ["edit"] });
+    expect(parseTools("", ["edit: true", "write: false"]).tools?.deny).toEqual(["edit"]);
   });
 
   test("keys and values are case-insensitive and may be quoted", () => {
-    expect(parseTools("", ['"Bash": FALSE', "WebFetch: False  # no network"]).tools).toEqual({ deny: ["bash", "web"] });
+    expect(parseTools("", ['"Bash": FALSE', "WebFetch: False  # no network"]).tools?.deny).toEqual(["bash", "web"]);
   });
 
   test("a wildcard key denies mcp", () => {
-    expect(parseTools("", ["mymcp_*: false"]).tools).toEqual({ deny: ["mcp"] });
+    expect(parseTools("", ["mymcp_*: false"]).tools?.deny).toEqual(["mcp"]);
   });
 
   test("all true is no restriction", () => {
@@ -72,35 +73,67 @@ describe("parseTools, OpenCode map form", () => {
   });
 
   test("a flow map on the key line works too", () => {
-    expect(parseTools("{ bash: false, edit: true }").tools).toEqual({ deny: ["bash"] });
+    expect(parseTools("{ bash: false, edit: true }").tools?.deny).toEqual(["bash"]);
   });
 
   test("unknown names and values that are not booleans are returned, not applied", () => {
     const parsed = parseTools("", ["bash: false", "frobnicate: false", "edit: maybe"]);
-    expect(parsed.tools).toEqual({ deny: ["bash"] });
+    expect(parsed.tools?.deny).toEqual(["bash"]);
     expect(parsed.unknown).toEqual(["frobnicate", "edit"]);
+  });
+});
+
+describe("parseTools, the `*` key", () => {
+  test("`*: false` denies every group, and a group set to true is allowed again", () => {
+    expect(parseTools("", ['"*": false', "read: true"]).tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+    expect(parseTools("", ["read: true", '"*": false']).tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+    expect(parseTools('{ "*": false, read: true, bash: true }').tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
+  });
+
+  test("`*: false` alone keeps read (an agent needs something to read with) and says so", () => {
+    const parsed = parseTools("", ['"*": false']);
+    expect(parsed.tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+    expect(parsed.notes).toEqual(["*: read tools are kept so the agent can work"]);
+    expect(parsed.unknown).toEqual([]);
+  });
+
+  test("`*: true` with some false entries denies just those", () => {
+    const parsed = parseTools("", ['"*": true', "bash: false", "edit: false"]);
+    expect(parsed.tools?.deny).toEqual(["edit", "bash"]);
+    expect(parsed.unknown).toEqual([]);
+  });
+
+  test("`*: true` alone restricts nothing, and an explicit false beats a true of the same group", () => {
+    expect(parseTools("", ['"*": true']).tools).toBeUndefined();
+    expect(parseTools("", ['"*": false', "edit: true", "write: false"]).tools?.deny).toContain("edit");
+  });
+
+  test("the question tool is not denied by `*: false` and no note is made of it", () => {
+    const parsed = parseTools("", ['"*": false', "read: true"]);
+    expect(parsed.tools?.deny).not.toContain("ask");
+    expect(parsed.notes).toEqual([]);
   });
 });
 
 describe("parseTools, Claude Code list form", () => {
   test("a comma list allows only the named groups", () => {
     const parsed = parseTools("Read, Grep, Glob");
-    expect(parsed.tools).toEqual({ deny: ["edit", "bash", "web", "task", "mcp"] });
+    expect(parsed.tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
     expect(parsed.unknown).toEqual([]);
   });
 
   test("a space separated list and a YAML flow list work", () => {
     expect(parseTools("Read Grep").tools).toEqual(parseTools("Read, Grep").tools);
     expect(parseTools("[Read, Grep]").tools).toEqual(parseTools("Read, Grep").tools);
-    expect(parseTools('["Read", "Bash"]').tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+    expect(parseTools('["Read", "Bash"]').tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
   });
 
   test("a YAML block list works", () => {
-    expect(parseTools("", ["- Read", "- Bash"]).tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+    expect(parseTools("", ["- Read", "- Bash"]).tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
   });
 
   test("a scoped name keeps its parentheses together", () => {
-    expect(parseTools("Read, Bash(git add:*, git commit:*)").tools).toEqual({ deny: ["edit", "web", "task", "mcp"] });
+    expect(parseTools("Read, Bash(git add:*, git commit:*)").tools?.deny).toEqual(["edit", "web", "task", "mcp"]);
   });
 
   test("everything not named is denied, mcp included, ask never", () => {
@@ -117,7 +150,7 @@ describe("parseTools, Claude Code list form", () => {
   test("unknown names are returned; a list with no known name restricts nothing", () => {
     const parsed = parseTools("Read, Frob, Zap");
     expect(parsed.unknown).toEqual(["Frob", "Zap"]);
-    expect(parsed.tools).toEqual({ deny: ["edit", "bash", "web", "task", "mcp"] });
+    expect(parsed.tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
 
     const none = parseTools("Frob");
     expect(none.tools).toBeUndefined();
@@ -127,7 +160,7 @@ describe("parseTools, Claude Code list form", () => {
 
 describe("parseTools, limits", () => {
   test("ask is never denied, even when it is set to false", () => {
-    expect(parseTools("", ["ask: false", "bash: false"]).tools).toEqual({ deny: ["bash"] });
+    expect(parseTools("", ["ask: false", "bash: false"]).tools?.deny).toEqual(["bash"]);
     expect(parseTools("", ["askuserquestion: false"]).tools).toBeUndefined();
   });
 
@@ -244,7 +277,7 @@ describe("parseTools, entries that are not applied are noted [S15 regression]", 
 
   test("`AskUserQuestion: false` next to a real denial notes the entry as written", () => {
     const parsed = parseTools(null, ["AskUserQuestion: false", "bash: false"]);
-    expect(parsed.tools).toEqual({ deny: ["bash"] });
+    expect(parsed.tools?.deny).toEqual(["bash"]);
     expect(parsed.notes).toEqual(["AskUserQuestion: the question tool is always kept"]);
   });
 
@@ -257,5 +290,46 @@ describe("parseTools, entries that are not applied are noted [S15 regression]", 
   test("a clean field has no notes", () => {
     expect(parseTools(null, ["bash: false", "ask: true"]).notes).toEqual([]);
     expect(parseTools("Read, Grep").notes).toEqual([]);
+  });
+});
+
+describe("untrusted text is read in linear time", () => {
+  const within = (run: () => void, ms = 100) => {
+    const start = performance.now();
+    run();
+    expect(performance.now() - start).toBeLessThan(ms);
+  };
+
+  test("a long run of spaces before a value or a `#`", () => {
+    within(() => parseTools("", [`bash:${" ".repeat(250_000)}false`]));
+    within(() => parseTools("", [`bash: false${" ".repeat(250_000)}x`]));
+    within(() => parseTools(`{ bash:${" ".repeat(250_000)}false }`));
+  });
+
+  test("a long name with many open parentheses", () => {
+    within(() => groupOf("(".repeat(250_000)));
+    within(() => parseTools("", [`${"(".repeat(250_000)}: false`]));
+  });
+});
+
+describe("groupOf and a permission scope", () => {
+  test("only a scope that closes at the end of the name is dropped", () => {
+    expect(groupOf("Bash(git:*)  ")).toBe("bash");
+    expect(groupOf("Bash(git:*) x")).toBeUndefined();
+    expect(groupOf("Bash(a)(b)")).toBe("bash");
+  });
+});
+
+describe("describeTools", () => {
+  test("a few lost groups are listed as what the agent lacks, many as what it keeps", () => {
+    expect(describeTools(parseTools("", ["bash: false", "webfetch: false"]).tools)).toBe("no bash, web");
+    expect(describeTools(parseTools("Read").tools)).toBe("tools: read, ask");
+    expect(describeTools(parseTools("Read, Bash").tools)).toBe("tools: read, bash, ask");
+    expect(describeTools(parseTools("Read, Bash, Edit").tools)).toBe("no web, task, mcp");
+  });
+
+  test("an agent that restricts nothing has no description", () => {
+    expect(describeTools(undefined)).toBeUndefined();
+    expect(describeTools({ deny: [] })).toBeUndefined();
   });
 });
