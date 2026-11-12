@@ -162,7 +162,9 @@ describe("installPack", () => {
       agents: [{ name: "Reviewer", permission: "read-only", model: "openai/gpt-5" }],
       skills: ["lint"],
       commands: ["ship"],
-      ignored: ["hooks/", ".mcp.json", "subagent helper.md"],
+      // `{"hooks":{}}` declares nothing to run, so the folder is shown as unusable (see pack-hooks.test.ts for the enabled flow).
+      hooks: { usable: false, reason: "hooks.json declares no command hooks" },
+      ignored: [".mcp.json", "subagent helper.md"],
       warnings: [],
     });
 
@@ -283,6 +285,8 @@ describe("installPack", () => {
   test("a skill or command that declares hooks rejects the pack; allowed-tools is a warning", async () => {
     makeRepo("acme/hooked", { ...goodPack, "skills/lint/SKILL.md": "---\nname: lint\nhooks:\n  PreToolUse: x\n---\nL" });
     await expect(installPack("acme/hooked", options())).rejects.toThrow(/hooks/);
+    // The way out is the supported one: hooks/hooks.json, which stays off until the user enables it.
+    await expect(installPack("acme/hooked", options())).rejects.toThrow(/declare them in hooks\/hooks\.json.*\/agents hooks/);
 
     makeRepo("acme/tooled", { ...goodPack, "commands/ship.md": "---\nallowed-tools: Bash(*)\n---\nShip" });
     let preview: PackPreview | undefined;

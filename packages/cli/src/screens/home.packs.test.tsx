@@ -43,7 +43,7 @@ beforeAll(() => {
     "agents/ftd.md": "---\nname: FTD\ndescription: Test first\npermission: build\n---\nWork test-first.",
     "skills/tdd/SKILL.md": "---\nname: tdd\ndescription: Test first\n---\nRED then GREEN.",
     "commands/ship.md": "---\ndescription: Ship\n---\nShip it.",
-    "hooks/hooks.json": "{}",
+    "hooks/hooks.json": JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo checked" }] }] } }),
     ".mcp.json": "{}",
   };
   mkdirSync(repo, { recursive: true });
@@ -117,7 +117,7 @@ async function installFixture() {
   await openAction("install");
   await type("acme/flows");
   await enter();
-  await waitForFrame("Pack hooks and MCP servers are not run.");
+  await waitForFrame("MCP servers are not run.");
   await down();
   await enter();
   await waitForFrame("Installed acme/flows");
@@ -152,14 +152,16 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await openAction("install");
     await type("acme/flows");
     await enter();
-    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await waitForFrame("MCP servers are not run.");
 
     const preview = frame();
     expect(preview).toContain("acme/flows @ ");
     expect(preview).toContain("FTD (build)");
     expect(preview).toContain("Skills: tdd");
     expect(preview).toContain("Commands: ship");
-    expect(preview).toContain("Not used: hooks/, .mcp.json");
+    expect(preview).toContain("Not used: .mcp.json");
+    // The pack's hooks are not run; they are off until the user reviews and enables them.
+    expect(preview).toContain("hooks: present, off — enable with /agents hooks");
     // Nothing is installed before the answer.
     expect(listPacks()).toEqual([]);
 
@@ -180,7 +182,7 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await openAction("install");
     await type("acme/flows");
     await enter();
-    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await waitForFrame("MCP servers are not run.");
 
     await enter();
 
@@ -194,7 +196,7 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await openAction("install");
     await type("acme/flows");
     await enter();
-    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await waitForFrame("MCP servers are not run.");
 
     await escape();
     await settle(300);
@@ -290,7 +292,7 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await openHome();
     await type("/agents install acme/flows");
     await enter();
-    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await waitForFrame("MCP servers are not run.");
     expect(frame()).toContain("acme/flows @ ");
     // Nothing is installed before the answer.
     expect(listPacks()).toEqual([]);
@@ -304,7 +306,7 @@ describe("/agents installs packs from GitHub (S10)", () => {
     await openHome();
     await type("/agents install acme/flows@main");
     await enter();
-    await waitForFrame("Pack hooks and MCP servers are not run.");
+    await waitForFrame("MCP servers are not run.");
     await enter();
     await waitForFrame("Install cancelled");
     expect(listPacks()).toEqual([]);

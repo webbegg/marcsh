@@ -102,4 +102,99 @@ describe("the agent-workflows skill", () => {
   test("says skills and commands load only while the pack's agent is selected", () => {
     expect(text()).toMatch(/only while[^.]*agent[^.]*selected/i);
   });
+
+  describe("pack hooks (S16)", () => {
+    test("says hooks are opt-in and off by default, and no longer says marcsh never runs them", () => {
+      const body = text();
+      expect(body).toMatch(/opt-in/i);
+      expect(body).toMatch(/off by default/i);
+      expect(body).not.toContain("marcsh never runs hooks");
+      // MCP servers and `hooks` declared anywhere but hooks/ stay unused.
+      expect(body).toMatch(/MCP servers[^\n]*never run/i);
+    });
+
+    test("shows how to ship hooks: hooks/hooks.json with command hooks and ${CLAUDE_PLUGIN_ROOT}", () => {
+      const body = text();
+      for (const part of ["hooks/hooks.json", '"type": "command"', "${CLAUDE_PLUGIN_ROOT}", "PreToolUse", "matcher"]) expect(body).toContain(part);
+      expect(body).toMatch(/only[^\n]*`command`/i);
+    });
+
+    test("describes the review and enable flow, and turning them off", () => {
+      const body = text();
+      expect(body).toContain("/agents hooks owner/repo");
+      expect(body).toContain("/agents hooks owner/repo off");
+      expect(body).toMatch(/Cancel/);
+      expect(body).toMatch(/exact command/i);
+      expect(body).toContain("while one of the pack's agents is selected");
+    });
+
+    test("says which events run on which engine", () => {
+      const body = text();
+      expect(body).toMatch(/PreToolUse, PostToolUse and PostToolUseFailure run on Claude and pi/);
+      expect(body).toMatch(/other events[^\n]*Claude only/i);
+    });
+
+    test("says what a hook can do on pi: block with exit 2 or deny, never widen, timeout blocks", () => {
+      const body = text();
+      expect(body).toMatch(/exit code 2/i);
+      expect(body).toContain("permissionDecision");
+      expect(body).toMatch(/never widen|only narrow/i);
+      expect(body).toMatch(/allow[^\n]*no effect/i);
+      expect(body).toMatch(/timeout[^\n]*60 s/i);
+      expect(body).toMatch(/time[sd]? out[^\n]*blocks/i);
+    });
+
+    test("says consent is pinned and re-asked after an update or any change", () => {
+      const body = text();
+      expect(body).toMatch(/commit/);
+      expect(body).toMatch(/digest|every file/i);
+      expect(body).toMatch(/update[^\n]*(turns|turned)[^\n]*off/i);
+      expect(body).toMatch(/review[^\n]*again/i);
+    });
+
+    test("states the limits of hooks/ and what makes the hooks unusable", () => {
+      const body = text();
+      expect(body).toMatch(/hooks\/[^\n]*1 MB/);
+      expect(body).toMatch(/hooks\/[^\n]*5 MB/);
+      expect(body).toMatch(/unusable/i);
+      expect(body).toMatch(/symlink/);
+    });
+
+    test("points to hooks/hooks.json as the supported way when a skill or command declares hooks", () => {
+      expect(text()).toMatch(/frontmatter of any skill or command[^\n]*Declare hooks in `hooks\/hooks\.json`/);
+    });
+
+    test("says the consent covers the whole pack, since a hook may run any file of it", () => {
+      const body = text();
+      expect(body).toContain("Hooks may run any file of this pack");
+      expect(body).toMatch(/`hooks\/`, `skills\/` and `commands\/`/);
+      expect(body).toContain("hooks changed — off");
+    });
+
+    test("says what a matcher may be, and that Task and Agent are the same tool", () => {
+      const body = text();
+      expect(body).toMatch(/`matcher` is empty, `\*`, or tool names separated by `\|`/);
+      expect(body).toMatch(/regular expressions included, makes the hooks unusable/i);
+      expect(body).toMatch(/`Task` and `Agent` name the same tool/);
+    });
+
+    test("says that on Claude too a hook can block but never approve, through marcsh's filter", () => {
+      const body = text();
+      expect(body).toMatch(/On Claude\*\* marcsh does not hand the pack's `hooks\.json` to Claude/);
+      expect(body).toMatch(/filter/);
+      expect(body).toMatch(/`allow`, `ask`, `approve` and `updatedInput` are dropped/);
+    });
+
+    test("says PostToolUse runs only for a call that succeeded and failures go to PostToolUseFailure", () => {
+      expect(text()).toMatch(/PostToolUse runs only for a call that succeeded[^\n]*PostToolUseFailure/);
+    });
+
+    test("keeps the documented limit: an edit to the view in the middle of a turn is not noticed until the next turn", () => {
+      expect(text()).toMatch(/middle of a turn is not noticed until the next turn/);
+    });
+
+    test("the checklist covers the hooks folder", () => {
+      expect(text()).toMatch(/- \[ \][^\n]*hooks\/hooks\.json/);
+    });
+  });
 });

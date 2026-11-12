@@ -95,7 +95,7 @@ export const COMMANDS: Command[] = [
     description: "Switch agents",
     value: "/agents",
     action: (ctx) => {
-      // `/agents install|update|remove …` goes straight to the pack flow the dialog's rows open.
+      // `/agents install|update|remove|hooks …` goes straight to the pack flow the dialog's rows open.
       if (ctx.args) return runPackCommand(ctx.args, { dialog: ctx.dialog, toast: ctx.toast, onChanged: () => void ctx.reloadAgents() });
       ctx.dialog.open({
         title: "Select Agent",

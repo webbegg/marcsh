@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
 import { unsupportedGroups } from "./agent-tools";
 import { Mode } from "./modes";
-import { listPacks, packAgentsDir, packPluginDir, packsRoot } from "./packs";
+import { hookEngines, hookEvents } from "./pack-hooks";
+import { inspectPackHooks, listPacks, packAgentsDir, packPluginDir, packsRoot, packViewLocation } from "./packs";
 import { printable } from "./safe-text";
 
 // Other modules import the agent type and the file parser from here.
@@ -115,6 +116,24 @@ export function agentModelFits(model: string, engineId: string) {
   return !model.includes("/") && (/^claude/i.test(model) || CLAUDE_ALIAS.test(model));
 }
 
+/** What the engine will not do with the hooks of the agent's pack (S16): events it cannot run, or consent that no longer covers the files. */
+function hookWarnings(agent: Agent, engineId: string): string[] {
+  const location = agent.pack && agent.pluginDir ? packViewLocation(agent.pluginDir) : null;
+  if (!location) return [];
+  try {
+    const info = inspectPackHooks(location.id, { root: location.root });
+    if (info.state === "off" && info.changed) {
+      return [`${location.id}: hooks are off because their files changed since you approved them; review them with /agents hooks ${location.id}`];
+    }
+    if (info.state !== "on" || engineId !== "pi") return [];
+    // pi runs the tool-call events itself; the rest are Claude's.
+    const { claudeOnly } = hookEngines(hookEvents(info.config));
+    return claudeOnly.length > 0 ? [`${location.id}: hooks for ${claudeOnly.join(", ")} run on Claude only`] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** One line per part of the agent that the engine will not apply; shown when the agent is selected. */
 export function agentWarnings(agent: Agent, engineId: string): string[] {
   const warnings: string[] = [];
@@ -127,5 +146,6 @@ export function agentWarnings(agent: Agent, engineId: string): string[] {
   if (agent.model && !agentModelFits(agent.model, engineId)) {
     warnings.push(`${agent.name}: model "${agent.model}" is ignored on ${engineId}; the session model is used`);
   }
+  warnings.push(...hookWarnings(agent, engineId));
   return warnings;
 }
