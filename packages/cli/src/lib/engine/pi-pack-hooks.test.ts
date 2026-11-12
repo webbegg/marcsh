@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileMatcher, type HooksConfig } from "../pack-hooks";
 import {
-  claudeToolName,
-  claudeToolNames,
   createPackHooksExtension,
   judgePostToolUse,
   judgePreToolUse,
@@ -29,26 +27,6 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const exit = (code: number, stdout = "", stderr = ""): HookOutcome => ({ kind: "exit", code, stdout, stderr });
-
-describe("claudeToolName", () => {
-  test("pi's tools are named the way Claude names them", () => {
-    expect(
-      ["bash", "edit", "write", "read", "grep", "find", "ls", "Task", "AskUserQuestion"].map(claudeToolName),
-    ).toEqual(["Bash", "Edit", "Write", "Read", "Grep", "Glob", "LS", "Agent", "AskUserQuestion"]);
-  });
-
-  test("Claude renamed Task to Agent: the hook is told Agent, and a matcher written for either name matches", () => {
-    expect(claudeToolName("Task")).toBe("Agent");
-    expect(claudeToolNames("Task")).toEqual(["Agent", "Task"]);
-    expect(claudeToolNames("bash")).toEqual(["Bash"]);
-    expect(claudeToolNames("find")).toEqual(["Glob"]);
-  });
-
-  test("MCP tools already carry Claude's mcp__server__tool name; any other tool keeps its own", () => {
-    expect(claudeToolName("mcp__fs__delete")).toBe("mcp__fs__delete");
-    expect(claudeToolName("my_extension_tool")).toBe("my_extension_tool");
-  });
-});
 
 describe("compileMatcher (Claude's rules)", () => {
   test("nothing, empty and * match every tool", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { TOOL_GROUPS, claudeDeniedTools, groupOf, isClaudeToolDenied, isPiToolDenied, type Group } from "./agent-tools";
-import { claudeToolName, claudeToolNames } from "./engine/pi-pack-hooks";
+import { claudeDeniedTools, groupOf, isClaudeToolDenied, isPiToolDenied } from "./agent-tools";
+import { TOOL_GROUPS, claudeToolName, claudeToolNames, type Group } from "./tool-names";
 
 // The tool-name knowledge lives in one table; these are the answers it must keep giving, spelled out so a table edit cannot change them unseen.
 

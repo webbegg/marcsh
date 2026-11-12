@@ -7,9 +7,9 @@ import {
   isPiToolDenied,
   notAvailableReason,
   parseTools,
-  TOOL_GROUPS,
   unsupportedGroups,
 } from "./agent-tools";
+import { TOOL_GROUPS } from "./tool-names";
 
 describe("groupOf", () => {
   test("names map case-insensitively onto the groups", () => {

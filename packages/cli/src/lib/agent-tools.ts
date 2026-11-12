@@ -5,8 +5,6 @@
 
 import { CLAUDE_MCP_PREFIX, CLAUDE_MCP_RESOURCE_TOOLS, FIELD_NAMES, TOOL_GROUPS, claudeGroupTools, type Group } from "./tool-names";
 
-export { TOOL_GROUPS, type Group };
-
 /** The groups an agent does not get. Never `ask` (marcsh asks its questions through it), and `read` stays when everything else would go. */
 export type AgentTools = {
   deny: Group[];

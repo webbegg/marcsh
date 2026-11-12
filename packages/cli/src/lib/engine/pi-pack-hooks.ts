@@ -14,9 +14,6 @@ const MAX_REASON = 4000;
 /** After the hook exited, how long its output pipes are waited for: a process it left running in the background may hold them open. */
 const PIPE_GRACE_MS = 250;
 
-// The tool-name table lives in tool-names.ts; importers of this module still find the two lookups here.
-export { claudeToolName, claudeToolNames };
-
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {
   return ["read", "edit", "write"].includes(piName) && typeof input.path === "string" ? { ...input, file_path: input.path } : input;
