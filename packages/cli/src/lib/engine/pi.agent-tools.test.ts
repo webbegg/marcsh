@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage,
@@ -253,6 +254,127 @@ describe("pi resumed sessions with denied tool groups", () => {
   });
 });
 
+describe("one agent's narrowing never reaches the next agent's resumed turn [S15 regression]", () => {
+  test("Task comes back for an unrestricted build turn after a resumed `task: false` turn", async () => {
+    const one = recording(1);
+    const two = recording(1);
+    const three = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps, ...three.steps]);
+
+    const first = await turn();
+    const second = await turn({ deniedTools: ["task"], resumeRef: first.ref });
+    await turn({ resumeRef: second.ref });
+
+    expect(two.offered[0]).toEqual(without(ALL_BUILD, "Task"));
+    expect(three.offered[0]).toEqual(ALL_BUILD);
+  });
+
+  test("an extension tool comes back for an unrestricted build turn after a resumed `mcp: false` turn", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "mcp-like.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({ name: "mcp__srv__tool", label: "m", description: "m", parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "ran" }] }; } });
+}
+`,
+    );
+    const one = recording(1);
+    const two = recording(1);
+    const three = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps, ...three.steps]);
+
+    const first = await turn();
+    const second = await turn({ deniedTools: ["mcp"], resumeRef: first.ref });
+    await turn({ resumeRef: second.ref });
+
+    expect(two.offered[0]).not.toContain("mcp__srv__tool");
+    expect(three.offered[0]).toEqual(one.offered[0]!);
+  });
+
+  test("a narrowing that continues is not lifted, and a different one lifts the old and applies the new", async () => {
+    const one = recording(1);
+    const two = recording(1);
+    const three = recording(1);
+    const four = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps, ...three.steps, ...four.steps]);
+
+    const first = await turn({ deniedTools: ["task"] });
+    const second = await turn({ deniedTools: ["task"], resumeRef: first.ref });
+    const third = await turn({ deniedTools: ["bash"], resumeRef: second.ref });
+    await turn({ resumeRef: third.ref });
+
+    expect(two.offered[0]).toEqual(without(ALL_BUILD, "Task"));
+    expect(three.offered[0]).toEqual(without(ALL_BUILD, "bash"));
+    expect(four.offered[0]).toEqual(ALL_BUILD);
+  });
+
+  test("an agent without `tools` resumes with the tools pi restored, as before S15 (a loadout without write is kept)", async () => {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["read", "bash"] }));
+    const one = recording(1);
+    const two = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps]);
+
+    const first = await turn();
+    rmSync(join(agentDir, "settings.json"));
+    await turn({ resumeRef: first.ref });
+
+    // The same list as on 28474e7 (the baseline): no narrowing of marcsh's was recorded, so none is undone.
+    expect(two.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "find", "grep", "ls", "read"]);
+  });
+
+});
+
+describe("pi's MCP resource tools leave with the mcp group [S15 regression]", () => {
+  test("a server with resources: `mcp: false` offers none of its tools and its resources cannot be read", async () => {
+    const readMarker = join(dir, "resource-read");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({ mcpServers: { fx: { command: process.execPath, args: [fileURLToPath(new URL("./fixtures/mcp-resource-server.ts", import.meta.url)), readMarker] } } }),
+    );
+    const offered: string[][] = [];
+    const { turn } = await setup([
+      (context) => {
+        offered.push(names(context.messages));
+        return toolCall("read_mcp_resource", { server: "fx", uri: "file:///secret" });
+      },
+      fauxAssistantMessage([fauxText("ok")]),
+    ]);
+
+    const { asks } = await turn({ deniedTools: ["mcp"] });
+
+    expect(offered[0]!.filter((name) => name.startsWith("mcp__") || name.includes("mcp_resource"))).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(existsSync(readMarker)).toBe(false);
+  });
+
+  test("an extension tool named like a denied group (`Bash`, `shell`) is removed and blocked with it", async () => {
+    mkdirSync(join(agentDir, "extensions"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "extensions", "shells.ts"),
+      `import { Type } from "typebox";
+export default function (pi) {
+  for (const name of ["Bash", "shell"]) pi.registerTool({ name, label: name, description: name, parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "ran" }] }; } });
+}
+`,
+    );
+    const one = recording(1);
+    const two = recording(1);
+    const { turn } = await setup([...one.steps, ...two.steps]);
+
+    await turn();
+    await turn({ deniedTools: ["bash"] });
+
+    expect(one.offered[0]).toEqual(expect.arrayContaining(["Bash", "shell"]));
+    expect(two.offered[0]).not.toContain("Bash");
+    expect(two.offered[0]).not.toContain("shell");
+  });
+});
+
 describe("pi Task subagents with denied tool groups", () => {
   const taskCall = () => toolCall(TASK_TOOL, { description: "Look around", prompt: "go" }, "task-1");
 
@@ -337,6 +459,29 @@ describe("createDeniedToolsExtension", () => {
 
     expect(result.messages[0].toolsAdded).toEqual([{ name: "read" }]);
     expect(result.messages[1]).toEqual({ role: "user", content: "hi" });
+  });
+
+  test("tools to restore come back when they register, and what is removed is reported [S15 regression]", () => {
+    const handlers = new Map<string, (event: any) => any>();
+    let active = ["read", "bash"];
+    let registered = ["read", "bash", "Task"];
+    const removed: string[] = [];
+    createDeniedToolsExtension(["bash"], { restore: ["Task", "mcp__late__tool"], onRemoved: (names) => removed.push(...names) })({
+      on: (event: string, handler: (event: any) => any) => void handlers.set(event, handler),
+      getActiveTools: () => active,
+      setActiveTools: (next: string[]) => void (active = [...next]),
+      getAllTools: () => registered.map((name) => ({ name })),
+    } as any);
+
+    handlers.get("before_agent_start")!({});
+    expect(active).toEqual(["read", "Task"]);
+    expect(removed).toEqual(["bash"]);
+
+    // The MCP tool registers (and pi activates it) later in the turn.
+    registered = [...registered, "mcp__late__tool"];
+    active = [...active, "mcp__late__tool"];
+    handlers.get("turn_start")!({});
+    expect(active).toEqual(["read", "Task", "mcp__late__tool"]);
   });
 
   test("marcsh's Task is named Task for the group mapping (TASK_TOOL)", () => {

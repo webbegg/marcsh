@@ -124,7 +124,7 @@ describe("a Claude turn with an agent's tools (S15)", () => {
   test("a call to an MCP tool of an agent without mcp is refused in canUseTool, without asking", async () => {
     const options = await runTurn("user/nomcp");
 
-    expect(options.disallowedTools).toEqual(["mcp__*"]);
+    expect(options.disallowedTools).toContain("mcp__*");
     const result = await options.canUseTool("mcp__github__create_issue", {}, { signal: new AbortController().signal });
     expect(result).toEqual({ behavior: "deny", message: "mcp__github__create_issue is not available to this agent" });
   });
@@ -135,6 +135,22 @@ describe("a Claude turn with an agent's tools (S15)", () => {
     const outcome = await Promise.race([pending.then(() => "answered"), new Promise((resolve) => setTimeout(() => resolve("asking"), 50))]);
 
     expect(outcome).toBe("asking");
+  });
+
+  test("`mcp: false` also removes and refuses the MCP resource tools (they run without asking) [S15 regression]", async () => {
+    const options = await runTurn("user/nomcp");
+
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["mcp__*", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]));
+    const result = await options.canUseTool("ReadMcpResourceTool", { server: "fx", uri: "file:///secret" }, { signal: new AbortController().signal });
+    expect(result.behavior).toBe("deny");
+  });
+
+  test("a tool list without task removes and refuses Workflow (it starts subagents) [S15 regression]", async () => {
+    const options = await runTurn("user/reader");
+
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Workflow", "TaskOutput", "TaskStop"]));
+    const result = await options.canUseTool("Workflow", { script: "" }, { signal: new AbortController().signal });
+    expect(result.behavior).toBe("deny");
   });
 
   test("switching back to Build on the same conversation drops the restriction from the next turn", async () => {

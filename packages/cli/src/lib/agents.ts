@@ -48,6 +48,7 @@ function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boo
               model: agent.model && printable(agent.model),
               ignored: agent.ignored.map(printable),
               ...(agent.unknownTools ? { unknownTools: agent.unknownTools.map(printable) } : {}),
+              ...(agent.toolNotes ? { toolNotes: agent.toolNotes.map(printable) } : {}),
             }
           : agent,
       );
@@ -119,6 +120,7 @@ export function agentWarnings(agent: Agent, engineId: string): string[] {
   const warnings: string[] = [];
   if (agent.ignored.length > 0) warnings.push(`${agent.name}: ignored ${agent.ignored.join(", ")}`);
   if (agent.unknownTools && agent.unknownTools.length > 0) warnings.push(`${agent.name}: unknown tools ${agent.unknownTools.join(", ")}`);
+  for (const note of agent.toolNotes ?? []) warnings.push(`${agent.name}: ${note}`);
   // The one group an engine cannot apply today: pi has no web tools to take away.
   const unsupported = unsupportedGroups(agent.tools?.deny ?? [], engineId);
   if (unsupported.length > 0) warnings.push(`${agent.name}: tools ${unsupported.join(", ")} is not applied on ${engineId} (it has no ${unsupported.join("/")} tools)`);

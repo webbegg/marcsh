@@ -29,6 +29,8 @@ export type Agent = {
   tools?: AgentTools;
   /** Names in the `tools` field that match no tool group: not applied, and named in the warning. */
   unknownTools?: string[];
+  /** Entries of the `tools` field that were kept anyway (`ask: false`; `read: false` when nothing else is left): named in the warning. */
+  toolNotes?: string[];
   /** Frontmatter fields marcsh reads but does not apply. */
   ignored: string[];
 };
@@ -116,6 +118,7 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
     pack,
     ...(tools?.tools ? { tools: tools.tools } : {}),
     ...(tools && !tools.empty ? { unknownTools: tools.unknown } : {}),
+    ...(tools && tools.notes.length > 0 ? { toolNotes: tools.notes } : {}),
     ignored,
   };
 }

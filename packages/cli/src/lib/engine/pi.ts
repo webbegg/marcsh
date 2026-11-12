@@ -105,29 +105,58 @@ function restoredPlanTools(session: AgentSession): boolean {
 }
 
 /**
- * A resumed session that lacks one of the built-in tools a new build session offers: pi restored the loadout of a turn whose agent
- * had tools taken away (an agent's `tools` field, S15). The next agent may not have that narrowing, so a build turn sets the tools
- * a new session offers instead (the agent's own narrowing is applied on top, after this). A false alarm only costs that reset.
+ * What marcsh itself took away from a session's tools for an agent's `tools` field (S15), kept in the session file as a custom entry
+ * (pi ignores those) so a later turn can undo exactly that and nothing else. pi restores a resumed session's tools from its last turn,
+ * so without this the next agent would inherit the narrowing; and without this record a change in the restored tools that marcsh did
+ * not make (the user's `defaultTools`, an extension that turned a tool off) would look like one.
  */
-function restoredNarrowedTools(session: AgentSession, settingsManager: { getDefaultTools(): string[] | undefined }): boolean {
-  const expected = (settingsManager.getDefaultTools() ?? ["read", "bash", "edit", "write", ...EXPLORATION_TOOLS]).map((name) => name.replace(/^\+/, ""));
-  const builtin = new Set(session.getAllTools().filter((tool) => tool.sourceInfo.path.startsWith(BUILTIN_PREFIX)).map((tool) => tool.name));
-  const active = new Set(session.getActiveToolNames());
-  return expected.some((name) => builtin.has(name) && !active.has(name));
+const NARROWING_ENTRY = "marcsh-agent-tools";
+type Narrowing = { denied: Group[]; removed: string[] };
+
+const sameGroups = (a: readonly string[], b: readonly string[]) => a.join(",") === b.join(",");
+
+/** The last narrowing recorded on this session's branch; undefined when marcsh never recorded one. */
+function lastNarrowing(sessionManager: Pick<SessionManagerLike, "getBranch">): Narrowing | undefined {
+  const branch = sessionManager.getBranch();
+  for (let at = branch.length - 1; at >= 0; at--) {
+    const entry = branch[at]!;
+    if (entry.type !== "custom" || entry.customType !== NARROWING_ENTRY) continue;
+    const data = entry.data as { denied?: unknown; removed?: unknown } | undefined;
+    if (!Array.isArray(data?.denied) || !Array.isArray(data?.removed)) continue;
+    return { denied: data.denied.filter((x): x is Group => typeof x === "string"), removed: data.removed.filter((x): x is string => typeof x === "string") };
+  }
+  return undefined;
 }
+
+type SessionManagerLike = AgentSession["sessionManager"];
 
 /**
  * Takes the tools of the denied groups (an agent's `tools` field, S15) away from a session: they leave the active tools, are not
- * declared to the model, and a call to one is blocked with a reason, without asking. It only ever narrows. It is loaded twice: before
- * the approval extension, so a denied call is blocked before anything is asked, and after it, because plan mode's own handler there
+ * declared to the model, and a call to one is blocked with a reason, without asking. It only ever narrows (the tools in `restore`, which
+ * an earlier agent's narrowing took away, are first put back, then the denial is applied on top). It is loaded twice: before the
+ * approval extension, so a denied call is blocked before anything is asked, and after it, because plan mode's own handler there
  * sets the active tools to every read-only tool and would otherwise put a denied one back.
  */
-export function createDeniedToolsExtension(denied: readonly Group[]): ExtensionFactory {
+export function createDeniedToolsExtension(
+  denied: readonly Group[],
+  { restore = [], onRemoved }: { restore?: readonly string[]; onRemoved?: (names: string[]) => void } = {},
+): ExtensionFactory {
   return (pi) => {
     const isDenied = (name: string) => isPiToolDenied(name, denied);
+    // A tool that registers late (an MCP server that connects after the session started) comes back when it shows up.
+    const pending = new Set(restore);
     pi.on("tool_call", (event) => (isDenied(event.toolName) ? { block: true, reason: notAvailableReason(event.toolName) } : undefined));
     const narrow = () => {
-      pi.setActiveTools(pi.getActiveTools().filter((name) => !isDenied(name)));
+      let active = pi.getActiveTools();
+      if (pending.size > 0) {
+        const registered = new Set(pi.getAllTools().map((tool) => tool.name));
+        const back = [...pending].filter((name) => registered.has(name));
+        for (const name of back) pending.delete(name);
+        active = [...new Set([...active, ...back])];
+      }
+      const removed = active.filter(isDenied);
+      if (removed.length > 0) onRemoved?.(removed);
+      pi.setActiveTools(active.filter((name) => !isDenied(name)));
     };
     pi.on("before_agent_start", narrow);
     pi.on("turn_start", narrow);
@@ -308,8 +337,13 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
     const allowed = (name: string) => !isPiToolDenied(name, denied);
-    const denying = denied.length > 0 ? [createDeniedToolsExtension(denied)] : [];
+    // What this turn took away, by name, for the record the next turn reads (see NARROWING_ENTRY).
+    const removedNow = new Set<string>();
+    const removedBy = (names: readonly string[]) => names.forEach((name) => removedNow.add(name));
+    // A child session starts clean: it gets the denial, never the parent's restore.
+    const denyingChild = denied.length > 0 ? [createDeniedToolsExtension(denied)] : [];
     let session: AgentSession | undefined;
+    let previous: Narrowing | undefined;
     let aborted = signal.aborted;
     // Aborts when the turn is interrupted or over: pending approvals are then declined.
     const turnEnded = new AbortController();
@@ -388,6 +422,21 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       }
     };
 
+    // Writes what this turn's agent took away to the session, when it differs from what the last record says (see NARROWING_ENTRY).
+    // A record that is not written (the process died first) only means the next turn undoes nothing, as before S15.
+    const recordNarrowing = () => {
+      if (!session) return;
+      try {
+        const same = previous !== undefined && sameGroups(previous.denied, denied);
+        const registered = new Set(session.getAllTools().map((tool) => tool.name));
+        // Names an earlier narrowing took away and this turn could not put back yet (not registered) stay on the record.
+        const carried = previous ? previous.removed.filter((name) => same || !registered.has(name)) : [];
+        const removed = [...new Set([...removedNow, ...carried])].sort();
+        const unchanged = previous ? same && sameGroups(removed, [...previous.removed].sort()) : denied.length === 0;
+        if (!unchanged) session.sessionManager.appendCustomEntry(NARROWING_ENTRY, { denied, removed } satisfies Narrowing);
+      } catch {}
+    };
+
     const run = async () => {
       process.env[AGENT_DIR_ENV] = agentDir;
       prepareAgentDir();
@@ -414,6 +463,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ? pi.SessionManager.create(cwd, options.sessionDir)
           : undefined;
       const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted });
+      // Only what marcsh itself narrowed on an earlier turn of this conversation is undone, and only when this turn's agent narrows differently.
+      previous = sessionManager && lastNarrowing(sessionManager);
+      const restore = mode !== Mode.PLAN && previous && !sameGroups(previous.denied, denied) ? previous.removed : [];
+      const denying = denied.length > 0 || restore.length > 0 ? [createDeniedToolsExtension(denied, { restore, onRemoved: removedBy })] : [];
       const approval = {
         cwd,
         host,
@@ -448,7 +501,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
                 models,
                 model: resolved,
                 projectTrusted,
-                extensions: [...denying, createApprovalExtension(approval), ...denying],
+                extensions: [...denyingChild, createApprovalExtension(approval), ...denyingChild],
                 ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
               }),
           }),
@@ -469,14 +522,22 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL].filter(allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
-      if (mode === Mode.PLAN) session.setActiveToolsByName(session.getAllTools().filter(runsUnasked).map((tool) => tool.name).filter(allowed));
-      else {
-        // pi gives a resumed session the tools of its last turn: after a plan turn, or a turn whose agent had tools taken away, a
-        // build turn sets them again.
-        if (resumeRef && (restoredPlanTools(session) || restoredNarrowedTools(session, settingsManager))) {
+      if (mode === Mode.PLAN) {
+        const planTools = session.getAllTools().filter(runsUnasked).map((tool) => tool.name);
+        removedBy(planTools.filter((name) => !allowed(name)));
+        session.setActiveToolsByName(planTools.filter(allowed));
+      } else {
+        // pi gives a resumed session the tools of its last turn: after a plan turn a build turn sets them again.
+        if (resumeRef && restoredPlanTools(session)) {
           session.setActiveToolsByName(await newSessionTools(pi, session, { cwd, agentDir, models, model: resolved, projectTrusted }));
         }
-        if (denied.length > 0) session.setActiveToolsByName(session.getActiveToolNames().filter(allowed));
+        // The tools an earlier agent's narrowing took away come back (ones not registered yet, like MCP's, when they register).
+        if (restore.length > 0) session.setActiveToolsByName([...session.getActiveToolNames(), ...restore]);
+        if (denied.length > 0) {
+          const active = session.getActiveToolNames();
+          removedBy(active.filter((name) => !allowed(name)));
+          session.setActiveToolsByName(active.filter(allowed));
+        }
       }
       if (aborted) return;
 
@@ -543,6 +604,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           }
         }
       } finally {
+        recordNarrowing();
         settle();
         feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });

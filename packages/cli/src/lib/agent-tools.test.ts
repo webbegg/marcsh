@@ -160,8 +160,10 @@ describe("engine mappings", () => {
     expect(claudeDeniedTools(["edit"])).toEqual(expect.arrayContaining(["Edit", "Write", "MultiEdit", "NotebookEdit"]));
     expect(claudeDeniedTools(["read"])).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
     expect(claudeDeniedTools(["web"])).toEqual(["WebFetch", "WebSearch"]);
-    expect(claudeDeniedTools(["task"])).toEqual(["Task", "Agent"]);
-    expect(claudeDeniedTools(["mcp"])).toEqual(["mcp__*"]);
+    expect(claudeDeniedTools(["task"])).toEqual(["Task", "Agent", "Workflow", "TaskOutput", "TaskStop"]);
+    expect(claudeDeniedTools(["mcp"])).toEqual(["mcp__*", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]);
+    // A name in two groups is sent once.
+    expect(claudeDeniedTools(["bash", "task"]).filter((name) => name === "TaskStop")).toHaveLength(1);
     expect(claudeDeniedTools([])).toEqual([]);
   });
 
@@ -195,5 +197,65 @@ describe("engine mappings", () => {
 
   test("the reason a denied call is blocked with", () => {
     expect(notAvailableReason("bash")).toBe("bash is not available to this agent");
+  });
+});
+
+describe("groups cover every tool of the group [S15 regression]", () => {
+  test("Claude: the mcp group takes the MCP resource tools too (they read a server's data without asking)", () => {
+    for (const name of ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]) {
+      expect(claudeDeniedTools(["mcp"])).toContain(name);
+      expect(isClaudeToolDenied(name, ["mcp"])).toBe(true);
+    }
+  });
+
+  test("Claude: the task group takes Workflow (it starts subagents)", () => {
+    expect(claudeDeniedTools(["task"])).toContain("Workflow");
+    expect(isClaudeToolDenied("Workflow", ["task"])).toBe(true);
+  });
+
+  test("Claude: TaskOutput and TaskStop follow the bash and task groups", () => {
+    for (const group of ["bash", "task"] as const) {
+      expect(claudeDeniedTools([group])).toEqual(expect.arrayContaining(["TaskOutput", "TaskStop"]));
+      expect(isClaudeToolDenied("TaskStop", [group])).toBe(true);
+    }
+    expect(isClaudeToolDenied("TaskOutput", ["edit", "mcp"])).toBe(false);
+  });
+
+  test("pi: the mcp group takes pi's MCP resource tools", () => {
+    for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) expect(isPiToolDenied(name, ["mcp"])).toBe(true);
+    expect(isPiToolDenied("read_mcp_resource", ["bash"])).toBe(false);
+  });
+
+  test("pi: an extension tool whose name is a case variant or synonym of a denied group is denied too", () => {
+    for (const name of ["Bash", "BASH", "shell", "PowerShell"]) expect(isPiToolDenied(name, ["bash"])).toBe(true);
+    for (const name of ["Write", "MultiEdit"]) expect(isPiToolDenied(name, ["edit"])).toBe(true);
+    for (const name of ["Read", "GREP", "Glob"]) expect(isPiToolDenied(name, ["read"])).toBe(true);
+    expect(isPiToolDenied("Bash", ["edit"])).toBe(false);
+    expect(isPiToolDenied("AskUserQuestion", ["bash", "mcp", "task", "read", "edit"])).toBe(false);
+  });
+});
+
+describe("parseTools, entries that are not applied are noted [S15 regression]", () => {
+  test("`ask: false` is kept and says so", () => {
+    const parsed = parseTools(null, ["ask: false"]);
+    expect(parsed.tools).toBeUndefined();
+    expect(parsed.notes).toEqual(["ask: the question tool is always kept"]);
+  });
+
+  test("`AskUserQuestion: false` next to a real denial notes the entry as written", () => {
+    const parsed = parseTools(null, ["AskUserQuestion: false", "bash: false"]);
+    expect(parsed.tools).toEqual({ deny: ["bash"] });
+    expect(parsed.notes).toEqual(["AskUserQuestion: the question tool is always kept"]);
+  });
+
+  test("`read: false` with every other group false keeps read and says so", () => {
+    const parsed = parseTools(null, ["read: false", "edit: false", "bash: false", "web: false", "task: false", "mcp: false"]);
+    expect(parsed.tools?.deny).not.toContain("read");
+    expect(parsed.notes).toEqual(["read: read tools are kept so the agent can work"]);
+  });
+
+  test("a clean field has no notes", () => {
+    expect(parseTools(null, ["bash: false", "ask: true"]).notes).toEqual([]);
+    expect(parseTools("Read, Grep").notes).toEqual([]);
   });
 });

@@ -69,11 +69,11 @@ Names are not case-sensitive and map onto groups; naming one tool takes or keeps
 | `edit` | edit, write, patch, multiedit, notebookedit |
 | `bash` | bash, shell, powershell |
 | `web` | webfetch, websearch, fetch |
-| `task` | task, agent, subagent (the subagent tool) |
+| `task` | task, agent, subagent (the subagent tool, and on Claude the workflow tool, which starts subagents) |
 | `ask` | askuserquestion, question, ask_user |
-| `mcp` | mcp, `mcp__server__tool`, `server_*` |
+| `mcp` | mcp, `mcp__server__tool`, `server_*` (and the tools that list and read a server's resources) |
 
-`ask` is never removed, because marcsh asks its questions with it. If a list would leave nothing but `ask`, `read` is kept. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. On pi the `web` group has nothing to remove (pi has no web tools) and selecting the agent says so.
+`ask` is never removed, because marcsh asks its questions with it: an `ask: false` entry is kept, and selecting the agent warns `ask: the question tool is always kept`. If everything else would be removed, `read` is kept and selecting the agent warns `read: read tools are kept so the agent can work`. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. Tools that belong to none of the seven groups (for example Claude's worktree, cron and skill tools, or a pi extension's own tools) are not touched by either form. On pi the `web` group has nothing to remove (pi has no web tools) and selecting the agent says so.
 
 ## Pack layout
 

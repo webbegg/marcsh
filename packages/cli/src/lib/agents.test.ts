@@ -445,6 +445,20 @@ describe("agentWarnings", () => {
     expect(agentWarnings(agent, "pi")).toEqual(["X: tools web is not applied on pi (it has no web tools)"]);
   });
 
+  test("`ask: false` (never applied) warns on selection [S15 regression]", () => {
+    const agent = parseAgentFile("---\nname: A\ntools:\n  ask: false\n---\nx", { pack: "user", file: "a.md" })!;
+    expect(agentWarnings(agent, "claude").join("\n")).toMatch(/ask/);
+    expect(agentWarnings(agent, "claude")).toEqual(["A: ask: the question tool is always kept"]);
+  });
+
+  test("`read: false` with every other group false (read is kept) warns on selection [S15 regression]", () => {
+    const agent = parseAgentFile(
+      "---\nname: A\ntools:\n  read: false\n  edit: false\n  bash: false\n  web: false\n  task: false\n  mcp: false\n---\nx",
+      { pack: "user", file: "a.md" },
+    )!;
+    expect(agentWarnings(agent, "claude").join("\n")).toMatch(/read/);
+  });
+
   test("a model the engine cannot use is reported: pi takes provider/id, Claude does not", () => {
     const piModel = parseAgentFile("---\nname: P\nmodel: openai/gpt-5\n---\nP", { pack: "user", file: "p.md" })!;
     const claudeModel = parseAgentFile("---\nname: C\nmodel: opus\n---\nP", { pack: "user", file: "c.md" })!;
