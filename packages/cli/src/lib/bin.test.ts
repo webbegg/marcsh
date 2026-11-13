@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,5 +55,47 @@ describe("bin/marcsh", () => {
 
     expect(run.exitCode).toBe(0);
     expect(run.stdout.toString().trim()).toBe("marcsh");
+  });
+
+  describe("options", () => {
+    const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "package.json"), "utf8")).version as string;
+
+    // HOME is an empty temp dir (Bun itself may add ~/Library): an option that only prints must not start the app, which would create ~/.marcsh.
+    function launch(...args: string[]) {
+      const home = join(dir, "home");
+      mkdirSync(home);
+      const [command, ...flags] = interpreter();
+      const run = Bun.spawnSync([command!, ...flags, bin, ...args], { cwd: project, env: { ...process.env, HOME: home }, timeout: 10_000 });
+      return { run, stdout: run.stdout.toString(), stderr: run.stderr.toString(), home };
+    }
+
+    test("--version prints the package version and exits 0 without touching ~/.marcsh", () => {
+      const { run, stdout, home } = launch("--version");
+
+      expect(version).toMatch(/^\d+\.\d+\.\d+/);
+      expect(run.exitCode).toBe(0);
+      expect(stdout).toBe(`marcsh ${version}\n`);
+      expect(readdirSync(home)).not.toContain(".marcsh");
+    });
+
+    test("--help prints the usage with --version and --help and exits 0", () => {
+      const { run, stdout, home } = launch("--help");
+
+      expect(run.exitCode).toBe(0);
+      expect(stdout).toContain("Usage: marcsh");
+      expect(stdout).toContain("--version");
+      expect(stdout).toContain("--help");
+      expect(readdirSync(home)).not.toContain(".marcsh");
+    });
+
+    test("an unknown option prints the error and the usage and exits 2", () => {
+      const { run, stdout, stderr, home } = launch("--bogus");
+
+      expect(run.exitCode).toBe(2);
+      expect(stdout).toBe("");
+      expect(stderr).toContain('marcsh: unknown option "--bogus"');
+      expect(stderr).toContain("Usage: marcsh");
+      expect(readdirSync(home)).not.toContain(".marcsh");
+    });
   });
 });

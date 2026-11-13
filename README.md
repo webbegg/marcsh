@@ -11,13 +11,53 @@ See [Engines and models](docs/engines-and-models.md) to choose one.
 
 ## Requirements
 
-- [Bun](https://bun.sh) to install and run marcsh.
-- `git`, to download marcsh and to install packs.
-- A terminal. On Linux, if the launcher fails with an error about `env`, see [Troubleshooting](docs/troubleshooting.md#an-error-from-env-about-the--s-option).
+- [Bun](https://bun.sh) 1.4 or newer. The installer can install it for you.
+- `git`, to install packs.
+- macOS for the one-line installer. On other systems, install [from source](#from-source).
 
-## Install and launch
+## Install
 
-marcsh runs from a copy of this repository. Download it, install the dependencies, then register the `marcsh` command:
+On macOS, run:
+
+```
+curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash
+```
+
+The installer downloads the latest release, checks its checksum, and installs it in `~/.marcsh/app`. The checksum guards against a broken or incomplete download. It does not prove who published the release. It then links the `marcsh` command in `~/.local/bin`. It never uses `sudo`. If `~/.local/bin` is not on your `PATH`, it prints the line to add to your shell profile.
+
+The install script itself is fetched from the `main` branch and runs as it arrives, so you trust it because of where it comes from (GitHub, this repository). Only the release archive has its checksum checked. To fetch a fixed copy of the script, use the tag URL shown below.
+
+Releases are built by GitHub Actions with a provenance attestation. To check a release archive you downloaded:
+
+```
+gh attestation verify marcsh.tar.gz --repo webbegg/marcsh
+```
+
+Add options after `bash -s --`:
+
+```
+curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash -s -- --with-bun --modify-path
+```
+
+- `--with-bun` runs Bun's official installer first, if you don't have Bun 1.4 or newer. That installer comes from bun.sh and is not verified, and it may add Bun to your shell profile.
+- `--modify-path` adds `~/.local/bin` to your `PATH` in `~/.zshrc`.
+- `--uninstall` removes marcsh's app and the `marcsh` command. Your sessions, agents and packs in `~/.marcsh` stay.
+
+To update, run the same command again. The previous version is kept, so a failed update leaves the version you had working.
+
+To install a specific version, set `MARCSH_VERSION` and fetch the script from the same tag:
+
+```
+curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/v0.1.0/install.sh | MARCSH_VERSION=0.1.0 bash
+```
+
+Check which version you have with `marcsh --version`.
+
+To roll back, run the installer again with the previous version, as shown above. For example, set `MARCSH_VERSION=0.1.0`.
+
+### From source
+
+You can also run marcsh from a copy of this repository:
 
 ```
 git clone https://github.com/webbegg/marcsh.git
@@ -26,22 +66,18 @@ bun install
 bun run link:cli
 ```
 
-`link:cli` builds the CLI and links it with Bun. The `marcsh` command runs the code in this folder, so you do not need to link again after you pull changes.
+`link:cli` builds the CLI and links it with Bun. The `marcsh` command runs the code in this folder, so you do not need to link again after you pull changes. If the command is not found, run `packages/cli/bin/marcsh` from the repository. On Linux, if the launcher fails with an error about `env`, see [Troubleshooting](docs/troubleshooting.md#an-error-from-env-about-the--s-option).
 
-Then go to the folder you want to work on and start marcsh:
+## Launch
+
+Go to the folder you want to work on and start marcsh:
 
 ```
 cd ~/projects/my-app
 marcsh
 ```
 
-marcsh works on the folder you start it in. It takes no command-line options.
-
-If the `marcsh` command is not found, run the launcher from the repository instead:
-
-```
-/path/to/marcsh/packages/cli/bin/marcsh
-```
+marcsh works on the folder you start it in. `marcsh --version` prints the version, and `marcsh --help` lists the options.
 
 ## Quick start
 
