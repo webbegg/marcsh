@@ -17,7 +17,8 @@ import {
 import type { ChatMessage } from "../chat-types";
 import { Mode } from "../modes";
 import { openStorage } from "../storage";
-import { createDeniedToolsExtension, createPiEngine } from "./pi";
+import { createPiEngine } from "./pi";
+import { createDeniedToolsExtension } from "./pi-agent-tools";
 import { TASK_TOOL } from "./pi-subagent";
 import { trustEveryProject } from "./test-trust";
 import type { EngineEvent, PermissionAsk, TurnHost, TurnRequest } from "./types";
