@@ -938,8 +938,9 @@ describe("cancelling a fetch [R4-005]", () => {
     return { bin, pidFile };
   }
 
-  const waitFor = async (check: () => boolean, ms = 10_000) => {
-    const until = Date.now() + ms;
+  /** Polls until `check` holds, for at most `timeoutMs`; throws when it never does. Same helper as in packs.limits.test.ts. */
+  const waitFor = async (check: () => boolean, timeoutMs = 10_000) => {
+    const until = Date.now() + timeoutMs;
     while (!check()) {
       if (Date.now() > until) throw new Error("condition never became true");
       await new Promise((r) => setTimeout(r, 20));
@@ -957,7 +958,6 @@ describe("cancelling a fetch [R4-005]", () => {
 
   async function cancelledRun(run: (signal: AbortSignal) => Promise<unknown>, pidFile: string) {
     const controller = new AbortController();
-    const started = Date.now();
     const pending = run(controller.signal);
     const outcome = pending.then(
       () => "resolved",
@@ -966,11 +966,14 @@ describe("cancelling a fetch [R4-005]", () => {
     await waitFor(() => existsSync(pidFile));
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     expect(alive(pid)).toBe(true);
+    // Counted from the abort: git's start-up on a busy machine is not what is being timed. The stand-in git sleeps 30 s, so a cancel that
+    // waited for it would take that long.
+    const aborted = Date.now();
     controller.abort();
     const result = await outcome;
     expect(result).toBeInstanceOf(PackError);
     expect((result as Error).message).toBe("Cancelled");
-    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(Date.now() - aborted).toBeLessThan(15_000);
     // git is not left running: not even the program it started.
     await waitFor(() => !alive(pid), 5_000);
   }

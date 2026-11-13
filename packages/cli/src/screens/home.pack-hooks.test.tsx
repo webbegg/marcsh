@@ -207,8 +207,13 @@ describe("/agents hooks (S16)", () => {
     await waitForFrame("These commands run on your machine");
 
     await act(async () => screen!.mockInput.pressEscape());
-    await settle(200);
+    for (const end = Date.now() + 10_000; frame().includes("These commands run on your machine"); await settle(50)) {
+      if (Date.now() > end) throw new Error("Esc did not close the hooks review");
+    }
+    // Nothing marks the end of a declined review, so wait well past the time an enable takes (it shows a toast) to see that none starts.
+    await settle(500);
 
+    expect(frame()).not.toContain("Enabled hooks");
     expect(lockEntry().hooks).toBeUndefined();
   });
 

@@ -1,7 +1,8 @@
-import { query, type CanUseTool, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
+import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
@@ -30,13 +31,13 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
-  const abortController = new AbortController();
-  signal.addEventListener("abort", () => abortController.abort(), { once: true });
-
-  const canUseTool: CanUseTool = async (toolName, input, options) => {
-    // Backstop for `disallowedTools` (the SDK documents its MCP wildcard for agent definitions; this keeps a denied MCP call from ever
-    // reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
+/**
+ * The permission callback of a turn. A denied tool is refused here whoever calls it (the turn or a Task child), before anything is asked.
+ * Backstop for `disallowedTools` (the SDK documents its MCP wildcard for agent definitions; this keeps a denied MCP call from ever
+ * reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
+ */
+export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] | undefined): CanUseTool {
+  return async (toolName, input, options) => {
     if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
 
     const asked = toolName === "AskUserQuestion" ? parseAskUserQuestion(input) : null;
@@ -62,8 +63,43 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
       suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || options.defaultToNo,
     });
   };
+}
 
+/** The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`. */
+export function claudeQueryOptions({
+  cwd,
+  mode,
+  model,
+  systemPromptAppend,
+  deniedTools,
+  resumeRef,
+  abortController,
+  canUseTool,
+  plugins,
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "deniedTools" | "resumeRef"> & {
+  abortController: AbortController;
+  canUseTool: CanUseTool;
+  plugins: readonly string[];
+}): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
+  return {
+    cwd,
+    model,
+    permissionMode: toPermissionMode(mode),
+    resume: resumeRef,
+    abortController,
+    systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
+    settingSources: ["user", "project", "local"],
+    canUseTool,
+    ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
+    ...(plugins.length > 0 ? { plugins: plugins.map((path) => ({ type: "local" as const, path })) } : {}),
+  };
+}
+
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  const abortController = new AbortController();
+  signal.addEventListener("abort", () => abortController.abort(), { once: true });
+  const canUseTool = createCanUseTool(host, deniedTools);
 
   let chat: Query | null = null;
   const done = (async () => {
@@ -73,22 +109,11 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
     if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
     const packView = packTurn?.view;
     const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
-    const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])].map((path) => ({ type: "local" as const, path }));
+    const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])];
     try {
       chat = query({
         prompt,
-        options: {
-          cwd,
-          model,
-          permissionMode: toPermissionMode(mode),
-          resume: resumeRef,
-          abortController,
-          systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
-          settingSources: ["user", "project", "local"],
-          canUseTool,
-          ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
-          ...(plugins.length > 0 ? { plugins } : {}),
-        },
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, deniedTools, resumeRef, abortController, canUseTool, plugins }),
       });
 
       for await (const message of chat) {
