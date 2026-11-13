@@ -1,7 +1,8 @@
 import type { PermissionMode, PermissionResult, PermissionUpdate, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Mode, type ModeType } from "./modes";
-import type { ChatMessage, MessagePart, TaskStatus } from "./chat-types";
+import type { ChatMessage, ChatUsage, MessagePart, TaskStatus } from "./chat-types";
 import type { PermissionDecision } from "./engine/types";
+import { contextTokensOf, mergeUsage, reported } from "./usage";
 
 type ContentBlock = Record<string, unknown> & { type?: string };
 
@@ -126,24 +127,74 @@ function applyTaskMessage(reply: ChatMessage, message: SDKMessage): ChatMessage 
   }
 }
 
+type RequestUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
+type ModelUsageEntry = { inputTokens?: number; outputTokens?: number; contextWindow?: number };
+
+/**
+ * The context window of the model that answered. `modelUsage` lists every model the query used (subagents and helper calls
+ * too), keyed by full model id: the entry whose id contains the reply's model name wins, then a lone entry, then the one
+ * that handled the most tokens. Undefined when the SDK reports none.
+ */
+function contextWindowOf(modelUsage: Record<string, ModelUsageEntry> | undefined, model: string | undefined): number | undefined {
+  const entries = Object.entries(modelUsage ?? {});
+  const tokens = ([, entry]: [string, ModelUsageEntry]) => (reported(entry.inputTokens) ?? 0) + (reported(entry.outputTokens) ?? 0);
+  const named = model ? entries.find(([id]) => id.includes(model)) : undefined;
+  const main = named ?? entries.reduce<[string, ModelUsageEntry] | undefined>((best, entry) => (!best || tokens(entry) > tokens(best) ? entry : best), undefined);
+  return reported(main?.[1].contextWindow);
+}
+
+/**
+ * Context of a Claude request, as of its assistant message: input + cache read + cache write, the same formula as pi's.
+ * Each request of the turn replaces the last, so the reply ends with the final request's; the `result` message only
+ * has turn totals, which are not the context.
+ */
+function applyRequestUsage(reply: ChatMessage, message: SDKMessage): ChatMessage {
+  const usage = (message as { message?: { usage?: RequestUsage } }).message?.usage;
+  const contextTokens = contextTokensOf(usage?.input_tokens, usage?.cache_read_input_tokens, usage?.cache_creation_input_tokens);
+  if (contextTokens === undefined) return reply;
+  return { ...reply, metadata: { ...reply.metadata, usage: mergeUsage(reply.metadata?.usage, { contextTokens }) } };
+}
+
+/** The turn's totals from the `result` message: tokens of the main loop, the cost and the model's window, each when reported. */
+function resultUsage(base: ChatUsage | undefined, message: Extract<SDKMessage, { type: "result" }>, model: string | undefined): ChatUsage | undefined {
+  const tokens = (message as { usage?: RequestUsage }).usage;
+  return mergeUsage(base, {
+    inputTokens: reported(tokens?.input_tokens),
+    outputTokens: reported(tokens?.output_tokens),
+    cacheReadTokens: reported(tokens?.cache_read_input_tokens),
+    cacheWriteTokens: reported(tokens?.cache_creation_input_tokens),
+    contextWindow: contextWindowOf((message as { modelUsage?: Record<string, ModelUsageEntry> }).modelUsage, model),
+    costUsd: reported(message.total_cost_usd),
+  });
+}
+
 /** Folds one SDK message into the assistant reply, returning the same object when nothing changes. */
 export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMessage {
   if ("parent_tool_use_id" in message && message.parent_tool_use_id != null) return reply;
 
   switch (message.type) {
     case "assistant":
-      return appendParts(reply, contentBlocks(message.message));
+      return applyRequestUsage(appendParts(reply, contentBlocks(message.message)), message);
     case "user":
       return applyToolResults(reply, contentBlocks(message.message));
-    case "result":
+    case "result": {
+      const usage = resultUsage(reply.metadata?.usage, message, reply.metadata?.model);
       return {
         ...reply,
         metadata: {
           ...reply.metadata,
           durationMs: message.duration_ms,
           costUsd: message.total_cost_usd,
+          ...(usage ? { usage } : {}),
         },
       };
+    }
     case "system":
       if (message.subtype === "local_command_output") {
         return { ...reply, parts: [...reply.parts, { type: "text", text: message.content }] };
