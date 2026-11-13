@@ -24,8 +24,8 @@ const waitFor = async (check: () => boolean, timeoutMs = 10_000) => {
   }
 };
 
-/** The gaps between ticks of a 10 ms timer while `during` settles; a tick that a blocked event loop held back is counted too. */
-async function tickGaps(during: Promise<unknown>) {
+/** The gaps between ticks of a 10 ms timer while `work` runs; started after the clock so its synchronous start is measured too. */
+async function tickGaps(work: () => Promise<unknown>) {
   const gaps: number[] = [];
   let last = performance.now();
   const timer = setInterval(() => {
@@ -34,7 +34,7 @@ async function tickGaps(during: Promise<unknown>) {
     last = now;
   }, 10);
   try {
-    await during;
+    await work();
     gaps.push(performance.now() - last);
   } finally {
     clearInterval(timer);
@@ -164,11 +164,13 @@ describe("the scan does not block the UI [S17]", () => {
     makeRepo("acme/flows", files);
 
     // The timer's own jitter on this machine right now: an idle loop's worst gap. The scan must add less than 200 ms to it, so the check
-    // measures the scan (which once held the loop for 571 ms) and not how busy the machine is.
-    const jitter = Math.max(...(await tickGaps(Bun.sleep(300))));
-    const installed = installPack("acme/flows", options());
-    const gaps = await tickGaps(installed);
-    expect((await installed).status).toBe("installed");
+    // measures the scan (which once held the loop for 571 ms) and not how busy the machine is. Capped so one spike can't hide that block.
+    const jitter = Math.min(100, Math.max(...(await tickGaps(() => Bun.sleep(300)))));
+    let status = "";
+    const gaps = await tickGaps(async () => {
+      status = (await installPack("acme/flows", options())).status;
+    });
+    expect(status).toBe("installed");
     expect(gaps.length).toBeGreaterThan(20);
     expect(Math.max(...gaps)).toBeLessThan(200 + jitter);
   });
