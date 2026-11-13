@@ -1,13 +1,32 @@
-import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
-import { createMemoryRouter, RouterProvider } from "react-router";
-import { RootLayout } from "./layouts/root-layout";
-import { Home } from "./screens/home";
-import { NewSession } from "./screens/new-session";
-import { Session } from "./screens/session";
-import { warmUpEngineCommands } from "./lib/engine";
-import { getDefaultEngine } from "./lib/preferences";
-import { installQuitSignals } from "./lib/quit";
+import cliPackage from "../package.json";
+import { parseCliArgs, USAGE } from "./cli-args";
+
+// `--version` and `--help` only print. The app below is imported after this check: importing it opens the storage and
+// the renderer, which these options must not do.
+const args = parseCliArgs(process.argv.slice(2));
+if (args.kind === "version") {
+  console.log(`marcsh ${cliPackage.version}`);
+  process.exit(0);
+}
+if (args.kind === "help") {
+  console.log(USAGE.trimEnd());
+  process.exit(0);
+}
+if (args.kind === "error") {
+  console.error(`marcsh: ${args.message}\n\n${USAGE.trimEnd()}`);
+  process.exit(2);
+}
+
+const { createCliRenderer } = await import("@opentui/core");
+const { createRoot } = await import("@opentui/react");
+const { createMemoryRouter, RouterProvider } = await import("react-router");
+const { RootLayout } = await import("./layouts/root-layout");
+const { Home } = await import("./screens/home");
+const { NewSession } = await import("./screens/new-session");
+const { Session } = await import("./screens/session");
+const { warmUpEngineCommands } = await import("./lib/engine");
+const { getDefaultEngine } = await import("./lib/preferences");
+const { installQuitSignals } = await import("./lib/quit");
 
 const router = createMemoryRouter([
   {
