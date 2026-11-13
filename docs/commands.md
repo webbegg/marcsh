@@ -183,7 +183,7 @@ Queue a message to send after the current turn.
 - When no turn is running, `/queue` is not a command. The text is sent as an ordinary message.
 - A Claude session does not take input during a turn. Use `Esc` to interrupt it.
 
-See [Typing while the agent works](getting-started.md#typing-while-the-agent-works) for the details, including the macOS Terminal setting that makes `Option+Enter` work.
+See [Typing while the agent works](screen.md#typing-while-the-agent-works) for the details, including the macOS Terminal setting that makes `Option+Enter` work.
 
 ## Other `/name` input
 
@@ -263,12 +263,12 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Shift+Enter` | Add a new line. |
 | `Alt+Enter` (`Option+Enter` on a Mac) | During a pi turn, queue the message. Same as `/queue`. |
 | `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. |
-| `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting. |
+| `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `@` | Mention a file or folder. See below. |
 | `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
 
-The keys for approval prompts (`y`, `a`, `n`) are in [Getting started](getting-started.md#approving-tool-calls). The keys for the trust list (`t`, `d`) are in [Security](security.md#project-trust).
+The keys for approval prompts (`y`, `a`, `n`) are in [The screen](screen.md#approving-tool-calls). The keys for the trust list (`t`, `d`) are in [Security](security.md#project-trust).
 
 ### Mentioning files with `@`
 

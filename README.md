@@ -45,26 +45,41 @@ If the `marcsh` command is not found, run the launcher from the repository inste
 
 ## Quick start
 
-1. Start `marcsh` in your project folder. You see the home screen with an input box.
-2. Sign in.
-   - pi (the default): the status line under the input says `no model · run /login`. Type `/login`, pick a provider and follow the steps.
-   - Claude: type `/engine`, then pick Claude. marcsh has no Claude sign-in screen. It uses the Claude sign-in already on your machine.
-3. Type a question or a task and press `Enter`. For example: `Explain what src/index.ts does`. Type `@` to pick a file by name. To see an approval, ask for a change: `Add a one-line comment at the top of src/index.ts`.
-4. When the agent wants to use a tool that needs your approval, a prompt appears. Press `y` to allow it once, `a` to always allow it, or `n` to deny it. [Security](docs/security.md) explains what `a` covers.
-5. Press `Tab` to switch agent. Build edits files and runs commands. Plan only reads and plans. The status line shows the agent you picked.
+1. Start `marcsh` in your project folder.
+2. If the status line says `no model · run /login`, type `/login` and follow the steps.
+3. Type a task and press `Enter`, for example `Explain what src/index.ts does`.
+4. When a prompt asks for approval, press `y` to allow it once.
 
-To leave, press `Ctrl+C` on an empty input, or type `/exit`.
+[Getting started](docs/getting-started.md) has the full first task.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): the screens, the input and approving tool calls. A toast is a short message in the top right corner.
-- [Engines and models](docs/engines-and-models.md): the engine is what runs the conversation, pi or Claude. Choose a model and sign in.
-- [Sessions](docs/sessions.md): a session is one saved conversation. Start, find and resume them.
-- [Commands](docs/commands.md): every `/` command and the key bindings.
+### Using marcsh
+
+- [Getting started](docs/getting-started.md): your first task, from start to quit.
+- [Plan, then build](docs/guides/plan-then-build.md): make a change safely.
+- [Resume your work](docs/guides/resume-work.md): pick up where you left off.
+- [Install a pack](docs/guides/install-a-pack.md): add what someone shared.
+
+### Customizing it
+
+- [Write an agent](docs/guides/write-an-agent.md): make an agent for a job.
+- [Switch engine or model](docs/guides/switch-engine-or-model.md): use Claude or another model.
 - [Agents](docs/agents.md): an agent is a role with a permission level, such as Build or Plan. Switch agents and write your own.
-- [Packs](docs/packs.md): a pack is a public GitHub repository that adds agents, skills and commands. Install one from GitHub.
-- [Pack hooks](docs/pack-hooks.md): commands a pack can run around tool calls. They stay off until you turn them on.
-- [Building a pack](docs/building-a-pack.md): publish your own pack.
 - [Configuration](docs/configuration.md): files under `~/.marcsh`, MCP servers and environment variables.
+
+### Building packs
+
+- [Build and publish a pack](docs/guides/publish-a-pack.md): build a pack and share it.
+- [Building a pack](docs/building-a-pack.md): the layout and files of a pack.
+- [Pack hooks](docs/pack-hooks.md): commands a pack can run around tool calls. They stay off until you turn them on.
+
+### Reference
+
+- [Commands](docs/commands.md): every `/` command and the key bindings.
+- [The screen](docs/screen.md): the screens, the input, the status line, toasts and approval prompts.
+- [Sessions](docs/sessions.md): a session is one saved conversation. Start, find and resume them.
+- [Engines and models](docs/engines-and-models.md): the engine is what runs the conversation, pi or Claude. Choose a model and sign in.
+- [Packs](docs/packs.md): a pack is a public GitHub repository that adds agents, skills and commands. Install one from GitHub.
 - [Security](docs/security.md): what marcsh asks about, what it trusts and what it never runs.
 - [Troubleshooting](docs/troubleshooting.md): common problems and their messages.

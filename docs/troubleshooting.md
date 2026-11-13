@@ -57,15 +57,15 @@ marcsh could not write your conversation to the database. The reply you see on s
 
 ### My keys do nothing on an approval prompt
 
-The prompt ignores keys until you have stopped typing for a moment, and shows `waiting for typing to stop…`. If it shows `you were typing: press ↓ to answer`, press `Down` first. Prompts that say `y allow once (then Enter)` need `y` and then `Enter`. See [Getting started](getting-started.md#approving-tool-calls).
+The prompt ignores keys until you have stopped typing for a moment, and shows `waiting for typing to stop…`. If it shows `you were typing: press ↓ to answer`, press `Down` first. Prompts that say `y allow once (then Enter)` need `y` and then `Enter`. See [Typing protection](screen.md#typing-protection) and [Approving tool calls](screen.md#approving-tool-calls).
 
 ### `Alt+Enter` does nothing on a Mac
 
-macOS Terminal sends `Alt+Enter` only when "Use Option as Meta key" is on in its settings. Turn it on, or type `/queue your text` instead. Both work on pi sessions while a reply is running. See [Typing while the agent works](getting-started.md#typing-while-the-agent-works).
+macOS Terminal sends `Alt+Enter` only when "Use Option as Meta key" is on in its settings. Turn it on, or type `/queue your text` instead. Both work on pi sessions while a reply is running. See [Typing while the agent works](screen.md#typing-while-the-agent-works).
 
 ### I can't type while Claude is replying
 
-On a Claude session the input is off until the reply ends. Press `Esc` to stop the reply. On pi you can type during a reply. See [Getting started](getting-started.md).
+On a Claude session the input is off until the reply ends. Press `Esc` to stop the reply. On pi you can type during a reply. See [Typing while the agent works](screen.md#typing-while-the-agent-works).
 
 ## Projects and trust
 
