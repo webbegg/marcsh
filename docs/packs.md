@@ -19,7 +19,7 @@ marcsh does not run MCP servers from a pack. If the pack lists some, the preview
 
 ## Install a pack
 
-Type this in the input bar:
+Type this in the input:
 
 ```
 /agents install owner/repo

@@ -15,10 +15,10 @@ Build is the default. Plan can read your project but cannot write files or run c
 
 ## Switch agents
 
-- Press `Tab` in the input bar. It moves to the next agent and wraps around after the last one.
+- Press `Tab` in the input. It moves to the next agent and wraps around after the last one.
 - Or type `/agents`, pick an agent, and press `Enter`. Type to search the list.
 
-The status bar shows the selected agent on the left, before the model and the engine.
+The status line shows the selected agent on the left, before the model and the engine.
 
 The order is Build, Plan, your personal agents (sorted by file name), then agents from installed [packs](packs.md).
 
@@ -76,7 +76,7 @@ Frontmatter is flat `key: value` lines between two `---` lines. Quoted values wo
 
 | Field | Values | Default | Notes |
 | --- | --- | --- | --- |
-| `name` | text | the file name without `.md` | Shown in the status bar and in `/agents`. |
+| `name` | text | the file name without `.md` | Shown in the status line and in `/agents`. |
 | `description` | text | none | One line shown after the name in `/agents`. |
 | `mode` | `primary` or `all` | selectable | Both make the agent selectable and work the same. Values marcsh does not recognize are ignored with a warning. |
 | `permission` | `read-only` or `build` | `build` | `read-only` behaves like Plan. `build` behaves like Build: it asks before it writes or runs. Any other value is ignored with a warning, and the agent is a build agent. |
@@ -199,7 +199,7 @@ The warning for an entry that marcsh kept can start with the entry as you wrote 
 
 ## Names and labels
 
-The status bar and `/agents` show the agent's `name`. If two agents have the same name (in any letter case), marcsh adds a prefix so you can tell them apart:
+The status line and `/agents` show the agent's `name`. If two agents have the same name (in any letter case), marcsh adds a prefix so you can tell them apart:
 
 - A personal agent shows as `user/Name`.
 - A pack agent shows as `owner/repo/Name`.

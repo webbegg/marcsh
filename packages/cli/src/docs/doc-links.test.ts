@@ -5,12 +5,15 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 // packages/cli/src/docs -> repository root
 const ROOT = join(import.meta.dir, "..", "..", "..", "..");
-const DOCS = join(ROOT, "docs");
 
 const EXPECTED_PAGES = [
   "README.md",
   ...[
     "getting-started",
+    "screen",
+    "guides/plan-then-build",
+    "guides/resume-work",
+    "guides/switch-engine-or-model",
     "engines-and-models",
     "sessions",
     "commands",
@@ -24,14 +27,17 @@ const EXPECTED_PAGES = [
   ].map((page) => `docs/${page}.md`),
 ];
 
-/** README.md and every docs/*.md that exists. */
-function pages(): string[] {
-  const found = existsSync(join(ROOT, "README.md")) ? [join(ROOT, "README.md")] : [];
-  if (existsSync(DOCS)) {
-    for (const name of readdirSync(DOCS).sort()) {
-      if (name.endsWith(".md")) found.push(join(DOCS, name));
+/** README.md and every .md under docs/, in subfolders too. */
+function pages(root = ROOT): string[] {
+  const found = existsSync(join(root, "README.md")) ? [join(root, "README.md")] : [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (name.endsWith(".md")) found.push(path);
     }
-  }
+  };
+  if (existsSync(join(root, "docs"))) walk(join(root, "docs"));
   return found;
 }
 
@@ -155,7 +161,7 @@ describe("documentation pages", () => {
     expect(missing).toEqual([]);
   });
 
-  test("every relative link in README.md and docs/*.md resolves", () => {
+  test("every relative link in README.md and docs/**/*.md resolves", () => {
     expect(pages().flatMap((page) => brokenLinks(page))).toEqual([]);
   });
 });
@@ -225,6 +231,12 @@ describe("link checker on fixtures", () => {
   test("a malformed escape is reported, not thrown", () => {
     write("README.md", "[bad](docs/%zz.md)\n");
     expect(check("README.md")).toEqual(["README.md: docs/%zz.md is not a valid link"]);
+  });
+
+  test("pages in folders under docs/ are checked too", () => {
+    mkdirSync(join(root, "docs", "guides"));
+    write("docs/guides/a.md", "[gone](../gone.md)\n");
+    expect(pages(root).flatMap((page) => brokenLinks(page, root))).toEqual(["docs/guides/a.md: ../gone.md does not exist"]);
   });
 
   test("external links and links inside the same page are left alone", () => {
