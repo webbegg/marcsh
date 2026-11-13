@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hooks";
+import { claudeToolName, claudeToolNames } from "../tool-names";
 import type { NoticeLevel } from "./types";
 
 // Pack hooks on pi, which has none: marcsh runs an enabled pack's tool-call events itself, with Claude's hook contract (see the agent-workflows skill).
@@ -12,19 +13,6 @@ const MAX_CAPTURE = 256 * 1024;
 const MAX_REASON = 4000;
 /** After the hook exited, how long its output pipes are waited for: a process it left running in the background may hold them open. */
 const PIPE_GRACE_MS = 250;
-
-const CLAUDE_NAMES: Record<string, string> = { bash: "Bash", edit: "Edit", write: "Write", read: "Read", grep: "Grep", find: "Glob", ls: "LS", Task: "Agent" };
-/** Names Claude used for a tool before it renamed it, and still accepts in a matcher. */
-const OLDER_NAMES: Record<string, string[]> = { Agent: ["Task"] };
-
-/** The name Claude's hooks and matchers use for a pi tool now (`Task` is `Agent`): `AskUserQuestion` and `mcp__server__tool` already are; unknown tools keep their name. */
-export const claudeToolName = (piName: string) => CLAUDE_NAMES[piName] ?? piName;
-
-/** Every name a matcher may use for a pi tool: the current Claude name first, then the older ones. */
-export const claudeToolNames = (piName: string) => {
-  const name = claudeToolName(piName);
-  return [name, ...(OLDER_NAMES[name] ?? [])];
-};
 
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {

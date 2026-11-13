@@ -1,5 +1,5 @@
 import type { AskQuestion } from "../ask-user-question";
-import type { Group } from "../agent-tools";
+import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
 import type { ModeType } from "../modes";

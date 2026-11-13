@@ -1,5 +1,6 @@
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { isPiToolDenied, notAvailableReason, type Group } from "../agent-tools";
+import { isPiToolDenied, notAvailableReason } from "../agent-tools";
+import type { Group } from "../tool-names";
 import { isMarcshAskUser } from "./pi-ask-user";
 import type { ToolSource } from "./pi-permissions";
 import { isMarcshTask } from "./pi-subagent";

@@ -1,7 +1,8 @@
 import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason, type Group } from "../agent-tools";
+import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
+import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
