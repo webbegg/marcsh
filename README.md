@@ -59,15 +59,18 @@ If the `marcsh` command is not found, run the launcher from the repository inste
 - [Getting started](docs/getting-started.md): your first task, from start to quit.
 - [Plan, then build](docs/guides/plan-then-build.md): make a change safely.
 - [Resume your work](docs/guides/resume-work.md): pick up where you left off.
+- [Install a pack](docs/guides/install-a-pack.md): add what someone shared.
 
 ### Customizing it
 
+- [Write an agent](docs/guides/write-an-agent.md): make an agent for a job.
 - [Switch engine or model](docs/guides/switch-engine-or-model.md): use Claude or another model.
 - [Agents](docs/agents.md): an agent is a role with a permission level, such as Build or Plan. Switch agents and write your own.
 - [Configuration](docs/configuration.md): files under `~/.marcsh`, MCP servers and environment variables.
 
 ### Building packs
 
+- [Build and publish a pack](docs/guides/publish-a-pack.md): build a pack and share it.
 - [Building a pack](docs/building-a-pack.md): the layout and files of a pack.
 - [Pack hooks](docs/pack-hooks.md): commands a pack can run around tool calls. They stay off until you turn them on.
 
