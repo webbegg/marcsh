@@ -10,7 +10,9 @@ The `marcsh` launcher uses `env -S` to pass options to Bun. On Linux this needs 
 
 ### The `marcsh` command is not found
 
-Run `bun run link:cli` again from the repository, as described in the [README](../README.md). Check that Bun's global bin folder (usually `~/.bun/bin`) is on your `PATH`. You can also start marcsh with `packages/cli/bin/marcsh` from the repository.
+If you used the installer, check that `~/.local/bin` is on your `PATH`, or run the installer again with `--modify-path` (see the [README](../README.md#install)). The launcher also needs `bun` on your `PATH`.
+
+If you installed from source, run `bun run link:cli` again from the repository. Check that Bun's global bin folder (usually `~/.bun/bin`) is on your `PATH`. You can also start marcsh with `packages/cli/bin/marcsh` from the repository.
 
 ## Models and signing in
 
