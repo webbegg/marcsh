@@ -1,6 +1,6 @@
 # Commands
 
-Type `/` in the prompt to run a command. This page lists every marcsh command, the commands that ship with marcsh, how other `/name` input is handled, and the keyboard shortcuts.
+Type `/` in the prompt to run a command. This page lists every marcsh command, how to write your own, the commands that ship with marcsh, how other `/name` input is handled, and the keyboard shortcuts.
 
 ## Using the command menu
 
@@ -21,7 +21,7 @@ Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to
 - Keep typing to filter. The letters you type must appear in the command name in that order, so `/mo` finds `/models` and `/ss` finds `/sessions`. Case does not matter. Better matches come first.
 - With nothing after the `/`, marcsh's own commands come first, then the engine's commands sorted by name.
 - The menu shows at most 10 rows and scrolls.
-- The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. marcsh's own commands have no tag.
+- The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.
 - When nothing matches, the menu says "No matching commands". `Enter` then sends your text as typed.
 
 ## marcsh commands
@@ -195,6 +195,76 @@ Any text that starts with `/` and is not one of the commands above is sent as yo
 The `/` menu lists the commands and skills of the engine you are on. The list is read when you open the menu.
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
+
+Your [custom commands](#custom-commands) are the exception: marcsh expands them itself before sending.
+
+## Custom commands
+
+A custom command is a Markdown file. Its name becomes a `/name` command, and its text is the prompt that is sent.
+
+| Where | Name of the command | Works in |
+|---|---|---|
+| `~/.marcsh/commands/review.md` | `/review` | every project |
+| `<project>/.marcsh/commands/review.md` | `/review` | that project, once you trust it |
+
+Save this as `~/.marcsh/commands/review.md`:
+
+```markdown
+---
+description: Review a file for bugs
+agent: reviewer
+model: sonnet
+---
+Review $1 for bugs and unclear names.
+Pay special attention to: $ARGUMENTS
+```
+
+Then type:
+
+```
+/review src/app.ts error handling
+```
+
+The chat shows the expanded prompt as your message, and that is what the engine receives:
+
+```
+Review src/app.ts for bugs and unclear names.
+Pay special attention to: src/app.ts error handling
+```
+
+### The file
+
+- The name is the file name without `.md`. It must match `[a-z0-9][a-z0-9-_:]*` (lowercase letters, digits, `-`, `_` and `:`, starting with a letter or digit). A file with any other name is skipped.
+- The text after the frontmatter is the prompt. A file with no prompt is skipped. Files over 256 KB are skipped.
+- Frontmatter is optional. These fields are read:
+  - `description`: the text in the `/` menu. Without it, the first line of the prompt is shown.
+  - `agent`: the agent to run the turn as, by ID (`user/reviewer`, `plan`) or by name. An unknown agent is reported and the selected agent is used.
+  - `model`: the model for the turn. If the engine cannot use it (a pi model such as `openai/gpt-5` on Claude, or the reverse), it is reported and the session model is used.
+- `agent` and `model` apply to that turn only. The next message runs as the selected agent on the session model.
+
+### Arguments
+
+| Placeholder | Becomes |
+|---|---|
+| `$ARGUMENTS` | everything you typed after the command name |
+| `$1` to `$9` | the first to ninth word of it, split on spaces; empty when you gave fewer |
+
+- Arguments are used only where the file names them. A file with no placeholder sends the prompt as written.
+- Text inside your arguments is never expanded again, so an argument that contains `$1` stays as typed.
+- `$0`, `$10` and a lone `$` are plain text (`$10` is `$1` followed by `0`).
+
+### Where they show and which one wins
+
+- They appear in the `/` menu with the tag `personal` or `project`. The files are read when the menu opens, so a new file shows up without a restart. Picking one puts `/name ` in the prompt; add the arguments and press `Enter`.
+- marcsh's own commands win a name clash: a `new.md` file is ignored. A command of yours also replaces an engine command with the same name.
+- A project command replaces a personal one with the same name.
+- To change where personal commands are read from, set `MARCSH_COMMANDS_DIR`.
+
+### Project commands and trust
+
+A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
+
+Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
 
 ## Bundled commands and skills
 

@@ -25,6 +25,8 @@ import type { NoticeLevel } from "../lib/engine/types";
 import { modelForEngine } from "../lib/models";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { giveBackText } from "../lib/prompt-lock";
+import { COMMAND_NAMES } from "../components/command-menu/commands";
+import { userCommandTurn } from "../lib/user-commands";
 
 const sessionLocationSchema = z.object({
   initialPrompt: z
@@ -33,6 +35,8 @@ const sessionLocationSchema = z.object({
       mode: z.custom<ModeType>(),
       model: z.string(),
       agentId: z.string().optional(),
+      /** The model a custom command asked for, for this first turn. */
+      agentModel: z.string().optional(),
     })
     .optional(),
 });
@@ -68,7 +72,7 @@ function SessionChat({
   initialPrompt,
 }: { 
   session: StoredSession,
-  initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string };
+  initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string };
 }) {
   const { agents, agent, model, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
@@ -110,12 +114,12 @@ function SessionChat({
     };
   }, [abort]);
 
-  // Starts a turn for `turnAgent` on the model this session's engine uses: the agent's own when this engine can use it,
-  // else the session's (a pi session sends the pi model that has credentials now).
+  // Starts a turn for `turnAgent` on the model this session's engine uses: `modelOverride` (a custom command's, already checked against
+  // the engine), else the agent's own when this engine can use it, else the session's (a pi session sends the pi model that has credentials now).
   const send = useCallback(
-    (userText: string, turnAgent: Agent, claudeModel: string) => {
+    (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string) => {
       const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
-      const agentModel = turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined;
+      const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
         void submit({ ...turn, model: agentModel ?? modelForEngine(session.engine, claudeModel) });
         return;
@@ -130,6 +134,17 @@ function SessionChat({
         });
     },
     [session.engine, submit, refreshPiModel],
+  );
+
+  // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
+  const sendTyped = useCallback(
+    (text: string) => {
+      const turn = userCommandTurn(text, { cwd: session.cwd, engine: session.engine, agents, builtinNames: COMMAND_NAMES });
+      if (!turn) return send(text, agent, model);
+      if (turn.warning) toast.show({ variant: "info", message: turn.warning });
+      send(turn.text, turn.agent ?? agent, model, turn.model);
+    },
+    [session.cwd, session.engine, agents, agent, model, send, toast],
   );
 
   // A pi session's input takes keys whenever no prompt is open: while it starts (the model check, before the turn can take steers), while the
@@ -169,7 +184,7 @@ function SessionChat({
     // A prompt that names no agent (older navigation state) runs as the selected agent, or as the built-in one when the mode it carries differs.
     const fallback = agent.mode === initialPrompt.mode ? agent.id : builtinAgentId(initialPrompt.mode);
     const first = findAgent(agents, initialPrompt.agentId ?? fallback);
-    send(initialPrompt.message, first, initialPrompt.model);
+    send(initialPrompt.message, first, initialPrompt.model, initialPrompt.agentModel);
   }, [initialPrompt, agents, agent, send]);
 
   return (
@@ -177,7 +192,9 @@ function SessionChat({
       <SessionShell
         cwd={session.cwd}
         engine={session.engine}
-        onSubmit={(text) => send(text, agent, model)}
+        draftKey={session.id}
+        messages={messages}
+        onSubmit={sendTyped}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
         loading={busy}
         interruptible={busy}
