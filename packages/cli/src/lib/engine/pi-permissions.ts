@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { type ApprovalMode, decideApproval, type ToolCall } from "../approval-policy";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
@@ -66,6 +67,8 @@ export type ApprovalOptions = {
   tools: () => readonly ToolSource[];
   /** The branch/ship guard for pi's built-in `bash`. Default: the same decision Claude's PreToolUse hook makes. */
   guard?: Guard;
+  /** The session's approval mode (absent = normal). Decides after the plan-mode block and the guard's deny, so neither is ever loosened. */
+  approvalMode?: ApprovalMode;
 };
 
 /** The guard's verdict on a call, or null: only pi's own `bash` with a command string is guarded, and a guard that fails is no verdict (fail open, like the Claude hook). */
@@ -80,24 +83,42 @@ function guardVerdict(guard: Guard, cwd: string, call: { toolName: string; input
   }
 }
 
+/** pi's own built-in `edit` and `write` write the file named by their `path` input. */
+const EDIT_TOOLS = ["edit", "write"];
+
+/** What the approval policy sees of a call: pi's own `bash` is a shell command, its own `edit`/`write` a file edit, any other tool is not classified. */
+function policyCall(call: { toolName: string; input: Record<string, unknown> }, tools: readonly ToolSource[]): ToolCall {
+  const tool = tools.find((candidate) => candidate.name === call.toolName);
+  if (!tool) return { kind: "other" };
+  const { command, path } = call.input;
+  if (isBuiltinBash(tool) && typeof command === "string") return { kind: "shell", command };
+  if (EDIT_TOOLS.includes(tool.name) && tool.sourceInfo.path === `builtin:${tool.name}` && typeof path === "string") return { kind: "edit", path };
+  return { kind: "other" };
+}
+
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand, approvalMode = "normal" }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
     if (!needsApproval(call.toolName, tools())) return undefined;
     if (planMode) return { block: true, reason: PLAN_MODE_REASON };
 
     const verdict = guardVerdict(guard, cwd, call, tools());
     if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
-    // A guarded action always asks and can never be always-allowed: no rule is matched, and none is stored.
-    const guarded = verdict?.decision === "ask" ? verdict : undefined;
-    const rule = guarded ? undefined : ruleFor(cwd, call.toolName, call.input);
+
+    // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
+    const policy = decideApproval(approvalMode, policyCall(call, tools()), cwd);
+    if (policy.action === "block") return { block: true, reason: policy.reason };
+    if (policy.action === "allow") return undefined;
+    const floor = policy.action === "ask" ? { reason: policy.reason } : verdict?.decision === "ask" ? verdict : undefined;
+    // A floor action always asks and can never be always-allowed: no rule is matched, and none is stored.
+    const rule = floor ? undefined : ruleFor(cwd, call.toolName, call.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
     try {
       decision = await host.askPermission(
-        guarded
-          ? { toolName: call.toolName, input: call.input, decisionReason: guarded.reason, suppressAlwaysAllowRule: true }
+        floor
+          ? { toolName: call.toolName, input: call.input, decisionReason: floor.reason, suppressAlwaysAllowRule: true }
           : { toolName: call.toolName, input: call.input },
         signal,
       );

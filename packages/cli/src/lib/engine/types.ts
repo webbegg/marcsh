@@ -1,3 +1,4 @@
+import { approvalModeLine, type ApprovalMode } from "../approval-policy";
 import type { AskQuestion } from "../ask-user-question";
 import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
@@ -51,6 +52,11 @@ export type TurnRequest = {
   model: string;
   /** The selected agent's prompt: added to the engine's own system prompt for this turn, never in place of it. */
   systemPromptAppend?: string;
+  /**
+   * The session's approval mode: what runs without asking, for the turn and the Task children it starts. Absent: normal, the
+   * engine's own flow exactly as before (only catastrophic commands are blocked).
+   */
+  approvalMode?: ApprovalMode;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
   /**
@@ -62,6 +68,12 @@ export type TurnRequest = {
   /** Aborting stops the turn. */
   signal: AbortSignal;
 };
+
+/** The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent. */
+export function systemPromptWithMode(agentPrompt: string | undefined, approvalMode: ApprovalMode | undefined): string | undefined {
+  const line = approvalMode ? approvalModeLine(approvalMode) : undefined;
+  return [agentPrompt, line].filter(Boolean).join("\n\n") || undefined;
+}
 
 export type NoticeLevel = "info" | "warning" | "error";
 
