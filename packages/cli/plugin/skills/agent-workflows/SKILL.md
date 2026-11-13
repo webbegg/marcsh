@@ -49,7 +49,7 @@ Any other field (`temperature`, ...) is read but not applied; selecting the agen
 
 ### Limiting tools
 
-`tools` narrows what the agent can use. It only removes tools and never adds any: a `read-only` agent that lists `bash: true` still cannot run bash, and every tool that is left still asks before it runs. Two forms work:
+`tools` narrows what the agent can use. It only removes tools and never adds any: a `read-only` agent that lists `bash: true` still cannot run bash. Narrowing never turns off an approval: a tool that asked before still asks. On pi, read, grep, find, ls, the question tool and Task run without asking, with or without `tools`; on Claude, so does whatever its permission mode allows. Two forms work:
 
 ```yaml
 tools:            # OpenCode map: false removes the group, true changes nothing
@@ -74,10 +74,10 @@ Names are not case-sensitive and map onto groups; naming one tool takes or keeps
 | `read` | read, grep, glob, find, ls, list, notebookread |
 | `edit` | edit, write, patch, multiedit, notebookedit |
 | `bash` | bash, shell, powershell |
-| `web` | webfetch, websearch, fetch |
+| `web` | webfetch, websearch, web, fetch |
 | `task` | task, agent, subagent (the subagent tool, and on Claude the workflow tool, which starts subagents) |
-| `ask` | askuserquestion, question, ask_user |
-| `mcp` | mcp, `mcp__server__tool`, `server_*` (and the tools that list and read a server's resources) |
+| `ask` | askuserquestion, question, ask_user, ask |
+| `mcp` | mcp, `mcp__server__tool`, any name that starts with `mcp_` or ends with `_*` (and the tools that list and read a server's resources) |
 
 `ask` is never removed, because marcsh asks its questions with it: an `ask: false` entry is kept, and selecting the agent warns `ask: the question tool is always kept`. If everything else would be removed, `read` is kept and selecting the agent warns `read: read tools are kept so the agent can work`. A name in no group is unknown: it is ignored and selecting the agent warns `unknown tools x, y`. Tools that belong to none of the seven groups (for example Claude's worktree, cron and skill tools, or a pi extension's own tools) are not touched by either form. On pi the `web` group has nothing to remove (pi has no web tools): selecting the agent says that `web: false` changes nothing, but only when `web` is denied by name in the map, not by a list or `"*"`.
 
@@ -104,7 +104,7 @@ commands/*.md                   slash commands
 - A file in `skills/` or `commands/` over 1 MB.
 - An agent file over 256 KB.
 - A repository over 5,000 entries (files and folders) or 50 MB of files, counted on the checked-out tree without `.git`. Keep a pack to prompts, skills and commands; do not commit assets, binaries or `node_modules`.
-- A download over 100 MB, `.git` included. marcsh watches the size while git downloads and stops it as soon as it passes the cap, so a huge repository is rejected before it finishes arriving, with "Pack rejected: the download is larger than marcsh accepts (over 100 MB)". Keep the repository small, history included: no large binaries committed, even if they were deleted later.
+- A download over 100 MB, `.git` included. marcsh watches the size while git downloads and stops it as soon as it passes the cap, so a huge repository is rejected before it finishes arriving, with "Pack rejected: the download is larger than marcsh accepts (over 100 MB)". marcsh fetches one commit, so deleted history does not count, but the Git data of that commit and the checked-out files both do: keep the files well under 50 MB.
 - An agent file whose frontmatter is never closed (an opening `---` with no closing `---`).
 - No primary agent in `agents/*.md` (only subagents, or none).
 - `hooks` in the frontmatter of any skill or command, in any spelling (quoted, indented, upper case, inside `{ }`, nested). Declare hooks in `hooks/hooks.json` instead: that is the supported way, and it is opt-in (see Hooks below).
@@ -129,6 +129,7 @@ A pack can ship hooks, but they are opt-in and off by default. Nothing in `hooks
 
 - Only `"type": "command"` hooks are supported, each `command` on one line of at most 2,000 characters with no control or invisible characters (line and paragraph separators, non-ASCII spaces, lone surrogates and blank-looking letters such as U+3164 or U+2800 count). Any other hook type, key or shape makes the hooks unusable: the pack still installs, the preview says so, and they can never be enabled.
 - Limits of `hooks/`: no symlinks or special files, each file at most 1 MB, 5 MB in total, and file names with the same kind of characters are refused. A folder over a limit is unusable too. The name `.marcsh-commands.json` is marcsh's own and cannot be used.
+- More limits that make the hooks unusable: more than 30 events or 100 commands, more than 500 entries under `hooks/`, a `timeout` that is not a number of seconds above 0 and up to 600, and a `matcher` over 200 characters. Without a `hooks/` folder there are no hooks. A `hooks/` folder without a valid `hooks/hooks.json`, or one with no command in it, makes the hooks unusable.
 - `matcher` is empty, `*`, or tool names separated by `|` written with letters, digits, `_`, `.` and `-`, each with at most one `*` (or `.*`) wildcard (`Bash`, `Edit|Write`, `mcp__memory__.*`). Anything else, regular expressions included, makes the hooks unusable. `Task` and `Agent` name the same tool on pi, so a matcher written for either one matches.
 - PreToolUse, PostToolUse and PostToolUseFailure run on Claude and pi. All other events (SessionStart, Stop...) run on Claude only; selecting the agent on pi warns about them.
 - Hooks may run any file of this pack (`${CLAUDE_PLUGIN_ROOT}` is the pack's generated view with its skills, commands and `hooks/`), so the consent covers the whole pack, not only `hooks/`.
@@ -152,7 +153,7 @@ A pack can ship hooks, but they are opt-in and off by default. Nothing in `hooks
 
 1. **Draft the prompt together.** Ask for the lane or role (what the agent does and does not do), the permission (`read-only` if it must never change anything, otherwise `build`), the steps it follows, and which skill to use when. Propose a draft; do not invent requirements.
 2. **Write the file** to `~/.marcsh/agents/<name>.md` (lowercase file name, no spaces). Keep the prompt short and imperative.
-3. **Test it.** Tell the user to press Tab or open `/agents` (it reads the files again, so no restart) and select the agent. A warning toast on selection means a field was ignored: fix it. Run a real request, then adjust the prompt. An edit applies from the next turn of the same conversation.
+3. **Test it.** Tell the user to open `/agents` (it reads the files again, so no restart) and select the agent. A warning toast on selection means a field was ignored: fix it. Run a real request, then adjust the prompt. After an edit, open `/agents` again so marcsh reads the file; the change applies from the next message.
 4. **Iterate** until the agent behaves. Stop here if the user only needs it for themselves.
 5. **Promote to a pack (optional).** Create a repo with `agents/<name>.md` and any `skills/` and `commands/`. Run the checklist below. The user commits and pushes it to GitHub; do not push for them.
 6. **Install.** `/agents install owner/repo[@ref]` (or `https://github.com/owner/repo`). marcsh fetches it, shows a preview (agents, skills, commands, what is not used, warnings), and installs only after the user accepts. The pack is pinned to the commit they saw. Esc cancels the install while it is fetching and stops git; nothing is kept.
@@ -168,7 +169,7 @@ Check each item on the files; report any that fails and fix it first.
 - [ ] Each agent has `name`, `description`, `permission`, and no field outside `name`, `description`, `mode`, `permission`, `model`, `tools`.
 - [ ] `model`, if present, fits the engine: `provider/id` for pi, a `claude-*` name or alias (`opus`, `sonnet`, `haiku`...) for Claude.
 - [ ] No symlink anywhere (`find . -type l -not -path './.git/*'` prints nothing).
-- [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries), with a download (`du -sh .git`, plus the files) well under 100 MB.
+- [ ] No file in `skills/` or `commands/` over 1 MB, and the whole repo is under 5,000 entries and 50 MB (`find . -path ./.git -prune -o -print | wc -l` counts the entries), with the files well under 50 MB, so that the download (`du -sh .git`, plus the files) stays under 100 MB.
 - [ ] No `hooks` key in any skill or command frontmatter, and no `...` line inside one.
 - [ ] Every frontmatter opens and closes with a bare `---` line and parses as YAML.
 - [ ] `tools`, if present, names only the groups above (selecting the agent shows no `unknown tools` warning).
