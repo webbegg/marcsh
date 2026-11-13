@@ -1,0 +1,196 @@
+# Pushing a tag `v<version>` builds marcsh.tar.gz (+ .sha256) and attaches both to a GitHub Release for that tag.
+# The tag must equal `v` + packages/cli/package.json "version", and that version must be newer than the latest
+# release; otherwise the run fails before building anything.
+#
+# Two jobs, so the one that can write releases never runs the build:
+#   build    read-only token. Checks the tag, typechecks, builds, smoke-tests the archive (unpacks it, installs its
+#            dependencies the way the installer does, runs `marcsh --version`), and hands the two files over as an artifact.
+#   publish  the write token. Attests where the files came from, then creates the release as a draft, uploads the
+#            files and only then publishes it, so nobody ever sees a release without its files.
+#
+# This workflow does not run the test suite. Tests run in the CI workflow for pull requests (to be added); a release
+# is cut from a commit that has already passed it. It does typecheck, because that is fast and needs no setup.
+#
+# Only a tag on a commit that is on main publishes. A tag with a `-` in it (v0.2.0-beta.1) is published as a
+# prerelease and never becomes the "latest" release, so `releases/latest` (what the curl installer downloads) skips it.
+# Verify a downloaded release: gh attestation verify marcsh.tar.gz --repo webbegg/marcsh
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Nothing can write by default; the publish job asks for what it needs.
+permissions:
+  contents: read
+
+# One release run at a time, whatever the tag: two tags pushed together cannot race for "latest". A second run waits
+# instead of racing the first one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the whole history, so the next step can tell whether the tag is on main
+
+      - name: Check the tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::the commit tagged $GITHUB_REF_NAME is not on main; tag a commit that is on main"
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Check the tag matches the package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/cli/package.json").text()).version)')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match packages/cli/package.json version $version (expected v$version)"
+            exit 1
+          fi
+
+      # Semver order, prereleases included (0.2.0-beta.2 < 0.2.0). With no release yet there is nothing to compare with.
+      - name: Check the version is newer than the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          errors="$(mktemp)"
+          if ! latest="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>"$errors")"; then
+            if grep -q "HTTP 404" "$errors"; then
+              echo "There is no release yet, so there is nothing to compare $TAG with."
+              exit 0
+            fi
+            cat "$errors" >&2
+            exit 1
+          fi
+          LATEST="$latest" bun -e '
+            const parse = (text) => {
+              const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(text);
+              if (!match) throw new Error(`not a version: ${text}`);
+              return { core: match.slice(1, 4).map(Number), pre: match[4] ? match[4].split(".") : [] };
+            };
+            const compare = (a, b) => {
+              for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+              if (!a.pre.length || !b.pre.length) return a.pre.length === b.pre.length ? 0 : a.pre.length ? -1 : 1;
+              for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+                const x = a.pre[i];
+                const y = b.pre[i];
+                if (x === undefined) return -1;
+                if (y === undefined) return 1;
+                if (x === y) continue;
+                const numX = /^\d+$/.test(x);
+                const numY = /^\d+$/.test(y);
+                if (numX && numY) return Number(x) < Number(y) ? -1 : 1;
+                if (numX !== numY) return numX ? -1 : 1;
+                return x < y ? -1 : 1;
+              }
+              return 0;
+            };
+            const { TAG, LATEST } = process.env;
+            if (compare(parse(TAG), parse(LATEST)) <= 0) {
+              console.error(`::error::${TAG} is not newer than the latest release ${LATEST}`);
+              process.exit(1);
+            }
+            console.log(`${TAG} is newer than the latest release ${LATEST}`);
+          '
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: cd packages/cli && bunx tsc --noEmit -p .
+
+      - name: Build the release assets
+        run: bun run release:build -- --out dist
+
+      # What a user gets: unpack the archive somewhere else, install the way install.sh does, run the launcher.
+      - name: Smoke test the archive
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          tar -xzf dist/marcsh.tar.gz -C "$dir"
+          (cd "$dir/marcsh" && bun install --frozen-lockfile --production --ignore-scripts)
+          reported="$("$dir/marcsh/packages/cli/bin/marcsh" --version)"
+          if [ "$reported" != "marcsh ${TAG#v}" ]; then
+            echo "::error::the archive reports \"$reported\", expected \"marcsh ${TAG#v}\""
+            exit 1
+          fi
+          echo "$reported"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: |
+            dist/marcsh.tar.gz
+            dist/marcsh.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload the assets
+      id-token: write # sign the provenance attestation
+      attestations: write # store it
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Check the files still match their checksum
+        run: cd dist && sha256sum -c marcsh.tar.gz.sha256
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/marcsh.tar.gz
+            dist/marcsh.tar.gz.sha256
+
+      # The release is a draft until both files are on it. A re-run reuses the draft and replaces the files (--clobber).
+      # A release that is already published is not touched: delete it on GitHub (keep the tag), then re-run.
+      - name: Create the release, upload the assets, publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          errors="$(mktemp)"
+          if is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>"$errors")"; then
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::the release $TAG is already published; delete it on GitHub (keep the tag) and re-run this workflow"
+              exit 1
+            fi
+            echo "Reusing the draft release $TAG."
+          elif grep -q "release not found" "$errors"; then
+            gh release create "$TAG" --draft --verify-tag --title "marcsh $TAG" --generate-notes
+          else
+            cat "$errors" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" dist/marcsh.tar.gz dist/marcsh.tar.gz.sha256 --clobber
+          case "$TAG" in
+            *-*) gh release edit "$TAG" --draft=false --prerelease --latest=false ;; # v0.2.0-beta.1: never the "latest" release
+            *) gh release edit "$TAG" --draft=false --prerelease=false --latest ;;
+          esac
