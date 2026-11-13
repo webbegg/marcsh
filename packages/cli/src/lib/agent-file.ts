@@ -82,7 +82,7 @@ export function readFrontmatter(text: string): Frontmatter {
   return { fields, nested, body: lines.slice(end + 1).join("\n"), unclosed: false };
 }
 
-const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model", "tools"]);
+export const KNOWN_FIELDS = new Set(["name", "description", "mode", "permission", "model", "tools"]);
 
 function slug(text: string) {
   return text.toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");

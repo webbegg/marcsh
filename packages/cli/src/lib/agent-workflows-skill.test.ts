@@ -4,11 +4,14 @@ import { join } from "node:path";
 import { Mode } from "./modes";
 import { parseAgentFile } from "./agents";
 import { marcshPluginPath } from "./plugin";
+import { FIELD_NAMES } from "./tool-names";
 
 // The skill that teaches a user to author their own agent workflow (S14). It must say what agents.ts and packs.ts enforce.
 
 const file = join(marcshPluginPath()!, "skills", "agent-workflows", "SKILL.md");
 const text = () => readFileSync(file, "utf8");
+// packages/cli/src/lib -> repository root: the user guide page that teaches the same rules (S5).
+const guide = () => readFileSync(join(import.meta.dir, "..", "..", "..", "..", "docs", "building-a-pack.md"), "utf8");
 
 describe("the agent-workflows skill", () => {
   test("is in marcsh's plugin with a name and a description that says when to use it", () => {
@@ -58,6 +61,43 @@ describe("the agent-workflows skill", () => {
     const parse = (frontmatter: string) => parseAgentFile(`---\n${frontmatter}\n---\nBody`, { pack: "user", file: "x.md" })!;
     expect(parse("tools:\n  bash: false\n  webfetch: false").tools?.deny).toEqual(["bash", "web"]);
     expect(parse("tools: Read, Grep").tools?.deny).toEqual(["edit", "bash", "web", "task", "mcp"]);
+  });
+
+  test("lists every name the tools field takes for each group, the same names as the user guide", () => {
+    const body = text();
+    const row = (group: string) => body.split("\n").find((line) => line.startsWith(`| \`${group}\` |`)) ?? "";
+    const missing = Object.entries(FIELD_NAMES).flatMap(([group, names]) => {
+      const listed = row(group).split("|")[2]?.split(/[\s,]+/).map((name) => name.replace(/`/g, "")) ?? [];
+      return names.filter((name) => !listed.includes(name)).map((name) => `${group}: ${name}`);
+    });
+    expect(missing).toEqual([]);
+    expect(row("mcp")).toContain("mcp_");
+  });
+
+  test("does not say that every tool left by `tools` asks: some tools run without asking", () => {
+    const body = text();
+    expect(body).not.toMatch(/every tool that is left still asks/i);
+    expect(body).toMatch(/read, grep, find, ls[^\n]*run without asking/i);
+  });
+
+  test("says the download counts one commit, not deleted history", () => {
+    const body = text();
+    expect(body).not.toMatch(/even if they were deleted later/i);
+    expect(body).toMatch(/one commit/i);
+  });
+
+  test("says a hooks/ folder without a valid hooks/hooks.json makes the hooks unusable", () => {
+    const body = text();
+    expect(body).not.toContain("Without `hooks/hooks.json` there are no hooks");
+    expect(body).toMatch(/`hooks\/` folder without a valid `hooks\/hooks\.json`[^\n]*unusable/);
+  });
+
+  test("gives the same limits as docs/building-a-pack.md [S5]", () => {
+    const [body, page] = [text(), guide()];
+    for (const limit of ["1 MB", "256 KB", "5,000", "50 MB", "100 MB", "30 events", "100 commands", "500 entries", "5 MB", "2,000 characters", "200 characters", "up to 600"]) {
+      expect(body).toContain(limit);
+      expect(page).toContain(limit);
+    }
   });
 
   test("explains the `*` key of the map and that pi only warns about a web denial written by name", () => {
