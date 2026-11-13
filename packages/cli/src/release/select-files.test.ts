@@ -4,6 +4,7 @@ import { selectReleaseFiles } from "./select-files";
 const tracked = [
   ".github/workflows/release.yml",
   ".gitignore",
+  "LICENSE",
   "README.md",
   "bun.lock",
   "bunfig.toml",
@@ -39,6 +40,11 @@ const tracked = [
 
 describe("selectReleaseFiles", () => {
   const selected = selectReleaseFiles(tracked);
+
+  // The MIT license asks for its notice in every copy, and a release archive is one.
+  test("ships the license", () => {
+    expect(selected).toContain("LICENSE");
+  });
 
   test("keeps what `bun install --production` and the launcher need", () => {
     for (const path of [
