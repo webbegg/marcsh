@@ -42,6 +42,16 @@ export type Storage = {
   getSession(id: string): StoredSession | null;
   createSession(input: { title: string; cwd: string; engine?: string }): StoredSession;
   saveMessages(id: string, messages: ChatMessage[], engineSessionRef?: string): void;
+  /** Retitles a session without moving it in the recent list. False for an unknown session or a blank title. */
+  renameSession(id: string, title: string): boolean;
+  /** Hard-deletes that one session and nothing else (trust, permission rules and command caches stay). False for an unknown session. */
+  deleteSession(id: string): boolean;
+  /**
+   * A new session with the source's cwd, engine and title + " (fork)", holding the source's messages up to and including
+   * `uptoMessageId` (all of them when omitted). The engine resume ref is not copied: the fork starts a fresh engine conversation.
+   * Throws for an unknown session or message.
+   */
+  forkSession(id: string, opts?: { uptoMessageId?: string }): StoredSession;
   /** Last known Claude Code commands and skills, kept so the `/` menu has them after a restart. */
   getClaudeCommands(): ClaudeCommand[];
   saveClaudeCommands(commands: ClaudeCommand[]): void;
@@ -260,6 +270,46 @@ export function openStorage(path = defaultDbPath()): Storage {
         ref: engineSessionRef ?? null,
         now: Date.now(),
       });
+    },
+
+    renameSession(id, title) {
+      const trimmed = title.trim();
+      if (trimmed === "") return false;
+      return db.query("UPDATE sessions SET title = $title WHERE id = $id").run({ id, title: trimmed }).changes > 0;
+    },
+
+    deleteSession(id) {
+      return db.query("DELETE FROM sessions WHERE id = $id").run({ id }).changes > 0;
+    },
+
+    forkSession(id, opts = {}) {
+      return db
+        .transaction(() => {
+          const source = selectSession.get({ id });
+          if (!source) throw new Error(`Unknown session: ${id}`);
+          let messages = JSON.parse(source.messages) as ChatMessage[];
+          if (opts.uptoMessageId !== undefined) {
+            const index = messages.findIndex((message) => message.id === opts.uptoMessageId);
+            if (index === -1) throw new Error(`Unknown message: ${opts.uptoMessageId}`);
+            messages = messages.slice(0, index + 1);
+          }
+          const now = Date.now();
+          const forkId = crypto.randomUUID();
+          // Neither resume column is copied (A2): the fork's first turn starts a fresh engine conversation.
+          db.query(
+            `INSERT INTO sessions (id, title, cwd, engine, messages, created_at, updated_at)
+             VALUES ($id, $title, $cwd, $engine, $messages, $now, $now)`,
+          ).run({
+            id: forkId,
+            title: `${source.title} (fork)`,
+            cwd: source.cwd,
+            engine: source.engine,
+            messages: JSON.stringify(messages),
+            now,
+          });
+          return toSession(selectSession.get({ id: forkId })!);
+        })
+        .immediate();
     },
 
     getClaudeCommands() {
