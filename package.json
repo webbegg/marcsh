@@ -1,6 +1,7 @@
 {
   "name": "marcsh",
   "version": "1.0.0",
+  "license": "MIT",
   "workspaces": ["packages/*"],
   "scripts": {
     "dev:cli": "bun run --watch packages/cli/src/index.tsx",

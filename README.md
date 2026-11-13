@@ -119,3 +119,7 @@ marcsh works on the folder you start it in. `marcsh --version` prints the versio
 - [Packs](docs/packs.md): a pack is a public GitHub repository that adds agents, skills and commands. Install one from GitHub.
 - [Security](docs/security.md): what marcsh asks about, what it trusts and what it never runs.
 - [Troubleshooting](docs/troubleshooting.md): common problems and their messages.
+
+## License
+
+marcsh is released under the [MIT License](LICENSE).

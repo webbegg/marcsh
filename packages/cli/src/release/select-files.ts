@@ -3,7 +3,7 @@
 // repository root never ships by accident. README.md and docs/ are for people reading the repository: the installed app
 // never reads them.
 
-const FILES = new Set(["package.json", "bun.lock", "packages/cli/package.json", "packages/cli/tsconfig.json"]);
+const FILES = new Set(["LICENSE", "package.json", "bun.lock", "packages/cli/package.json", "packages/cli/tsconfig.json"]);
 const FOLDERS = ["packages/cli/bin/", "packages/cli/src/", "packages/cli/plugin/"];
 
 // Test-only: tests, test preloads and the helpers and fixtures that only tests import (`test-*` files such as
