@@ -7,6 +7,7 @@
     },
     "packages/cli": {
       "name": "@marcsh/cli",
+      "version": "0.1.0",
       "bin": {
         "marcsh": "./bin/marcsh",
       },
