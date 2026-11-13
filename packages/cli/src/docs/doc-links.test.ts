@@ -10,6 +10,10 @@ const EXPECTED_PAGES = [
   "README.md",
   ...[
     "getting-started",
+    "screen",
+    "guides/plan-then-build",
+    "guides/resume-work",
+    "guides/switch-engine-or-model",
     "engines-and-models",
     "sessions",
     "commands",

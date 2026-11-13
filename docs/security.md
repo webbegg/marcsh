@@ -17,9 +17,13 @@ On Claude, Claude Code's own settings still apply. marcsh lets it read your user
 
 The prompt shows the tool and what it will do: the command, the file, the URL. Long text is wrapped and capped. Text the model or a tool supplies is escaped, with control characters made visible, and shown behind a `┊` mark, so it cannot pass for part of marcsh's own prompt. The first row of a labelled line (`Allow …?`, `Reason:`, `Path:`) starts with marcsh's own label instead.
 
+### Outside the project folder
+
+The agent starts in your project folder, but the folder is not a limit. The agent can reach outside it. The approval prompt shows what it will touch. Reads on pi run without a prompt (see the table above), so read the prompt of every write and command.
+
 ### Answer a prompt
 
-Press `y` to allow once, `a` to always allow, or `n` to deny. [Getting started](getting-started.md#approving-tool-calls) lists the keys and the messages the prompt shows.
+Press `y` to allow once, `a` to always allow, or `n` to deny. [The screen](screen.md#approving-tool-calls) lists the keys. [Typing protection](screen.md#typing-protection) lists the messages the prompt shows while you type.
 
 - **Typing is protected.** The keys do nothing until the keyboard has been quiet for a moment. If the prompt appears while you are writing a message, it stays locked until you press `Down`. This stops a stray `y` from answering.
 - **Some prompts need two steps.** When Claude flags a request as risky, `y` is followed by `Enter`, and there is no `a`.
@@ -56,7 +60,7 @@ This is a safety net, not a wall:
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
 
-- On pi it only has the read tools, the question tool and `Task`. Any other call is refused with `Plan mode only allows reading tools.` A saved "always allow" does not override this.
+- On pi it is only given the read tools, the question tool and `Task`, so it cannot write files or run commands. A saved "always allow" does not change this.
 - On Claude it runs in Claude Code's plan mode.
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).
