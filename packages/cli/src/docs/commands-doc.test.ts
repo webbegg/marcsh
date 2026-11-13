@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../components/command-menu/commands";
+import { PERMISSIONS_USAGE } from "../components/command-menu/permissions-command";
+import { APPROVAL_MODES } from "../lib/approval-policy";
 import { PACK_USAGE, parsePackCommand } from "../lib/pack-command";
 import { marcshPluginPath, readPluginEntries } from "../lib/plugin";
 
@@ -58,6 +60,12 @@ describe("docs/commands.md", () => {
 
   test("quotes the usage line exactly as the parser prints it", () => {
     expect(doc).toContain(PACK_USAGE);
+  });
+
+  test("describes /permissions: every mode, the default form and the usage line exactly as the parser prints it", () => {
+    for (const mode of APPROVAL_MODES) expect(doc).toContain(`\`${mode}\``);
+    expect(doc).toContain("/permissions default <normal|auto|yolo>");
+    expect(doc).toContain(PERMISSIONS_USAGE);
   });
 
   test("the list of /agents subcommands matches the parser", () => {

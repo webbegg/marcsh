@@ -4,11 +4,13 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   getAgentId,
+  getDefaultApprovalMode,
   getDefaultEngine,
   getPiModel,
   preferencesPath,
   readPreferences,
   setAgentId,
+  setDefaultApprovalMode,
   setDefaultEngine,
   setPiModel,
   updatePreferences,
@@ -128,6 +130,45 @@ describe("pi model preference", () => {
     }
     writeRaw("{not json");
     expect(getPiModel(path)).toBeUndefined();
+  });
+});
+
+describe("default approval mode preference", () => {
+  test("is normal when there is no preferences file", () => {
+    expect(getDefaultApprovalMode(path)).toBe("normal");
+  });
+
+  test("is normal when preferences exist but hold no approval mode", () => {
+    writeRaw(JSON.stringify({ themeName: "nord" }));
+    expect(getDefaultApprovalMode(path)).toBe("normal");
+  });
+
+  test("a change is persisted as approvalMode and read back, creating the directory", () => {
+    setDefaultApprovalMode("auto", path);
+    expect(getDefaultApprovalMode(path)).toBe("auto");
+    expect(JSON.parse(readFileSync(path, "utf8")).approvalMode).toBe("auto");
+
+    setDefaultApprovalMode("yolo", path);
+    expect(getDefaultApprovalMode(path)).toBe("yolo");
+  });
+
+  test("an unknown stored value falls back to normal", () => {
+    for (const bad of ["fast", "YOLO", 3, null, ""]) {
+      writeRaw(JSON.stringify({ approvalMode: bad }));
+      expect(getDefaultApprovalMode(path)).toBe("normal");
+    }
+    writeRaw("{not json");
+    expect(getDefaultApprovalMode(path)).toBe("normal");
+  });
+
+  test("setting it keeps the other preferences, and updating them keeps the mode", () => {
+    writeRaw(JSON.stringify({ themeName: "nord", defaultEngine: "claude" }));
+
+    setDefaultApprovalMode("yolo", path);
+    expect(readPreferences(path)).toEqual({ themeName: "nord", defaultEngine: "claude", approvalMode: "yolo" });
+
+    updatePreferences({ themeName: "dracula" }, path);
+    expect(readPreferences(path)).toEqual({ themeName: "dracula", defaultEngine: "claude", approvalMode: "yolo" });
   });
 });
 

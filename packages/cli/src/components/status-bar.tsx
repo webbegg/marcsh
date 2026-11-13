@@ -19,7 +19,7 @@ type Props = {
 };
 
 export function StatusBar({ engine, hint }: Props) {
-  const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
+  const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine, approvalMode } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
   const rowRef = useRef<BoxRenderable>(null);
@@ -37,9 +37,12 @@ export function StatusBar({ engine, hint }: Props) {
   // "pi unavailable" already names the engine.
   const engineText = engineId === "pi" && piModelStatus === "unavailable" ? null : `· ${engineLabel(engineId)}`;
 
+  // Normal mode, the usual one, is not shown.
+  const approvalText = approvalMode === "normal" ? null : `· ${approvalMode}`;
+
   // The row lays out its items side by side with one space between; a hint that does not fit would wrap the whole line, so it is
   // dropped (the engine label never is). Until the row is measured the widest wording is shown.
-  const items = [modeText, "›", modelText, engineText].filter((item): item is string => item !== null);
+  const items = [modeText, "›", modelText, engineText, approvalText].filter((item): item is string => item !== null);
   const used = items.reduce((sum, item) => sum + item.length, 0) + items.length - 1;
   const wordings = hint === undefined ? [] : typeof hint === "string" ? [hint] : hint;
   const shown = wordings.find((wording) => wording.length > 0 && (width === null || used + 1 + 2 + wording.length <= width));
@@ -63,6 +66,10 @@ export function StatusBar({ engine, hint }: Props) {
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
           {engineText}
         </text>
+      )}
+      {approvalText === null ? null : (
+        // The theme has no warning colour: auto is noted (info), yolo is flagged (error).
+        <text fg={approvalMode === "yolo" ? colors.error : colors.info}>{approvalText}</text>
       )}
       {shown ? (
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
