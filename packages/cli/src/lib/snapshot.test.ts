@@ -29,7 +29,7 @@ const read = (dir: string, path: string) => readFileSync(join(dir, path), "utf8"
 /** Runs the real git on the project itself, with a clean environment so the test never depends on the developer's config. */
 const projectGit = (cwd: string, ...args: string[]) => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-  const result = Bun.spawnSync(["git", "-c", "commit.gpgsign=false", ...args], {
+  const result = Bun.spawnSync(["git", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], {
     cwd,
     env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
   });
@@ -566,6 +566,60 @@ describe("shadow repo configuration", () => {
   });
 });
 
+describe("marcsh's own data inside the project", () => {
+  test("folders and files named in `exclude` are not snapshotted, listed, diffed or restored, and a tree from before is cleaned", async () => {
+    put(project, "keep.txt", "k0");
+    put(project, "data/marcsh.db", "d0");
+    put(project, "data/sub/x", "x0");
+    put(project, "prefs.json", "p0");
+    const plain = createSnapshotStore({ cwd: project, root });
+    if (!plain.available) throw new Error(plain.reason);
+    const old = await plain.store.track();
+
+    const created = createSnapshotStore({ cwd: project, root, exclude: [join(project, "data"), join(project, "prefs.json")] });
+    if (!created.available) throw new Error(created.reason);
+    const store = created.store;
+    const before = await store.track();
+    put(project, "keep.txt", "k1");
+    put(project, "data/marcsh.db", "d1");
+    put(project, "prefs.json", "p1");
+    const after = await store.track();
+
+    expect(await store.changedFiles(old, before)).toEqual([]);
+    expect(await store.changedFiles(before, after)).toEqual(["keep.txt"]);
+    expect(await store.diff(before, after)).not.toContain("marcsh.db");
+    expect(await store.diff(old, after)).not.toContain("prefs.json");
+    await store.restore(old, ["data/marcsh.db", "prefs.json", "keep.txt"]);
+    expect(read(project, "data/marcsh.db")).toBe("d1");
+    expect(read(project, "prefs.json")).toBe("p1");
+    expect(read(project, "keep.txt")).toBe("k0");
+  });
+
+  test("an aborted track rejects, and the next one still works", async () => {
+    put(project, "a.txt", "a");
+    const store = open();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(store.track(cancelled.signal)).rejects.toThrow();
+
+    const running = new AbortController();
+    for (let i = 0; i < 600; i += 1) put(project, `many/${i}.txt`, String(i));
+    const slow = store.track(running.signal);
+    setTimeout(() => running.abort(), 5);
+    await slow.then(() => undefined, () => undefined);
+    expect(await store.track()).toMatch(/^[0-9a-f]{40,64}$/);
+  }, 30_000);
+
+  test("the shadow root and its folders are private to the user", async () => {
+    put(project, "a.txt", "a");
+    await open().track();
+
+    expect(statSync(root).mode & 0o777).toBe(0o700);
+    const [shadow] = readdirSync(root);
+    expect(statSync(join(root, shadow!)).mode & 0o777).toBe(0o700);
+  });
+});
+
 describe("availability", () => {
   test("reports unavailable, without throwing, when git is not installed", () => {
     const saved = process.env.PATH;
@@ -583,6 +637,16 @@ describe("availability", () => {
     const created = createSnapshotStore({ cwd: join(base, "missing"), root });
 
     expect(created.available).toBe(false);
+  });
+
+  test("is off in the home folder and in /, with the reason", () => {
+    // `homedir()` is fixed when the process starts, so the home folder is chosen in a child process.
+    const script = `import { createSnapshotStore } from ${JSON.stringify(join(import.meta.dir, "snapshot"))}; console.log(JSON.stringify(createSnapshotStore({ cwd: process.env.HOME!, root: process.argv[1]! })));`;
+    const child = Bun.spawnSync([process.execPath, "-e", script, root], { env: { ...process.env, HOME: project }, cwd: base });
+    expect(JSON.parse(child.stdout.toString())).toEqual({ available: false, reason: "snapshots are off in your home folder" });
+    const top = createSnapshotStore({ cwd: "/", root });
+    expect(top.available).toBe(false);
+    if (!top.available) expect(top.reason).toContain("root folder");
   });
 
   test("root defaults to ~/.marcsh/snapshots under the home directory", () => {

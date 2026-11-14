@@ -106,6 +106,13 @@ describe("trackWithin", () => {
     expect("reason" in result && result.timedOut).toBe(true);
   });
 
+  test("giving up on a snapshot aborts the signal handed to the store, so its git process can be killed", async () => {
+    let signal: AbortSignal | undefined;
+    const stuck = { track: (given?: AbortSignal) => ((signal = given), new Promise<string>(() => {})) } as unknown as SnapshotStore;
+    await trackWithin(stuck, 20);
+    expect(signal?.aborted).toBe(true);
+  });
+
   test("a failure is not a timeout", async () => {
     const result = await trackWithin(fake(async () => Promise.reject(new Error("x"))), 1000);
     expect("reason" in result && result.timedOut).toBeUndefined();
