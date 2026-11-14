@@ -33,12 +33,13 @@ For each session marcsh saves:
 
 - the title, the project folder and the engine
 - every message you sent and every reply, with the tools the agent called
+- the results of background work delivered to the agent, shown as their `[background] … finished` line (see [The screen](screen.md#background-results))
 - for each reply, the agent that wrote it, the model it used, how long it took, and the project's file snapshots around its turn (see [below](#undo-redo-and-diff))
 - the engine's own reference to the conversation, which is what lets Claude or pi pick up where they stopped
 
 marcsh saves the conversation when a turn ends, and also when you stop it with `Esc`. If saving fails, an error `Could not save session: …` appears in the conversation.
 
-Leaving a session while a reply is still running stops that reply.
+Leaving a session while a reply is still running stops that reply. It also stops the work the agent left running in the background.
 
 ## Where sessions are stored
 

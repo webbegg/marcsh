@@ -10,3 +10,5 @@ export { PermissionsDialogContent } from "./permissions-dialog";
 export { LoginDialogContent } from "./login-dialog";
 export { LogoutDialogContent } from "./logout-dialog";
 export { TrustDialogContent } from "./trust-dialog";
+export { PsDialogContent } from "./ps-dialog";
+export { SubagentsDialogContent } from "./subagents-dialog";

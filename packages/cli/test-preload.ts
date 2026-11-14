@@ -19,6 +19,9 @@ process.env.MARCSH_PACKS_DIR = join(root, "packs");
 process.env.MARCSH_SNAPSHOTS_DIR = join(root, "snapshots");
 // Turns take no project snapshots (undo/redo) unless a test turns them on: each would snapshot the test's working folder.
 process.env.MARCSH_SNAPSHOTS = "off";
+// The status line reads no git state unless a test gives it a reader: the home screen would read the checkout the tests run in
+// (its branch name then changes what fits the line) and every screen would spawn git every few seconds.
+process.env.MARCSH_GIT_STATUS = "off";
 // Packs come from https://github.com unless a test sets a file:// base itself.
 delete process.env.MARCSH_PACK_URL_BASE;
 

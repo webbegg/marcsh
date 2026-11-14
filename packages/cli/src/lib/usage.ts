@@ -38,9 +38,14 @@ export type SessionUsage = {
   /** Whole percent of the window the context takes; known only with both. */
   contextPercent?: number;
   costUsd?: number;
+  /** Output tokens per second of the latest reply that reports both; its duration includes tool time, so this is the reply's average rate. */
+  tokensPerSecond?: number;
 };
 
-/** The context of the last reply that reports it (with that reply's window) and the cost summed over every reply that reports one. */
+/**
+ * The context of the last reply that reports it (with that reply's window), the cost summed over every reply that reports one,
+ * and the output rate of the last reply that reports output tokens and a duration.
+ */
 export function sessionUsage(messages: readonly ChatMessage[]): SessionUsage {
   const result: SessionUsage = {};
   let cost: number | undefined;
@@ -56,6 +61,12 @@ export function sessionUsage(messages: readonly ChatMessage[]): SessionUsage {
     if (tokens !== undefined) {
       result.contextTokens = tokens;
       result.contextWindow = reported(usage?.contextWindow);
+    }
+
+    const output = reported(usage?.outputTokens);
+    const durationMs = reported(message.metadata?.durationMs);
+    if (output !== undefined && output > 0 && durationMs !== undefined && durationMs > 0) {
+      result.tokensPerSecond = output / (durationMs / 1000);
     }
   }
 
@@ -79,7 +90,13 @@ function money(usd: number): string {
   return usd > 0 && usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`;
 }
 
-/** e.g. `42.1k/200k (21%) · $0.34`: each part is left out when unknown, and the result is empty when nothing is known. */
+/** 42.4 → "42", 3.25 → "3.3", 0.04 → "<0.1". */
+function rate(tokensPerSecond: number): string {
+  if (tokensPerSecond < 0.1) return "<0.1";
+  return String(tokensPerSecond < 10 ? Math.round(tokensPerSecond * 10) / 10 : Math.round(tokensPerSecond));
+}
+
+/** e.g. `42.1k/200k (21%) · $0.34 · 42 tok/s`: each part is left out when unknown, and the result is empty when nothing is known. */
 export function formatUsage(usage: SessionUsage): string {
   const parts: string[] = [];
 
@@ -89,6 +106,7 @@ export function formatUsage(usage: SessionUsage): string {
     else parts.push(`${compact(usage.contextTokens)}/${compact(usage.contextWindow)} (${usage.contextPercent}%)`);
   }
   if (usage.costUsd !== undefined) parts.push(money(usage.costUsd));
+  if (usage.tokensPerSecond !== undefined) parts.push(`${rate(usage.tokensPerSecond)} tok/s`);
 
   return parts.join(" · ");
 }

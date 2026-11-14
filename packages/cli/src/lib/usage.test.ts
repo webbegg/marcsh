@@ -31,6 +31,20 @@ describe("sessionUsage", () => {
 
     expect(usage.costUsd).toBeCloseTo(0.75);
   });
+
+  // S7: the average output rate over the latest reply that reports both its output tokens and its duration.
+  test("takes the tokens per second of the latest reply with output tokens and a duration", () => {
+    const usage = sessionUsage([
+      assistant({ durationMs: 2000, usage: { outputTokens: 100 } }),
+      user,
+      assistant({ durationMs: 4000, usage: { outputTokens: 168 } }),
+      assistant({ usage: { outputTokens: 50 } }),
+      assistant({ durationMs: 1000, usage: { outputTokens: 0 } }),
+      assistant({ durationMs: 0, usage: { outputTokens: 10 } }),
+    ]);
+
+    expect(usage).toEqual({ tokensPerSecond: 42 });
+  });
 });
 
 describe("formatUsage", () => {
@@ -42,6 +56,15 @@ describe("formatUsage", () => {
     expect(formatUsage({ costUsd: 0.34 })).toBe("$0.34");
     expect(formatUsage({ contextTokens: 42_100, contextWindow: 200_000, contextPercent: 21 })).toBe("42.1k/200k (21%)");
     expect(formatUsage({ contextTokens: 900 })).toBe("900 ctx");
+  });
+
+  test("ends with the tokens per second", () => {
+    expect(formatUsage({ contextTokens: 42_100, contextWindow: 200_000, contextPercent: 21, costUsd: 0.34, tokensPerSecond: 42.4 })).toBe(
+      "42.1k/200k (21%) · $0.34 · 42 tok/s",
+    );
+    expect(formatUsage({ tokensPerSecond: 120.6 })).toBe("121 tok/s");
+    expect(formatUsage({ tokensPerSecond: 3.25 })).toBe("3.3 tok/s");
+    expect(formatUsage({ tokensPerSecond: 0.04 })).toBe("<0.1 tok/s");
   });
 
   test("is empty when nothing is known", () => {

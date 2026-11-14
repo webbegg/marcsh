@@ -18,6 +18,8 @@ marcsh can run your sessions on two engines, Claude and pi. This page explains h
 
 See [Configuration](configuration.md) for the MCP details and [Security](security.md) for trust.
 
+On pi, a command (`bash`) or a subagent (`Task`) that runs longer than 3 minutes is stopped. The model gets an error that says it timed out. For a command it suggests a larger `timeout`, and it suggests running the work in the background (`bg_start`, or `Task` with `background: true`) only when the session can do that, so not in Plan or in `marcsh run`. A command that sets its own `timeout` keeps it. Time a subagent spends waiting for your approval does not count.
+
 ## Choose an engine
 
 Type `/engine` and pick `Claude (Agent SDK)` or `pi`. marcsh confirms with a message like `New sessions will use pi`, and remembers the choice for the next time you start it.

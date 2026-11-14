@@ -276,6 +276,20 @@ export const COMMANDS: Command[] = [
     action: onSession("copy", (session) => session.copy()),
   },
   {
+    name: "ps",
+    description: "Show this session's background terminals",
+    value: "/ps",
+    scope: "session",
+    action: onSession("ps", (session) => session.ps()),
+  },
+  {
+    name: "subagents",
+    description: "Show this session's background subagents",
+    value: "/subagents",
+    scope: "session",
+    action: onSession("subagents", (session) => session.subagents()),
+  },
+  {
     name: "theme",
     description: "Change color theme",
     value: "/theme",

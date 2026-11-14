@@ -42,6 +42,19 @@ The hint next to the status line tells you what the keys do right now, for examp
 
 On a Claude session the input is off while a reply runs. Wait for the reply, or press `Esc` to stop it.
 
+## Background results
+
+On a pi session the agent can leave work running in the background, such as a shell command started with `bg_start` (a background terminal). `/ps` lists the background terminals and shows their output (see [Commands](commands.md#ps)). The agent can also start a background subagent, with `Task` and `background: true`. `/subagents` lists the background subagents and shows their live transcript (see [Commands](commands.md#subagents)). When the work finishes, its result goes to the agent once:
+
+- If a reply is running, the result joins it. The agent sees it before its next step.
+- If the session is idle, marcsh starts a turn for it, as the agent and model selected at that moment.
+
+Either way the conversation shows one line per result, `[background] <title> finished`, marked `background`. The output itself goes to the agent, not to the screen. Results that finish together arrive as one message.
+
+Text you typed or queued is never replaced: a result waits while an approval, a question or a compaction is open, or while a turn is starting. After you stop a reply with `Esc`, results wait too, until the next turn ends or another result finishes. If the agent already read a result with a tool, it is not sent again.
+
+A background subagent's tool calls still ask for approval in the normal approval prompt, also between turns. The prompt is labelled `Background subagent: <description>`.
+
 ## Stopping and quitting
 
 - `Esc` stops a running reply. It also declines an approval prompt or a question that is waiting. Two cases differ. In a question's free-text field, `Esc` only closes the field. On the project-trust question, `Esc` means "not now": the turn goes on without the project's files.
@@ -61,7 +74,12 @@ It shows, from left to right:
 - The agent you are using. Press `Tab` to change it. The order is Build, Plan, your own agents, then agents from installed packs, then back to Build. See [Agents](agents.md).
 - The model. On Claude it is `opus`, `sonnet` or `haiku`. On pi it is `provider/model-id`.
 - The engine: `claude`, or `pi` with its version.
+- The usage, once the engine reports it: tokens in context, the share of the context window, the session cost, and the speed of the latest reply, for example `42.1k/200k (21%) · $0.34 · 42 tok/s`. The speed is the reply's average, so time spent in tools counts too.
+- The git branch and how many files changed, for example `main · 3 files changed`. A detached HEAD shows its short commit SHA. The changed-file count appears only in a project you trusted (see [Project trust](security.md#project-trust)); elsewhere only the branch shows. marcsh checks about every 3 seconds and after each tool call. When git does not answer (it is slow or fails) or the folder is not a git repo, marcsh waits longer between checks, up to a minute, until git answers again; a tool call still checks at once. Outside a git repo nothing is shown, and `MARCSH_GIT_STATUS=off` turns it off.
+- On pi, while background terminals or subagents run, how many, for example `2 background terminals running · /ps`, `1 background subagent running · /subagents`, or `1 terminal, 2 subagents running · /ps /subagents`.
 - A hint, when the keys do something unusual right now.
+
+When the line is too narrow, the background part goes first, then the usage, then the git part. The engine always stays.
 
 On pi it can also say:
 

@@ -15,6 +15,13 @@ describe("primeWithTranscript", () => {
     expect(primed.indexOf("a missing import")).toBeLessThan(primed.indexOf("and now the tests?"));
   });
 
+  test("a background result in the history is primed as Background output, not as the user's words (R3-7)", () => {
+    const result: ChatMessage = { ...user("2", "[background] build finished\n\nbt-1 exited with code 0"), metadata: { background: true } };
+    const primed = primeWithTranscript("next?", session, [user("1", "build it"), result]);
+    expect(primed.match(/^## .*$/gm)).toEqual(["## You", "## Background"]);
+    expect(primed).toContain("bt-1 exited with code 0");
+  });
+
   test("a conversation with nothing said yet leaves the prompt alone", () => {
     expect(primeWithTranscript("hello", session, [])).toBe("hello");
     expect(primeWithTranscript("hello", session, [{ id: "x", role: "assistant", parts: [] }])).toBe("hello");

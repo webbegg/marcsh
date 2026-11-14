@@ -75,6 +75,8 @@ export type ChatMessageMetadata = {
   attachments?: MessageAttachment[];
   /** A user message typed during a turn and delivered to it (shown with a marker). */
   steered?: boolean;
+  /** A user message that is not the user's: background results delivered to the model (see `lib/background/hub.ts`); only its notice is shown. */
+  background?: boolean;
   /** Set on the last reply of a turn when the project's files could be snapshotted around it. */
   snapshot?: TurnSnapshot;
 };

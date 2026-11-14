@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { claudeDeniedTools, groupOf, isClaudeToolDenied, isPiToolDenied } from "./agent-tools";
-import { TOOL_GROUPS, claudeToolName, claudeToolNames, type Group } from "./tool-names";
+import { PI_TOOL_GROUPS, TOOL_GROUPS, claudeToolName, claudeToolNames, type Group } from "./tool-names";
 
 // The tool-name knowledge lives in one table; these are the answers it must keep giving, spelled out so a table edit cannot change them unseen.
 
@@ -97,6 +97,22 @@ describe("pi tools by group", () => {
     expect(isPiToolDenied("ask", [...TOOL_GROUPS])).toBe(false);
     expect(isPiToolDenied("read_mcp_resource", ["mcp"])).toBe(true);
     expect(isPiToolDenied("my_extension_tool", [...TOOL_GROUPS])).toBe(false);
+  });
+
+  test("marcsh's background subagent tools are in the task group, and only there (S4)", () => {
+    for (const name of ["task_wait", "task_check", "task_cancel", "task_list"]) {
+      expect(PI_TOOL_GROUPS[name]).toEqual(["task"]);
+      expect(isPiToolDenied(name, ["task"]), name).toBe(true);
+      expect(isPiToolDenied(name, TOOL_GROUPS.filter((group) => group !== "task")), name).toBe(false);
+    }
+  });
+
+  test("marcsh's background terminal tools are in the bash group, and only there (S1a)", () => {
+    for (const name of ["bg_start", "bg_status", "bg_list", "bg_kill"]) {
+      expect(PI_TOOL_GROUPS[name]).toEqual(["bash"]);
+      expect(isPiToolDenied(name, ["bash"]), name).toBe(true);
+      expect(isPiToolDenied(name, TOOL_GROUPS.filter((group) => group !== "bash")), name).toBe(false);
+    }
   });
 });
 

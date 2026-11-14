@@ -42,8 +42,9 @@ const sessionModel = (messages: ChatMessage[]): string | undefined =>
 
 const day = (date: Date) => date.toISOString().slice(0, 10);
 
+// A delivered background result is a user message to the engine, but its words are a program's output, not the user's.
 const speaker = (message: ChatMessage): string =>
-  message.role === "user" ? "You" : field(message.metadata?.agent ?? "") || "Assistant";
+  message.role === "user" ? (message.metadata?.background ? "Background" : "You") : field(message.metadata?.agent ?? "") || "Assistant";
 
 const code = (text: string) => `\`${text.replaceAll("`", "'")}\``;
 
@@ -136,6 +137,7 @@ function renderJson(session: TranscriptSession): string {
     messages: session.messages.map((message) => ({
       id: message.id,
       role: message.role,
+      ...(message.metadata?.background && { background: true }),
       ...(message.metadata?.agent !== undefined && { agent: cleanJson(message.metadata.agent) }),
       ...(message.metadata?.model !== undefined && { model: cleanJson(message.metadata.model) }),
       ...(message.metadata?.attachments?.length && {

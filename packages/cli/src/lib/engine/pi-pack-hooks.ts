@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hooks";
 import { claudeToolName, claudeToolNames } from "../tool-names";
+import { BG_START_TOOL, bgStartDir, hasWorkingDir, workingDirError } from "./pi-bg-tools";
 import type { NoticeLevel } from "./types";
 
 // Pack hooks on pi, which has none: marcsh runs an enabled pack's tool-call events itself, with Claude's hook contract (see the agent-workflows skill).
@@ -16,7 +17,22 @@ const PIPE_GRACE_MS = 250;
 
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (piName === BG_START_TOOL) return { command: input.command };
   return ["read", "edit", "write"].includes(piName) && typeof input.path === "string" ? { ...input, file_path: input.path } : input;
+}
+
+/** marcsh's `bg_start` runs a shell command like Bash, so a pack's Bash hooks run on it too, told it is Bash: a hook cannot be bypassed by running in the background. */
+const hookName = (piName: string) => (piName === BG_START_TOOL ? "Bash" : claudeToolName(piName));
+const hookNames = (piName: string) => (piName === BG_START_TOOL ? ["Bash"] : claudeToolNames(piName));
+
+/**
+ * The directory the call's command runs in, which the hooks' payload names as `cwd`: a `bg_start`'s `working_dir` (resolved like
+ * `bg_start` resolves it), the session's folder for anything else. The hook processes themselves always start in the session's folder.
+ */
+function runDirOf(piName: string, input: Record<string, unknown>, cwd: string): { dir: string; error?: string } {
+  if (piName !== BG_START_TOOL || !hasWorkingDir(input)) return { dir: cwd };
+  const dir = bgStartDir(cwd, input);
+  return { dir, error: workingDirError(dir) };
 }
 
 export type HookOutcome =
@@ -213,7 +229,9 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
   const post = plan(config, "PostToolUse");
   const failure = plan(config, "PostToolUseFailure");
   return (pi) => {
-    const execute = (hooks: HookCommand[], payload: Json) => {
+    // The payload's `cwd` says where the call's command runs. The hook process starts in the session's folder (CLAUDE_PROJECT_DIR):
+    // a `bg_start`'s `working_dir` is the model's choice and nothing has approved it when PreToolUse runs.
+    const execute = (hooks: HookCommand[], payload: Json & { cwd: string }) => {
       const input = JSON.stringify(payload);
       const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd };
       return Promise.all(
@@ -234,13 +252,16 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
 
     if (pre.length > 0) {
       pi.on("tool_call", async (event, ctx) => {
-        const name = claudeToolName(event.toolName);
-        const hooks = selected(pre, claudeToolNames(event.toolName));
+        const name = hookName(event.toolName);
+        const hooks = selected(pre, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
+        const run = runDirOf(event.toolName, event.input, cwd);
+        // The call cannot run there, so there is nothing to check: it is an error before anything runs.
+        if (run.error) return { block: true, reason: run.error };
         try {
           const results = await execute(hooks, {
             session_id: sessionId(ctx),
-            cwd,
+            cwd: run.dir,
             hook_event_name: "PreToolUse",
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),
@@ -263,13 +284,14 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
       pi.on("tool_result", async (event, ctx) => {
         // A call that failed is PostToolUseFailure's, one that succeeded PostToolUse's: never both, and nothing when the pack has no hook for it.
         const eventName = event.isError ? "PostToolUseFailure" : "PostToolUse";
-        const name = claudeToolName(event.toolName);
-        const hooks = selected(event.isError ? failure : post, claudeToolNames(event.toolName));
+        const name = hookName(event.toolName);
+        const hooks = selected(event.isError ? failure : post, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
+        const run = runDirOf(event.toolName, event.input, cwd);
         try {
           const results = await execute(hooks, {
             session_id: sessionId(ctx),
-            cwd,
+            cwd: run.error ? cwd : run.dir,
             hook_event_name: eventName,
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),

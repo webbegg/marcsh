@@ -5,6 +5,7 @@ const tracked = [
   ".github/workflows/release.yml",
   ".gitignore",
   "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
   "README.md",
   "bun.lock",
   "bunfig.toml",
@@ -44,6 +45,11 @@ describe("selectReleaseFiles", () => {
   // The MIT license asks for its notice in every copy, and a release archive is one.
   test("ships the license", () => {
     expect(selected).toContain("LICENSE");
+  });
+
+  // R2-7: the same holds for the MIT notices of the code marcsh ported from other projects.
+  test("ships the third-party notices", () => {
+    expect(selected).toContain("THIRD_PARTY_NOTICES.md");
   });
 
   test("keeps what `bun install --production` and the launcher need", () => {

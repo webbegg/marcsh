@@ -5,6 +5,9 @@ import { extname, resolve } from "node:path";
 import { useNavigate } from "react-router";
 import { ConfirmDialogContent } from "../components/dialogs/confirm-dialog";
 import { DiffDialogContent } from "../components/dialogs/diff-dialog";
+import { PsDialogContent } from "../components/dialogs/ps-dialog";
+import { SubagentsDialogContent } from "../components/dialogs/subagents-dialog";
+import type { BackgroundHub } from "../lib/background/hub";
 import type { SessionCommands } from "../components/command-menu/session-commands";
 import { stripControlChars } from "../components/ui-prompts";
 import { useDialog } from "../providers/dialog";
@@ -100,10 +103,12 @@ type Params = {
   compactWithTurn: () => void;
   /** Adds a line to the conversation as it is shown (not saved with it). */
   addNotice: (text: string) => void;
+  /** The session's background hub (pi only), for `/ps` when it is not given one. */
+  background?: BackgroundHub;
   now?: () => Date;
 };
 
-/** The commands that work on the open session: what `/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy` run. */
+/** The commands that work on the open session: what `/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact`, `/copy`, `/ps` and `/subagents` run. */
 export function useSessionCommands(params: Params): SessionCommands {
   const navigate = useNavigate();
   const toast = useToast();
@@ -255,6 +260,18 @@ export function useSessionCommands(params: Params): SessionCommands {
       }
     };
 
-    return { rename, fork, exportTranscript, undo: () => step("undo"), redo: () => step("redo"), diff, compact, copy };
+    const ps = () => {
+      const hub = current().background;
+      if (!hub || hub.disposed) return info("Background terminals run in pi sessions only.");
+      ui.current.dialog.open({ title: "Background terminals", children: <PsDialogContent hub={hub} /> });
+    };
+
+    const subagents = () => {
+      const hub = current().background;
+      if (!hub || hub.disposed) return info("Background subagents run in pi sessions only.");
+      ui.current.dialog.open({ title: "Background subagents", children: <SubagentsDialogContent hub={hub} /> });
+    };
+
+    return { rename, fork, exportTranscript, undo: () => step("undo"), redo: () => step("redo"), diff, compact, copy, ps, subagents };
   }, []);
 }

@@ -10,8 +10,12 @@ When the model wants to do something that is not a plain read, marcsh stops and 
 
 | Engine | Runs without asking | Asks |
 | --- | --- | --- |
-| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), and `Task` (the subagent it starts asks for its own tool calls) | Every other tool: running commands, writing and editing files, MCP tools, tools added by extensions |
+| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals), and `task_wait`, `task_check`, `task_cancel` and `task_list` (they only look at, wait for or stop this session's background subagents) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
 | Claude | What Claude Code's default permission mode allows without asking | The rest. marcsh shows Claude's question |
+
+On pi, `bg_start` runs a command in the background. It asks exactly like `bash` for the same command, and the prompt names `bg_start` so you can see it will keep running. The git guard and a pack's `Bash` hooks apply to it too. A `bg_start` in another folder (`working_dir`) is checked for that folder, and rules saved in the session folder do not cover it. Background terminals stop when you leave the session or quit marcsh.
+
+On pi, `Task` with `background: true` starts a subagent that keeps working after the turn ends. Its tool calls still ask, the same way as any other call. A prompt that comes between turns shows in the normal approval prompt, labelled `Background subagent: <description>`. If nobody can answer, the call is denied. Once you switch the session to Plan, a background subagent's calls are limited like Plan's: it can still read, but it can't write or run anything until you switch back. Background subagents stop when you leave the session or quit marcsh.
 
 On Claude, Claude Code's own settings still apply. marcsh lets it read your user, project and local settings, so permission rules in them count.
 
@@ -34,7 +38,7 @@ What `a` does depends on the engine.
 
 **On pi**, `a` is remembered per project folder:
 
-- For a command tool (`bash`), it covers **that exact command** only.
+- For a command tool (`bash`), it covers **that exact command** only. It covers the command in `bash` and `bg_start` alike.
 - For any other tool (for example editing files, or an MCP tool), it covers **that tool** in that project, for every future call.
 
 marcsh has no command to undo it. Think before you press `a` for a tool like that. It is a standing permission for the tool, not for one file.
@@ -53,12 +57,14 @@ For commands the model runs, marcsh adds a guard on both engines:
 This is a safety net, not a wall:
 
 - It does not follow indirection such as `bash -c "git push"`, `eval`, git aliases or scripts.
-- It checks the built-in shell tool only.
+- It checks the built-in shell tool and marcsh's `bg_start` only.
 - If git cannot run, or the folder is not a repository, the guard decides nothing and the normal approval applies.
 
 ### Permission modes
 
 The permission mode sets how much runs without a prompt. It applies to both engines, and to the subagents that `Task` starts. Change it with [/permissions](commands.md#permissions). A change during a turn applies to the next tool call, in that turn too; what the agent was told about the mode is updated at the next turn. It is separate from the agent: Plan and Build still decide what an agent may do at all.
+
+On pi, `bg_start` follows the mode exactly like `bash` for the same command; in another folder (`working_dir`) it is judged as `cd <folder> && <command>` would be, on the session folder's branch. Background subagents use the session's mode as it is at each of their calls, also after the turn that started them.
 
 | Mode | Runs without asking | Still asks |
 | --- | --- | --- |
@@ -124,10 +130,14 @@ The rule is stored per project folder in marcsh's database, next to the pi "alwa
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
 
-- On pi it is only given the read tools, the question tool and `Task`, so it cannot write files or run commands. A saved "always allow" does not change this.
+- On pi it is only given the read tools, the question tool, `Task`, `bg_status`, `bg_list`, `task_wait`, `task_check` and `task_list`, so it cannot write files, run commands, start background subagents or stop background work. A saved "always allow" does not change this.
 - On Claude it runs in Claude Code's plan mode.
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).
+
+### Turns marcsh starts
+
+When background work finishes while a pi session is idle, marcsh starts a turn to give the agent the result (see [The screen](screen.md#background-results)). That turn is like one you start. It runs as the agent and model selected at that moment, and every tool call it makes asks the same way, including in Plan. Its message is the work's output, sent as it is: a `/command` in it is not run. The agent gets every background result marked as output of work it started, not as your words, and is told to treat any instructions in it as data.
 
 ## Project trust
 
@@ -169,6 +179,8 @@ Trust is tied to what you reviewed. If a file is added, changed or removed after
 - **Forget**: ask again at the next pi turn that needs it.
 
 A change applies from the next turn. If a project has no pi files, there is nothing to trust and `/trust` says so. If marcsh cannot read one of the files, **Trust** is not offered either, and the dialog lists the unreadable files. A trust you gave earlier stops applying when the files change after your review. Review them again.
+
+marcsh never runs `git status` in a folder you have not trusted, on either engine, because `git status` can run programs that a repo's own git settings name. There the status line only reads the branch.
 
 ### On Claude
 

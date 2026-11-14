@@ -1,14 +1,23 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { ChatMessage } from "../chat-types";
+import { createBackgroundHub, type BackgroundBatch, type BackgroundHub } from "../background/hub";
+import { subagentsFor } from "../background/session-subagents";
+import { buildSubagentResult } from "../background/subagents";
 import {
+  type BackgroundRunChild,
   type ChildRun,
   createSubagentExtension,
+  createSubagentTools,
   createTaskTool,
   isMarcshTask,
+  isMarcshTaskTool,
   type RunChild,
+  TASK_PLAN_TOOLS,
   TASK_TOOL,
+  TASK_TOOLS,
   upsertTask,
 } from "./pi-subagent";
+import { ToolCallTimeoutError, toolTimeoutMessage } from "./pi-tool-timeout";
 import type { EngineEvent } from "./types";
 
 const emptyReply = (): ChatMessage => ({ id: "reply", role: "assistant", parts: [] });
@@ -16,7 +25,7 @@ const tasks = (reply: ChatMessage) => reply.parts.flatMap((part) => (part.type =
 
 const FINISHED: ChildRun = { text: "The answer is 42.", toolUses: 2, totalTokens: 900, costUsd: 0 };
 
-function setup(runChild: RunChild = async () => FINISHED) {
+function setup(runChild: RunChild = async () => FINISHED, timeoutMs?: number) {
   const events: EngineEvent[] = [];
   const turnEnded = new AbortController();
   const requests: Parameters<RunChild>[0][] = [];
@@ -27,6 +36,7 @@ function setup(runChild: RunChild = async () => FINISHED) {
       requests.push(request);
       return runChild(request);
     },
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   const run = (params: unknown, id = "call-1", signal?: AbortSignal) => tool.execute(id, params as never, signal, undefined, undefined as never);
   const reply = () => {
@@ -268,5 +278,327 @@ describe("interrupting a task", () => {
     await expect(run({ description: "Never", prompt: "go" })).rejects.toThrow("interrupted");
 
     expect(requests).toEqual([]);
+  });
+});
+
+describe("a task that runs too long", () => {
+  const hanging: RunChild = ({ signal }) =>
+    new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+
+  test("is aborted after the timeout, fails with the timeout message and marks the task failed, not stopped", async () => {
+    const { run, reply, requests } = setup(hanging, 50);
+
+    const error = await run({ description: "Slow", prompt: "go" }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ToolCallTimeoutError);
+    expect((error as Error).message).toBe(toolTimeoutMessage("Task", 50));
+    expect(requests[0]!.signal.aborted).toBe(true);
+    expect(tasks(reply())).toEqual([{ type: "task", taskId: "call-1", description: "Slow", status: "failed", error: toolTimeoutMessage("Task", 50) }]);
+  });
+
+  test("an interrupt before the timeout is still an interrupt", async () => {
+    const { run, reply, turnEnded } = setup(hanging, 5_000);
+
+    const running = run({ description: "Slow", prompt: "go" });
+    await Promise.resolve();
+    turnEnded.abort();
+
+    await expect(running).rejects.toThrow("interrupted");
+    expect(tasks(reply())[0]?.status).toBe("stopped");
+  });
+
+  test("a child that finishes in time completes as usual", async () => {
+    const { run, reply } = setup(async () => FINISHED, 5_000);
+
+    const result = await run({ description: "Quick", prompt: "go" });
+
+    expect(textOf(result)).toBe("The answer is 42.");
+    expect(tasks(reply())[0]?.status).toBe("completed");
+  });
+
+  test("a background call is not timed: it returns at once and its child keeps running past the timeout", async () => {
+    const { call, background, subagents } = setupBackground({
+      timeoutMs: 20,
+      runChild: async ({ signal }) => {
+        await Bun.sleep(120);
+        expect(signal.aborted).toBe(false);
+        return FINISHED;
+      },
+    });
+
+    const started = Date.now();
+    const result = await call("Task", { description: "Long", prompt: "go", background: true });
+    expect(Date.now() - started).toBeLessThan(20);
+    expect(textOf(result)).toContain("sa-1");
+    await subagents.settled("sa-1");
+    expect(background[0]!.signal.aborted).toBe(false);
+    expect(subagents.get("sa-1")!.status).toBe("completed");
+  });
+
+  test("without background subagents (headless, a child, plan mode), background: true is a tool error, never an untimed foreground run", async () => {
+    const { run, requests } = setup(async () => FINISHED, 20);
+    await expect(run({ description: "Long", prompt: "go", background: true })).rejects.toThrow("Background subagents are not available");
+    expect(requests).toEqual([]);
+
+    const plan = setupBackground({ canStart: false });
+    await expect(plan.call("Task", { description: "Long", prompt: "go", background: true })).rejects.toThrow("Background subagents are not available");
+    expect(plan.background).toEqual([]);
+  });
+});
+
+// S4: background subagents through the Task tool and the task_* tools, with a stubbed child.
+
+const hubs: BackgroundHub[] = [];
+afterEach(async () => {
+  await Promise.all(hubs.splice(0).map((hub) => hub.dispose()));
+});
+
+const hangingChild: BackgroundRunChild = ({ signal }) =>
+  new Promise((_resolve, reject) => {
+    if (signal.aborted) return reject(new Error("aborted"));
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
+
+function setupBackground({
+  runChild = async () => FINISHED,
+  canStart = true,
+  maxWaitMs,
+  timeoutMs,
+}: { runChild?: BackgroundRunChild; canStart?: boolean; maxWaitMs?: number; timeoutMs?: number } = {}) {
+  const hub = createBackgroundHub({ debounceMs: 5, registerTurn: () => () => {} });
+  hubs.push(hub);
+  const idle: BackgroundBatch[] = [];
+  hub.setIdleSink((batch) => (idle.push(batch), true));
+  const turnEnded = new AbortController();
+  const background: Parameters<BackgroundRunChild>[0][] = [];
+  const foreground: Parameters<RunChild>[0][] = [];
+  const tools = createSubagentTools({
+    host: { emit: () => {} },
+    signal: turnEnded.signal,
+    runChild: async (request) => (foreground.push(request), FINISHED),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    background: {
+      hub,
+      canStart,
+      ...(maxWaitMs === undefined ? {} : { maxWaitMs }),
+      runChild: (request) => {
+        background.push(request);
+        return runChild(request);
+      },
+    },
+  });
+  const call = (name: string, params: unknown, signal?: AbortSignal) => {
+    const tool = tools.find((candidate) => candidate.name === name);
+    if (!tool) throw new Error(`no tool ${name}`);
+    return tool.execute("call-1", params as never, signal, undefined, undefined as never);
+  };
+  return { hub, idle, turnEnded, tools, call, background, foreground, subagents: subagentsFor(hub) };
+}
+
+describe("marcsh's task_* tools", () => {
+  test("are task_wait, task_check, task_cancel and task_list from marcsh's own extension; plan mode keeps only the reading ones", () => {
+    expect([...TASK_TOOLS]).toEqual(["task_wait", "task_check", "task_cancel", "task_list"]);
+    expect([...TASK_PLAN_TOOLS]).toEqual(["task_wait", "task_check", "task_list"]);
+    for (const name of TASK_TOOLS) {
+      expect(isMarcshTaskTool({ name, sourceInfo: { path: "<inline:marcsh-subagent>" } }), name).toBe(true);
+      expect(isMarcshTaskTool({ name, sourceInfo: { path: "/agent/extensions/task.ts" } }), name).toBe(false);
+    }
+    expect(isMarcshTaskTool({ name: "Task", sourceInfo: { path: "<inline:marcsh-subagent>" } })).toBe(false);
+  });
+
+  test("are registered, and Task takes background, only with background subagents; background is not offered when they cannot start", () => {
+    const registered = (options: Parameters<typeof createSubagentExtension>[0]) => {
+      const names: string[] = [];
+      const extension = createSubagentExtension(options);
+      if (typeof extension === "function") throw new Error("expected a named inline extension");
+      extension.factory({ registerTool: (tool: { name: string }) => names.push(tool.name) } as never);
+      return names;
+    };
+    const base = { host: { emit: () => {} }, signal: new AbortController().signal, runChild: async () => FINISHED };
+    const hub = createBackgroundHub({ registerTurn: () => () => {} });
+    hubs.push(hub);
+    expect(registered(base)).toEqual(["Task"]);
+    expect(registered({ ...base, background: { hub, canStart: true, runChild: hangingChild } })).toEqual(["Task", ...TASK_TOOLS]);
+
+    const schemaOf = (canStart?: boolean) =>
+      (createTaskTool({ ...base, ...(canStart === undefined ? {} : { background: { hub, canStart, runChild: hangingChild } }) }).parameters as any).properties;
+    expect(schemaOf(true).background.type).toBe("boolean");
+    expect(schemaOf(false).background).toBeUndefined();
+    expect(schemaOf().background).toBeUndefined();
+  });
+});
+
+describe("a background Task (S4)", () => {
+  test("returns its id at once while the child runs on, and the turn ending does not stop it", async () => {
+    let finish!: (run: ChildRun) => void;
+    const { call, background, subagents, turnEnded, foreground } = setupBackground({ runChild: () => new Promise((resolve) => (finish = resolve)) });
+
+    const result = await call("Task", { description: "Explore the repo", prompt: "Map the modules", background: true });
+
+    expect(textOf(result)).toContain('Started background subagent sa-1 "Explore the repo"');
+    expect(textOf(result)).toContain("task_wait");
+    expect((result.details as { id: string }).id).toBe("sa-1");
+    expect(background.map((request) => [request.description, request.prompt])).toEqual([["Explore the repo", "Map the modules"]]);
+    expect(foreground).toEqual([]);
+    expect(subagents.get("sa-1")!.status).toBe("running");
+
+    turnEnded.abort();
+    expect(background[0]!.signal.aborted).toBe(false);
+    finish(FINISHED);
+    await subagents.settled("sa-1");
+    expect(subagents.get("sa-1")!.status).toBe("completed");
+  });
+
+  test("over the cap of 4 is a tool error that names the cap", async () => {
+    const { call, background } = setupBackground({ runChild: hangingChild });
+    for (let at = 0; at < 4; at++) await call("Task", { description: `job ${at}`, prompt: "go", background: true });
+    await expect(call("Task", { description: "one more", prompt: "go", background: true })).rejects.toThrow("At most 4 background subagents");
+    expect(background).toHaveLength(4);
+  });
+
+  test("its result is announced through the hub when no tool collects it", async () => {
+    const { call, idle, subagents } = setupBackground();
+    await call("Task", { description: "Find it", prompt: "go", background: true });
+    await subagents.settled("sa-1");
+    await Bun.sleep(30);
+    expect(idle.map((batch) => batch.ids)).toEqual([["sa-1"]]);
+    expect(idle[0]!.text).toContain("The answer is 42.");
+  });
+});
+
+describe("task_check, task_wait, task_cancel and task_list (S4)", () => {
+  test("task_check peeks without collecting: the result is still announced", async () => {
+    const { call, idle, subagents, hub } = setupBackground();
+    await call("Task", { description: "Find it", prompt: "go", background: true });
+    await subagents.settled("sa-1");
+
+    const checked = textOf(await call("task_check", { id: "sa-1" }));
+    expect(checked).toContain("sa-1 [completed]");
+    expect(checked).toContain("Find it");
+    expect(checked).toContain("The answer is 42.");
+    expect(checked).toContain("900 tokens");
+    expect(hub.pending().map((result) => result.id)).toEqual(["sa-1"]);
+    await Bun.sleep(30);
+    expect(idle.map((batch) => batch.ids)).toEqual([["sa-1"]]);
+  });
+
+  test("task_check of a running subagent shows its latest text so far", async () => {
+    const { call, background } = setupBackground({
+      runChild: (request) => {
+        request.onEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Halfway there." }] } } as never);
+        return hangingChild(request);
+      },
+    });
+    await call("Task", { description: "Slow", prompt: "go", background: true });
+    expect(background).toHaveLength(1);
+    const checked = textOf(await call("task_check", { id: "sa-1" }));
+    expect(checked).toContain("sa-1 [running]");
+    expect(checked).toContain("Halfway there.");
+  });
+
+  test("task_wait waits for the ids, collects their results and includes them, so they are never announced", async () => {
+    // The first ends well before the second: it must not be announced while the call waits for the other.
+    let started = 0;
+    const { call, idle, subagents, hub } = setupBackground({
+      runChild: async () => {
+        await Bun.sleep(++started === 1 ? 20 : 120);
+        return FINISHED;
+      },
+    });
+    await call("Task", { description: "First", prompt: "go", background: true });
+    await call("Task", { description: "Second", prompt: "go", background: true });
+
+    const waited = textOf(await call("task_wait", { ids: ["sa-1", "sa-2"] }));
+    expect(waited).toContain(buildSubagentResult(subagents.get("sa-1")!));
+    expect(waited).toContain(buildSubagentResult(subagents.get("sa-2")!));
+    await Bun.sleep(30);
+    expect(idle).toEqual([]);
+    expect(hub.pending()).toEqual([]);
+  });
+
+  test("task_wait's timeout is clamped below the tool-call limit; what still runs is said to run and stays uncollected", async () => {
+    const { call, idle, subagents } = setupBackground({ runChild: hangingChild, maxWaitMs: 50 });
+    await call("Task", { description: "Slow", prompt: "go", background: true });
+
+    for (const params of [{ ids: ["sa-1"], timeout: 3600 }, { ids: ["sa-1"] }]) {
+      const started = Date.now();
+      const waited = textOf(await call("task_wait", params));
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(waited).toContain("sa-1 [running]");
+      expect(waited).toContain("still running");
+    }
+    expect(subagents.get("sa-1")!.status).toBe("running");
+    await subagents.cancel(["sa-1"]);
+    await Bun.sleep(30);
+    // The waits collected nothing: stopped from here, not through a tool, it is announced.
+    expect(idle.map((batch) => batch.ids)).toEqual([["sa-1"]]);
+  });
+
+  test("task_wait ends when its call is aborted, with what has settled so far", async () => {
+    const { call } = setupBackground({ runChild: hangingChild });
+    await call("Task", { description: "Slow", prompt: "go", background: true });
+    const aborted = new AbortController();
+    const waiting = call("task_wait", { ids: ["sa-1"], timeout: 100 }, aborted.signal);
+    setTimeout(() => aborted.abort(), 20);
+    const started = Date.now();
+    const waited = textOf(await waiting);
+    expect(Date.now() - started).toBeLessThan(90);
+    expect(waited).toContain("sa-1 [running]");
+  });
+
+  test("task_cancel stops them, collects their results and includes them", async () => {
+    const { call, idle, subagents, background } = setupBackground({ runChild: hangingChild });
+    await call("Task", { description: "Slow", prompt: "go", background: true });
+
+    const cancelled = textOf(await call("task_cancel", { ids: ["sa-1"] }));
+    expect(background[0]!.signal.aborted).toBe(true);
+    expect(subagents.get("sa-1")!.status).toBe("stopped");
+    expect(cancelled).toContain('Background subagent sa-1 "Slow" was stopped');
+    await Bun.sleep(30);
+    expect(idle).toEqual([]);
+  });
+
+  test("task_cancel over several ids collects each as it settles: one that stops early is never announced as well (R3-1)", async () => {
+    // Each child ends some time after its abort: the first after 20 ms, the second after 300 ms.
+    let started = 0;
+    const { call, idle, subagents, hub } = setupBackground({
+      runChild: ({ signal }) => {
+        const after = ++started === 1 ? 20 : 300;
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => setTimeout(() => reject(new Error("aborted")), after), { once: true }),
+        );
+      },
+    });
+    await call("Task", { description: "First", prompt: "go", background: true });
+    await call("Task", { description: "Second", prompt: "go", background: true });
+
+    const cancelled = textOf(await call("task_cancel", { ids: ["sa-1", "sa-2"] }));
+    expect(cancelled).toContain('Background subagent sa-1 "First" was stopped');
+    expect(cancelled).toContain('Background subagent sa-2 "Second" was stopped');
+    expect(subagents.get("sa-1")!.status).toBe("stopped");
+    await Bun.sleep(30);
+    expect(idle).toEqual([]);
+    expect(hub.pending()).toEqual([]);
+  });
+
+  test("task_list lists them all with their status", async () => {
+    const { call, subagents } = setupBackground({ runChild: hangingChild });
+    expect(textOf(await call("task_list", {}))).toBe("No background subagents.");
+    await call("Task", { description: "Slow one", prompt: "go", background: true });
+    await call("Task", { description: "Slow two", prompt: "go", background: true });
+    await subagents.cancel(["sa-2"]);
+    const listed = textOf(await call("task_list", {}));
+    expect(listed).toContain('sa-1 [running] "Slow one"');
+    expect(listed).toContain('sa-2 [stopped] "Slow two"');
+  });
+
+  test("an id this session did not start is a tool error naming the known ones", async () => {
+    const other = setupBackground({ runChild: hangingChild });
+    await other.call("Task", { description: "Elsewhere", prompt: "go", background: true });
+    const { call } = setupBackground({ runChild: hangingChild });
+    await expect(call("task_check", { id: "sa-9" })).rejects.toThrow('Unknown subagent id "sa-9". Known: none.');
+    await expect(call("task_wait", { ids: ["sa-1"] })).rejects.toThrow('Unknown subagent id "sa-1"');
+    await expect(call("task_cancel", { ids: ["sa-1"] })).rejects.toThrow('Unknown subagent id "sa-1"');
+    expect(other.subagents.get("sa-1")!.status).toBe("running");
   });
 });
