@@ -1,8 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
+
+// Every turn runs real git (a snapshot before and after); on a loaded machine that takes longer than Bun's 5 s. A test that times out
+// inside act() leaves the act pending and fails every later screen test in the process ("overlapping act() calls").
+setDefaultTimeout(60_000);
 
 process.env.MARCSH_DB_PATH = ":memory:";
 // Never the real ~/.marcsh: not the preferences, and above all not the shadow repos, which hold copies of project files. The variables

@@ -1,8 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
+
+// Real git snapshots inside act(): see session-commands.undo.test.tsx for why a 5 s timeout here breaks the files after it.
+setDefaultTimeout(60_000);
 
 process.env.MARCSH_DB_PATH = ":memory:";
 

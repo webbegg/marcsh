@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -16,6 +16,9 @@ import { dirname, join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
 const script = join(repoRoot, "scripts", "build-release.ts");
+
+// The hooks run whole builds and git; on a loaded machine that takes longer than Bun's 5 s.
+setDefaultTimeout(60_000);
 
 describe("scripts/build-release.ts", () => {
   let out: string;

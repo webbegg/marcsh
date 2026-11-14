@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createSnapshotStore, defaultSnapshotRoot, type SnapshotStore } from "./snapshot";
+
+// Real git in temp projects: slower than Bun's 5 s on a loaded machine.
+setDefaultTimeout(60_000);
 
 let base: string;
 let root: string;

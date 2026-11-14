@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStorage } from "../lib/storage";
+
+// Each test starts the real launcher as a process; on a loaded machine that takes longer than Bun's 5 s.
+setDefaultTimeout(60_000);
 
 // The commands through the real launcher: routing from the command line, exit codes, and the files they touch. HOME, the database,
 // the agent dir and the preferences all live in a temp dir, so no real ~/.marcsh is read or written.
