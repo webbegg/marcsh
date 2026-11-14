@@ -99,7 +99,7 @@ const ABORTED_SNAPSHOT_TIMEOUT_MS = 3_000;
  * What the session's conversation had cost in all after its last reply that says so, to subtract from a resumed turn's running total.
  * A reply saved before the total was kept has it as its cost: it stored the engine's running total as it was.
  */
-function priorCumulativeCost(messages: ChatMessage[]): number | undefined {
+export function priorCumulativeCost(messages: ChatMessage[]): number | undefined {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
     const usage = message.metadata?.usage;
@@ -382,28 +382,41 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         for (const request of [...pendingRequestsRef.current]) decline(request);
         setPermissionQueue([]);
         for (const id of replyIds) applyToReply(finishReply, id);
-        // The files as the turn left them, kept on its last reply. The input stays as the turn left it until this is done.
+        const save = () => {
+          try {
+            getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);
+          } catch (err) {
+            setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
+        const settle = () => {
+          abortControllerRef.current = null;
+          setCanSteer(false);
+          setInputClosed(false);
+          setQueued(NOTHING_QUEUED);
+          updateStatus("ready");
+          unregisterTurn();
+          finishTurn();
+        };
+
+        // The turn's messages are stored before anything slow: quitting waits only so long for the turn, and then ends the process.
+        save();
+        const aborted = abortController.signal.aborted;
+        // An aborted turn (the user left or quit) is done now and does not wait for the snapshot; a finished one does, so that
+        // the input stays as the turn left it until the reply has the pair `/undo` needs.
+        if (aborted) settle();
+        // The files as the turn left them, kept on its last reply: stored again once they are known.
         if (before !== undefined && started && snapshotsRef.current?.available) {
-          const after = await trackWithin(snapshotsRef.current.store, abortController.signal.aborted ? ABORTED_SNAPSHOT_TIMEOUT_MS : snapshotTimeoutRef.current);
-          if ("tree" in after) updateMessages((prev) => withSnapshot(prev, replyId, { before: before!, after: after.tree }));
-          else {
+          const after = await trackWithin(snapshotsRef.current.store, aborted ? ABORTED_SNAPSHOT_TIMEOUT_MS : snapshotTimeoutRef.current);
+          if ("tree" in after) {
+            updateMessages((prev) => withSnapshot(prev, replyId, { before: before!, after: after.tree }));
+            save();
+          } else {
             snapshotIssueRef.current = after.reason;
             if ("timedOut" in after) snapshotsGaveUpRef.current = true;
           }
         }
-        abortControllerRef.current = null;
-        setCanSteer(false);
-        setInputClosed(false);
-        setQueued(NOTHING_QUEUED);
-        updateStatus("ready");
-
-        try {
-          getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);
-        } catch (err) {
-          setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        unregisterTurn();
-        finishTurn();
+        if (!aborted) settle();
       }
     },
     [session, engine, updateMessages, updateStatus],
