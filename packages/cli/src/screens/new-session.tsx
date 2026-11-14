@@ -14,6 +14,8 @@ const newSessionStateSchema = z.object({
   model: z.string(),
   /** The ID of the agent selected on the home screen. */
   agentId: z.string().optional(),
+  /** The model a custom command chose for the first turn only. */
+  agentModel: z.string().optional(),
 });
 
 export function NewSession() {

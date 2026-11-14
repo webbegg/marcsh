@@ -28,6 +28,16 @@ The choice applies to **new** sessions. A session you already started keeps the 
 
 Type `/models`. The list depends on the engine of the screen you are on.
 
+### Favorites and recent models
+
+On both engines, the list shows your favorite models first, then your recent models, then the rest, each model once. A favorite has a `★` before it, and a recent model has `recent` after it.
+
+- **Favorites:** press `Ctrl+F` on the highlighted model to add it to your favorites, or to remove it. The list keeps its order until you open `/models` again, so the row under the cursor does not move.
+- **Recent models:** marcsh keeps the last 5 models of each engine. A model becomes the most recent one when you pick it in `/models` and when a message is sent with it.
+- **`F2`:** in a session, switches to the next recent model of the session's engine and shows `Model: <model>`. Press it again for the one after, and so on around the list. It says `No other recent model` when there is none. On pi it skips models whose provider you are no longer signed in to. `F2` does nothing while a dialog, an approval or a question is open.
+
+Favorites and recent models are kept in `preferences.json` ([Configuration](configuration.md#preferences)), for each engine apart. This also applies to Claude: the favorites and the recent models are kept between launches, although the model in use is not.
+
 ### Claude
 
 The list has `opus`, `sonnet` and `haiku`. The pick applies to your next messages. marcsh does not remember it between launches: every start begins on `opus`.

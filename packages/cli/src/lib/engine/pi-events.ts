@@ -1,5 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type { ChatMessage, MessagePart } from "../chat-types";
+import type { ChatMessage, ChatUsage, MessagePart } from "../chat-types";
+import { addTo, contextTokensOf, mergeUsage, reported } from "../usage";
 import { redactSecrets } from "./pi-auth";
 import type { EngineEvent } from "./types";
 
@@ -48,7 +49,37 @@ function appendDelta(reply: ChatMessage, { kind, contentIndex, delta }: StreamDe
   return { ...reply, parts: current ? reply.parts.map((p, i) => (i === at ? next : p)) : [...reply.parts, next] };
 }
 
-function appendAssistant(reply: ChatMessage, message: { usage?: { cost?: { total?: number } } }): ChatMessage {
+type PiRequestUsage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
+
+/** Host knowledge pi's events do not carry. */
+export type PiEventOptions = {
+  /** The context window of the model the turn runs on, which a pi message does not say. */
+  contextWindow?: number;
+};
+
+/**
+ * Folds the usage of one finished request into the reply's. Tokens and cost add up over the requests of the turn; the context
+ * is that of the last request, input + cache read + cache write (its output is not context), and window comes from the host.
+ */
+function foldUsage(base: ChatUsage | undefined, usage: PiRequestUsage | undefined, { contextWindow }: PiEventOptions): ChatUsage | undefined {
+  if (!usage) return base;
+
+  const next = { ...base };
+  next.inputTokens = addTo(base, "inputTokens", reported(usage.input));
+  next.outputTokens = addTo(base, "outputTokens", reported(usage.output));
+  next.cacheReadTokens = addTo(base, "cacheReadTokens", reported(usage.cacheRead));
+  next.cacheWriteTokens = addTo(base, "cacheWriteTokens", reported(usage.cacheWrite));
+  next.costUsd = addTo(base, "costUsd", reported(usage.cost?.total));
+
+  const context = contextTokensOf(usage.input, usage.cacheRead, usage.cacheWrite);
+  if (context !== undefined) {
+    next.contextTokens = context;
+    next.contextWindow = reported(contextWindow);
+  }
+  return mergeUsage(undefined, next);
+}
+
+function appendAssistant(reply: ChatMessage, message: { usage?: PiRequestUsage }, options: PiEventOptions): ChatMessage {
   const added: MessagePart[] = [];
 
   for (const block of contentBlocks(message)) {
@@ -78,9 +109,13 @@ function appendAssistant(reply: ChatMessage, message: { usage?: { cost?: { total
   for (const part of live) streamed.delete(part);
 
   const cost = message.usage?.cost?.total;
-  if (typeof cost !== "number") return parts === reply.parts ? reply : { ...reply, parts };
+  const usage = foldUsage(reply.metadata?.usage, message.usage, options);
+  if (typeof cost !== "number" && usage === reply.metadata?.usage) return parts === reply.parts ? reply : { ...reply, parts };
 
-  return { ...reply, parts, metadata: { ...reply.metadata, costUsd: (reply.metadata?.costUsd ?? 0) + cost } };
+  const metadata = { ...reply.metadata };
+  if (typeof cost === "number") metadata.costUsd = (reply.metadata?.costUsd ?? 0) + cost;
+  if (usage) metadata.usage = usage;
+  return { ...reply, parts, metadata };
 }
 
 function finishTool(reply: ChatMessage, toolCallId: string, result: unknown, isError: boolean): ChatMessage {
@@ -93,7 +128,7 @@ function finishTool(reply: ChatMessage, toolCallId: string, result: unknown, isE
 }
 
 /** Folds one pi session event into the assistant reply, returning the same object when nothing changes. */
-export function applyPiEvent(reply: ChatMessage, event: AgentSessionEvent): ChatMessage {
+export function applyPiEvent(reply: ChatMessage, event: AgentSessionEvent, options: PiEventOptions = {}): ChatMessage {
   // Calls a tool made through `ctx.executeTool()` are the tool's internals, not the user's conversation.
   if ("parentToolCallId" in event && event.parentToolCallId != null) return reply;
 
@@ -103,7 +138,7 @@ export function applyPiEvent(reply: ChatMessage, event: AgentSessionEvent): Chat
       return delta ? appendDelta(reply, delta) : reply;
     }
     case "message_end":
-      return event.message.role === "assistant" ? appendAssistant(reply, event.message) : reply;
+      return event.message.role === "assistant" ? appendAssistant(reply, event.message, options) : reply;
     case "tool_execution_end":
       return finishTool(reply, event.toolCallId, event.result, event.isError);
     default:

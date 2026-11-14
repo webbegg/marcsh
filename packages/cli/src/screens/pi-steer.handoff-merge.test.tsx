@@ -154,7 +154,8 @@ describe("a sent message is never handed off", () => {
 });
 
 describe("leaving a session with a draft", () => {
-  test("carries it to the next bar once, and on to the one after, never duplicated", async () => {
+  // S9 (user choice 2026-11-13, "Draft stays in its session"): the draft stays with its session and comes back on return.
+  test("keeps it in that session only: other bars start empty and the session gets it back once", async () => {
     const first = getStorage().createSession({ title: "one", cwd: process.cwd(), engine: "claude" });
     const second = getStorage().createSession({ title: "two", cwd: process.cwd(), engine: "claude" });
     const router = await open([
@@ -168,13 +169,13 @@ describe("leaving a session with a draft", () => {
     // Home (as /new or the sessions dialog would go).
     await go(router, "/");
     await settle(100);
-    expect(occurrences(frame(), "my unsent draft")).toBe(1);
+    expect(occurrences(frame(), "my unsent draft")).toBe(0);
 
     await go(router, `/sessions/${second.id}`);
     await settle(100);
-    expect(occurrences(frame(), "my unsent draft")).toBe(1);
+    expect(occurrences(frame(), "my unsent draft")).toBe(0);
 
-    // The draft follows the bars (each takes it once), it is never copied.
+    // Back in the first session the draft is there once, never copied.
     await go(router, "/");
     await go(router, `/sessions/${first.id}`);
     await settle(100);

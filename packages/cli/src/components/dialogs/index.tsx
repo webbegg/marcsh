@@ -1,5 +1,7 @@
 export { ThemeDialogContent } from "./theme-dialog";
 export { SessionsDialogContent } from "./sessions-dialog";
+export { ConfirmDialogContent } from "./confirm-dialog";
+export { DiffDialogContent } from "./diff-dialog";
 export { AgentsDialogContent } from "./agents-dialog";
 export { ModelsDialogContent } from "./models-dialog";
 export { PiModelsDialogContent } from "./pi-models-dialog";

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { branchState } from "../git-branch";
 import { Mode } from "../modes";
+import { referenceText, splitAttachments } from "../attachments";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import { getStorage } from "../storage";
@@ -266,7 +267,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
@@ -482,8 +483,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const failure = errors.observe(event);
         if (failure) fail(failure);
         // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
-        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event));
-        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event));
+        // pi's messages carry no context window: the resolved model's lets the status line show how full the context is.
+        const usageOptions = { contextWindow: resolved.contextWindow };
+        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event, usageOptions));
+        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event, usageOptions));
         const queued = queue.observe(event);
         if (queued) {
           // What was streamed so far belongs to the reply before the message that was just sent.
@@ -499,7 +502,16 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
         const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
-        const sending = session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        // An image goes as image input when the model takes images; pi has no PDF input. What does not go inline is mentioned as `@path`.
+        const split = splitAttachments(attachments ?? [], { image: resolved.input?.includes("image") === true, pdf: false });
+        const images = split.inline.filter((attachment) => attachment.bytes);
+        const mentioned = [...split.references, ...split.inline.filter((attachment) => !attachment.bytes)];
+        for (const notice of split.notices) host.notify?.(notice, "warning");
+        const options = {
+          ...(expanded === prompt ? {} : { expandPromptTemplates: false }),
+          ...(images.length > 0 ? { images: images.map((image) => ({ type: "image" as const, data: Buffer.from(image.bytes!).toString("base64"), mimeType: image.mime })) } : {}),
+        };
+        const sending = session.prompt(referenceText(expanded, mentioned, cwd), Object.keys(options).length > 0 ? options : undefined);
         promptSent = true;
         for (const entry of early.splice(0)) {
           queueInput(entry.kind, entry.text).then(entry.resolve, (error: unknown) => {
@@ -588,6 +600,55 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         }
       } catch {
         // Best effort: the menu keeps the last list it had.
+      }
+    },
+    // pi's own manual compaction (what its `/compact` runs) on the conversation file the turns saved. No extension, skill or MCP server
+    // is loaded and the project is never asked about: a compaction only needs the model, and an untrusted project keeps its files unloaded.
+    compact: async ({ cwd, model, resumeRef, signal }) => {
+      const cancelled = () => new Error("Compaction was cancelled.");
+      if (signal.aborted) throw cancelled();
+      process.env[AGENT_DIR_ENV] = agentDir;
+      prepareAgentDir();
+      const pi = await loadPi();
+      const models = await runtimeFor(pi);
+      const wanted = parseModel(model);
+      const resolved = wanted && models.getModel(wanted.provider, wanted.id);
+      if (!resolved) throw new Error(`Unknown pi model "${model}". Use provider/model-id.`);
+
+      const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: isProjectTrusted(cwd, trustRecords) });
+      const resourceLoader = new pi.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      });
+      await resourceLoader.reload();
+      const { session } = await pi.createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime: models,
+        model: resolved,
+        sessionManager: pi.SessionManager.open(resumeRef, options.sessionDir, cwd),
+        settingsManager,
+        resourceLoader,
+      });
+      const stop = () => session.abortCompaction();
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        if (signal.aborted) throw cancelled();
+        const result = await session.compact();
+        if (signal.aborted) throw cancelled();
+        return { tokensBefore: result.tokensBefore, ...(result.estimatedTokensAfter !== undefined ? { tokensAfter: result.estimatedTokensAfter } : {}) };
+      } catch (error) {
+        // Provider errors can echo the key or token that was sent.
+        throw signal.aborted ? cancelled() : new Error(redactSecrets(friendlyPiError(error instanceof Error ? error.message : String(error))));
+      } finally {
+        signal.removeEventListener("abort", stop);
+        await disposePiSession(session);
       }
     },
     getRuntime: async () => {

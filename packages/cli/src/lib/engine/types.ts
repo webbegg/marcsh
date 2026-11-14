@@ -1,6 +1,7 @@
 import { approvalModeLine, type ApprovalMode } from "../approval-policy";
 import { type BranchSource, resolveBranch } from "../git-branch";
 import type { AskQuestion } from "../ask-user-question";
+import type { Attachment } from "../attachments";
 import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
@@ -61,6 +62,11 @@ export class TurnClosedError extends Error {
 
 export type TurnRequest = {
   prompt: string;
+  /**
+   * Files attached to the prompt. Images and PDFs carry their bytes; an engine sends what it can take as input and the rest as `@path`
+   * mentions in the prompt, and says so (`host.notify`) when a file it was given goes the second way.
+   */
+  attachments?: Attachment[];
   cwd: string;
   mode: ModeType;
   model: string;
@@ -84,9 +90,26 @@ export type TurnRequest = {
    */
   deniedTools?: Group[];
   resumeRef?: string;
+  /**
+   * What the conversation named by `resumeRef` had cost in all so far. An engine whose reported cost is a running total that a resumed
+   * conversation carries over (Claude's) subtracts it, so each reply holds only its own cost.
+   */
+  priorCostUsd?: number;
   /** Aborting stops the turn. */
   signal: AbortSignal;
 };
+
+export type CompactRequest = {
+  cwd: string;
+  model: string;
+  /** The engine's reference for the conversation to compact (its `session` event's `ref`). */
+  resumeRef: string;
+  /** Aborting stops the compaction. */
+  signal: AbortSignal;
+};
+
+/** What the engine reports of a compaction, each when it knows it. */
+export type CompactResult = { tokensBefore?: number; tokensAfter?: number };
 
 /**
  * The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent.
@@ -147,4 +170,9 @@ export type Engine = {
   startTurn(request: TurnRequest, host: TurnHost): EngineTurn;
   /** Fetches the command list without a model turn; best effort, never throws. */
   warmUpCommands(options: { cwd: string; save: (commands: ClaudeCommand[]) => void }): Promise<void>;
+  /**
+   * Compacts the context of the conversation `resumeRef` names, outside a turn; rejects with a user-facing message when it cannot.
+   * An engine that compacts through a turn of its own prompt (Claude's `/compact`) leaves it out.
+   */
+  compact?(request: CompactRequest): Promise<CompactResult>;
 };

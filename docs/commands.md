@@ -1,6 +1,6 @@
 # Commands
 
-Type `/` in the prompt to run a command. This page lists every marcsh command, the commands that ship with marcsh, how other `/name` input is handled, and the keyboard shortcuts.
+Type `/` in the prompt to run a command. This page lists every marcsh command, how to write your own, the commands that ship with marcsh, how other `/name` input is handled, and the keyboard shortcuts.
 
 ## Using the command menu
 
@@ -12,7 +12,11 @@ Type `/` in the prompt to run a command. This page lists every marcsh command, t
 
 Picking a command that is not one of marcsh's own (for example one from the engine) puts `/name ` in the prompt. Add what it needs and press `Enter`.
 
-Only `/agents` and `/permissions` take arguments. For the other commands, text after the name is ignored.
+`/agents`, `/permissions`, `/rename` and `/export` take arguments. For the other commands, text after the name is ignored.
+
+The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
+
+`Ctrl+P` opens the command palette, a searchable list of every command, and `Ctrl+X` followed by a key runs a command without it. Both can be changed. See [Keybinds](keybinds.md).
 
 Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to move, `Enter` to choose and `Esc` to close.
 
@@ -21,7 +25,7 @@ Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to
 - Keep typing to filter. The letters you type must appear in the command name in that order, so `/mo` finds `/models` and `/ss` finds `/sessions`. Case does not matter. Better matches come first.
 - With nothing after the `/`, marcsh's own commands come first, then the engine's commands sorted by name.
 - The menu shows at most 10 rows and scrolls.
-- The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. marcsh's own commands have no tag.
+- The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.
 - When nothing matches, the menu says "No matching commands". `Enter` then sends your text as typed.
 
 ## marcsh commands
@@ -166,8 +170,110 @@ Browse past sessions.
 
 - Opens "Sessions" with your past sessions. Type to filter by title. Each row shows the clock time of its last update, without a date.
 - Choose one to open it.
+- `Ctrl+D` deletes the highlighted session, after a question that names it. The first answer, "Keep it", is the one selected. Deleting the session you have open takes you home.
 
 See [Sessions](sessions.md).
+
+### /rename
+
+Rename this session.
+
+```
+/rename <title>
+```
+
+- Sets the title shown in [/sessions](#sessions). Runs of spaces become one space, and terminal control characters are removed.
+- Without a title you see "Usage: /rename <title>". The session keeps its place in the recent list.
+
+### /fork
+
+Continue in a copy of this session.
+
+```
+/fork
+```
+
+- Creates a new session titled "<title> (fork)" with the messages saved so far, and opens it at once. The original is untouched.
+- The copy does not carry the engine's own reference to the conversation, so its first turn starts a fresh engine conversation. The engine is told the earlier messages as a transcript. See [Sessions](sessions.md#rename-fork-export-and-delete).
+- Not available while a turn is running.
+
+### /export
+
+Save this session as a file.
+
+```
+/export [md|json] [path]
+```
+
+- With no arguments, writes markdown to `marcsh-<first 8 characters of the session id>-<YYYY-MM-DD>.md` in the session's project folder.
+- `md` writes a readable transcript, `json` a structured one (`version`, `session`, `messages`). Reasoning is left out of both.
+- A relative path is relative to the session's project folder, and `~/` is your home folder. The folder must exist.
+- An export never overwrites: when the file exists, `-1`, `-2`, … is added before the extension. The toast says where it was written ("Exported to …").
+
+### /undo
+
+Put back the files the last turn changed.
+
+```
+/undo
+```
+
+- Restores, to how they were before the turn, only the files that the newest turn with a snapshot that is not yet undone changed, and deletes the ones that turn created. Repeat it to go back one turn at a time.
+- The conversation is not rewound: the engine's history cannot be cut, so the model still remembers what it did. A line is added to the chat that names the restored and deleted files.
+- If you changed one of those files after the turn, marcsh lists them and asks before overwriting. "Keep my changes" is the first, selected answer.
+- A turn that changed no files is passed over and the one before it is undone; the chat line says how many were passed.
+- It says why when it cannot help: no git ("File undo is unavailable: …"), a snapshot that failed or took too long, or a session with no snapshots.
+- Not available while a turn is running. A failure (a path marcsh refuses to write, a disk error) is an error toast; the turn is then not marked undone.
+
+See [Undo, redo and diff](sessions.md#undo-redo-and-diff) for how snapshots work.
+
+### /redo
+
+Re-apply the file changes `/undo` took back.
+
+```
+/redo
+```
+
+- Writes the turn's files as the turn left them, starting with the turn that was undone last.
+- Starting a new turn after an undo ends the redo for the turns that were undone: they stay undone.
+- Like `/undo`, it asks before overwriting a file you changed since.
+
+### /diff
+
+Show the files changed in this session.
+
+```
+/diff
+```
+
+- Opens a scrollable dialog with the changes between the project as it was before the session's first snapshotted turn and the files now, as unified diffs. Each file has a header (path, new file, deleted or modified, and the number of added and removed lines). Added lines are green, removed lines red.
+- It compares with the files as they are now, so changes you made yourself are included, and an undone turn no longer shows.
+- Scroll with `Up`, `Down`, `PageUp`, `PageDown`, `Home` and `End`. Past 3000 rows the rest is counted, not drawn.
+- With nothing changed you see "No file changes since this session's first turn".
+
+### /compact
+
+Compact this session's context.
+
+```
+/compact
+```
+
+- On Claude it runs a turn whose prompt is `/compact`, which Claude Code handles itself.
+- On pi it asks pi to summarize the older part of the conversation. The session is busy meanwhile (`Esc` cancels). The toast reports the tokens before and after, and the status line shows the smaller context until the next reply. No pi extension, skill or MCP server is loaded for this.
+- A session with no conversation yet says "Nothing to compact yet". An engine that cannot compact says so.
+
+### /copy
+
+Copy the last reply to the clipboard.
+
+```
+/copy
+```
+
+- Copies the text of the last reply that has any (its text parts, one blank line apart; tool calls and reasoning are left out).
+- On macOS it uses `pbcopy`. Anywhere else, or if `pbcopy` fails, it sends an OSC 52 sequence to the terminal; the toast then says so, because marcsh cannot tell whether your terminal allowed it (it works over SSH where the terminal supports it).
 
 ### /theme
 
@@ -219,6 +325,76 @@ Any text that starts with `/` and is not one of the commands above is sent as yo
 The `/` menu lists the commands and skills of the engine you are on. The list is read when you open the menu.
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
+
+Your [custom commands](#custom-commands) are the exception: marcsh expands them itself before sending.
+
+## Custom commands
+
+A custom command is a Markdown file. Its name becomes a `/name` command, and its text is the prompt that is sent.
+
+| Where | Name of the command | Works in |
+|---|---|---|
+| `~/.marcsh/commands/review.md` | `/review` | every project |
+| `<project>/.marcsh/commands/review.md` | `/review` | that project, once you trust it |
+
+Save this as `~/.marcsh/commands/review.md`:
+
+```markdown
+---
+description: Review a file for bugs
+agent: reviewer
+model: sonnet
+---
+Review $1 for bugs and unclear names.
+Pay special attention to: $ARGUMENTS
+```
+
+Then type:
+
+```
+/review src/app.ts error handling
+```
+
+The chat shows the expanded prompt as your message, and that is what the engine receives:
+
+```
+Review src/app.ts for bugs and unclear names.
+Pay special attention to: src/app.ts error handling
+```
+
+### The file
+
+- The name is the file name without `.md`. It must match `[a-z0-9][a-z0-9-_:]*` (lowercase letters, digits, `-`, `_` and `:`, starting with a letter or digit). A file with any other name is skipped.
+- The text after the frontmatter is the prompt. A file with no prompt is skipped. Files over 256 KB are skipped.
+- Frontmatter is optional. These fields are read:
+  - `description`: the text in the `/` menu. Without it, the first line of the prompt is shown.
+  - `agent`: the agent to run the turn as, by ID (`user/reviewer`, `plan`) or by name. An unknown agent is reported and the selected agent is used.
+  - `model`: the model for the turn. If the engine cannot use it (a pi model such as `openai/gpt-5` on Claude, or the reverse), it is reported and the session model is used.
+- `agent` and `model` apply to that turn only. The next message runs as the selected agent on the session model.
+
+### Arguments
+
+| Placeholder | Becomes |
+|---|---|
+| `$ARGUMENTS` | everything you typed after the command name |
+| `$1` to `$9` | the first to ninth word of it, split on spaces; empty when you gave fewer |
+
+- Arguments are used only where the file names them. A file with no placeholder sends the prompt as written.
+- Text inside your arguments is never expanded again, so an argument that contains `$1` stays as typed.
+- `$0`, `$10` and a lone `$` are plain text (`$10` is `$1` followed by `0`).
+
+### Where they show and which one wins
+
+- They appear in the `/` menu with the tag `personal` or `project`. The files are read when the menu opens, so a new file shows up without a restart. Picking one puts `/name ` in the prompt; add the arguments and press `Enter`.
+- marcsh's own commands win a name clash: a `new.md` file is ignored. A command of yours also replaces an engine command with the same name.
+- A project command replaces a personal one with the same name.
+- To change where personal commands are read from, set `MARCSH_COMMANDS_DIR`.
+
+### Project commands and trust
+
+A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
+
+Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
 
 ## Bundled commands and skills
 
@@ -289,8 +465,11 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. |
 | `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
+| `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |
+| `Ctrl+X`, then a key | Run a command (`Ctrl+X` `n` is `/new`). The status line shows the leader is waiting; it ends after 2 seconds. See [Keybinds](keybinds.md). |
 | `@` | Mention a file or folder. See below. |
 | `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
+| `Ctrl+D` | In the `/sessions` dialog, delete the highlighted session after a confirmation. |
 
 The keys for approval prompts (`y`, `a`, `n`) are in [The screen](screen.md#approving-tool-calls). The keys for the trust list (`t`, `d`) are in [Security](security.md#project-trust).
 
@@ -306,3 +485,23 @@ Type `@` and the start of a path to list files and folders of the project.
 - With no match, the menu says "No matching files or folders".
 - An `@` right after a letter, digit or path character (as in an email address) does not open the menu.
 - Only paths inside the project folder are offered. The path is inserted into your message as text.
+
+### Attaching files and images
+
+Paste or drop a file into the prompt of a session and it goes with your next message. Terminals paste a dropped file as its path; marcsh accepts it plain, in quotes, with `\ ` escapes for spaces, or as a `file://` address. You can paste several files at once (up to 32).
+
+- **Images** (PNG, JPEG, GIF, WebP) and **PDFs** show above the prompt as `[image: name.png]` or `[pdf: name.pdf]`. They are sent with the next message and shown under it in the chat. They can be up to 20 MB each.
+- **Other files** are inserted into the prompt as an `@path` mention (the same form the `@` menu inserts), relative to the project folder when the file is inside it.
+- **Send** with `Enter`. A message can be only attachments, with no text. After it is sent the chips are cleared.
+- **Remove** the last chip with `Backspace` when the prompt is empty. `Ctrl+C` on an empty prompt clears all of them.
+- Text that is not a path, or a path that does not exist, is pasted as ordinary text. A bare name such as `package.json` is also ordinary text; write `./package.json` or paste the full path to attach it. Relative image and PDF names (`shot.png`) are looked up in the project folder.
+- An image or PDF over 20 MB, or one that cannot be read, is not attached, and a message says why ("shot.png is larger than 20 MB, so it was not attached."). The file is read when you send, not when you paste. If it has gone by then, it is sent as an `@path` mention and a message says so.
+
+How each engine takes them:
+
+| Engine | Images | PDFs |
+| --- | --- | --- |
+| Claude | Sent as image input with your message. | Sent as a document with your message. |
+| pi | Sent as image input when the model takes images. Otherwise sent as an `@path` mention, with the message "This model cannot take images as input, so shot.png goes as an @path reference." | Sent as an `@path` mention, with the message "This engine cannot take PDFs as input, so spec.pdf goes as an @path reference." |
+
+Attachments work inside a session. On the home screen a pasted path is ordinary text. Only the path, the type and the kind are saved with the session, never the file's contents, and `/export` lists them under your message.

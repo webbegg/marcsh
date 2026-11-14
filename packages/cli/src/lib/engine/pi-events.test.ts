@@ -46,7 +46,43 @@ describe("applyPiEvent", () => {
     let reply = applyPiEvent(empty, assistantEnd([{ type: "text", text: "a" }], { usage: usage(0.25) }));
     reply = applyPiEvent(reply, assistantEnd([{ type: "text", text: "b" }], { usage: usage(0.5) }));
 
-    expect(reply.metadata).toEqual({ mode: "BUILD", model: "faux/faux-1", costUsd: 0.75 });
+    expect(reply.metadata).toMatchObject({ mode: "BUILD", model: "faux/faux-1", costUsd: 0.75 });
+  });
+
+  test("records the usage pi reports: tokens summed over the turn, context from the last request", () => {
+    const request = (input: number, output: number, cacheRead: number, cacheWrite: number, total: number) => ({
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      totalTokens: input + output + cacheRead + cacheWrite,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+    });
+    let reply = applyPiEvent(empty, assistantEnd([{ type: "text", text: "a" }], { usage: request(1000, 50, 200, 300, 0.25) }), { contextWindow: 200_000 });
+    reply = applyPiEvent(reply, assistantEnd([{ type: "text", text: "b" }], { usage: request(1500, 70, 400, 100, 0.5) }), { contextWindow: 200_000 });
+
+    expect(reply.metadata?.usage).toEqual({
+      inputTokens: 2500,
+      outputTokens: 120,
+      cacheReadTokens: 600,
+      cacheWriteTokens: 400,
+      contextTokens: 2000,
+      contextWindow: 200_000,
+      costUsd: 0.75,
+    });
+  });
+
+  test("leaves the context window out when the host does not give one, and reports only what is a number", () => {
+    const reply = applyPiEvent(empty, assistantEnd([{ type: "text", text: "a" }], { usage: { input: 10, output: 5, cost: {} } }));
+
+    expect(reply.metadata?.usage).toEqual({ inputTokens: 10, outputTokens: 5, contextTokens: 10 });
+  });
+
+  test("keeps the last context when a later request reports none", () => {
+    let reply = applyPiEvent(empty, assistantEnd([{ type: "text", text: "a" }], { usage: usage(0) }), { contextWindow: 1000 });
+    reply = applyPiEvent(reply, assistantEnd([], { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, stopReason: "error" }), { contextWindow: 1000 });
+
+    expect(reply.metadata?.usage?.contextTokens).toBe(1);
   });
 
   test("marks a tool done when its execution ends", () => {
@@ -143,7 +179,7 @@ const update = (assistantMessageEvent: Record<string, unknown>, extra: Record<st
   event({ type: "message_update", message: { role: "assistant", content: [] }, assistantMessageEvent, ...extra });
 const textDelta = (delta: string, contentIndex = 0) => update({ type: "text_delta", contentIndex, delta });
 const thinkingDelta = (delta: string, contentIndex = 0) => update({ type: "thinking_delta", contentIndex, delta });
-const fold = (reply: ChatMessage, ...events: AgentSessionEvent[]) => events.reduce(applyPiEvent, reply);
+const fold = (reply: ChatMessage, ...events: AgentSessionEvent[]) => events.reduce((current, next) => applyPiEvent(current, next), reply);
 
 describe("applyPiEvent streaming", () => {
   test("grows one text part in place as deltas arrive", () => {

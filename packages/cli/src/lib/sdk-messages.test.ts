@@ -90,7 +90,59 @@ describe("applySdkMessage", () => {
       sdk({ type: "result", subtype: "success", is_error: false, duration_ms: 1200, total_cost_usd: 0.05, result: "ok" }),
     );
 
-    expect(reply.metadata).toEqual({ mode: "BUILD", model: "opus", durationMs: 1200, costUsd: 0.05 });
+    expect(reply.metadata).toEqual({ mode: "BUILD", model: "opus", durationMs: 1200, costUsd: 0.05, usage: { costUsd: 0.05 } });
+  });
+
+  test("records the usage of the result, with the window of the model that answered", () => {
+    const reply = applySdkMessage(
+      emptyReply(),
+      sdk({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 10,
+        total_cost_usd: 0.34,
+        result: "ok",
+        usage: { input_tokens: 1200, output_tokens: 80, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 500 },
+        modelUsage: {
+          "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5, contextWindow: 100_000, costUSD: 0.001 },
+          "claude-opus-4-1": { inputTokens: 1200, outputTokens: 80, contextWindow: 200_000, costUSD: 0.33 },
+        },
+      }),
+    );
+
+    expect(reply.metadata?.usage).toEqual({
+      inputTokens: 1200,
+      outputTokens: 80,
+      cacheReadTokens: 30_000,
+      cacheWriteTokens: 500,
+      contextWindow: 200_000,
+      costUsd: 0.34,
+    });
+  });
+
+  test("takes the context tokens from the last request of the turn: input plus cache read plus cache write", () => {
+    const request = (usage: Record<string, unknown>) =>
+      sdk({ type: "assistant", message: { content: [{ type: "text", text: "x" }], usage }, parent_tool_use_id: null, session_id: "s1" });
+
+    let reply = applySdkMessage(emptyReply(), request({ input_tokens: 100, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0, output_tokens: 10 }));
+    reply = applySdkMessage(reply, request({ input_tokens: 120, cache_read_input_tokens: 5000, cache_creation_input_tokens: 400, output_tokens: 20 }));
+    expect(reply.metadata?.usage).toEqual({ contextTokens: 5520 });
+
+    reply = applySdkMessage(
+      reply,
+      sdk({ type: "result", subtype: "success", is_error: false, duration_ms: 1, total_cost_usd: 0.1, result: "ok", usage: { input_tokens: 220, output_tokens: 30 } }),
+    );
+    expect(reply.metadata?.usage).toEqual({ contextTokens: 5520, inputTokens: 220, outputTokens: 30, costUsd: 0.1 });
+  });
+
+  test("ignores the usage of subagent requests", () => {
+    const reply = applySdkMessage(
+      emptyReply(),
+      sdk({ type: "assistant", message: { content: [], usage: { input_tokens: 9 } }, parent_tool_use_id: "t1", session_id: "s1" }),
+    );
+
+    expect(reply.metadata?.usage).toBeUndefined();
   });
 
   test("leaves the reply untouched for other message types", () => {

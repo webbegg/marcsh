@@ -6,7 +6,7 @@ marcsh keeps its files in one folder, `~/.marcsh`. This page lists what is in it
 
 | Path | What it holds |
 | --- | --- |
-| `preferences.json` | Your settings: theme, engine, pi model, selected agent and permission mode. |
+| `preferences.json` | Your settings: theme, engine, pi model, selected agent, permission mode, favorite and recent models and the turn notification. |
 | `marcsh.db` | Your sessions, project trust decisions, the `/` menu command list and, for pi sessions, your "always allow" answers. On Claude, "always allow" is stored by Claude Code, not by marcsh. See [Sessions](sessions.md). |
 | `work/` | Feature docs made by [`/marcsh:feature`](commands.md#marcshfeature), one folder per project. An environment variable cannot move it. |
 | `agents/` | Your own agent files, one `.md` file per agent. See [Agents](agents.md). |
@@ -27,7 +27,10 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
   "defaultEngine": "pi",
   "piModel": "anthropic/claude-opus-5-5",
   "agent": "build",
-  "approvalMode": "normal"
+  "approvalMode": "normal",
+  "favoriteModels": { "claude": ["sonnet"], "pi": ["anthropic/claude-opus-5-5"] },
+  "recentModels": { "claude": ["opus", "sonnet"], "pi": ["anthropic/claude-opus-5-5"] },
+  "notify": "bell"
 }
 ```
 
@@ -38,8 +41,13 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
 | `piModel` | The model pi uses, as `provider/model-id`. | `/models` on pi |
 | `agent` | The ID of the selected agent. | `Tab` or `/agents` |
 | `approvalMode` | The permission mode new sessions start in: `normal`, `auto` or `yolo`. Default: `normal`. | `/permissions default <mode>`, or "Use … for new sessions" in `/permissions` |
+| `favoriteModels` | The models you marked as favorites, for each engine (`claude` and `pi`), in the order you marked them. | `Ctrl+F` in `/models` |
+| `recentModels` | The last 5 models you chose or used for a turn, for each engine, newest first. | `/models`, `F2` and sending a message |
+| `notify` | What marcsh does when a turn finishes: `bell` rings the terminal bell, `system` shows a macOS notification (the bell on other systems), `off` does nothing. Default: `bell`. | Edit the file |
 
 A value marcsh does not understand is ignored, and the default is used. Use the commands above to change settings. If you edit the file by hand, do it while marcsh is closed.
+
+The `system` notification is shown by `osascript` and reads `<session title>: done` (or `failed`, when the turn ended with an error). It is not sent when you interrupt a turn with `Esc`. A `favoriteModels` or `recentModels` entry for a model that is no longer offered is kept in the file and not shown.
 
 The Claude model (`opus`, `sonnet`, `haiku`) is not saved. Each launch starts on `opus`.
 

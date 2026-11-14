@@ -1,4 +1,4 @@
-import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
@@ -6,6 +6,9 @@ import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "..
 import { type BranchSource, type BranchState, branchState } from "../git-branch";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
+import { referenceText, splitAttachments, type Attachment } from "../attachments";
+import type { ChatMessage } from "../chat-types";
+import { mergeUsage } from "../usage";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
 import { Mode } from "../modes";
@@ -151,7 +154,48 @@ export function claudeQueryOptions({
   };
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+/**
+ * What a Claude turn is sent. Plain text stays a string; with images or PDFs it is one user message whose content is the text, then an
+ * `image` or `document` block (base64) for each. Other files, and an image whose bytes were not read, are `@path` mentions in the text.
+ */
+export function claudePrompt(prompt: string, attachments: readonly Attachment[] | undefined, cwd: string): string | AsyncIterable<SDKUserMessage> {
+  const { inline, references } = splitAttachments(attachments ?? [], { image: true, pdf: true });
+  const blocks = inline.filter((attachment) => attachment.bytes);
+  const text = referenceText(prompt, [...references, ...inline.filter((attachment) => !attachment.bytes)], cwd);
+  if (blocks.length === 0) return text;
+
+  const content = [
+    ...(text ? [{ type: "text" as const, text }] : []),
+    ...blocks.map((attachment) => {
+      const data = Buffer.from(attachment.bytes!).toString("base64");
+      return attachment.kind === "pdf"
+        ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data } }
+        : { type: "image" as const, source: { type: "base64" as const, media_type: attachment.mime as ImageMediaType, data } };
+    }),
+  ];
+  const message: SDKUserMessage = { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
+  return (async function* () {
+    yield message;
+  })();
+}
+
+/**
+ * Folds one SDK message into the reply. The SDK's `total_cost_usd` is a running total that a resumed conversation continues from
+ * (the first result of a resumed turn already holds the earlier turns), so the reply keeps only the difference from `priorCostUsd`,
+ * and the running total itself is stored beside it for the next turn. A total below the prior one means nothing was carried over.
+ */
+export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, priorCostUsd: number | undefined): ChatMessage {
+  if (message.type !== "result" || typeof message.total_cost_usd !== "number") return applySdkMessage(reply, message);
+  const prior = priorCostUsd ?? 0;
+  const own = message.total_cost_usd >= prior ? message.total_cost_usd - prior : message.total_cost_usd;
+  const applied = applySdkMessage(reply, { ...message, total_cost_usd: own });
+  const usage = mergeUsage(applied.metadata?.usage, { cumulativeCostUsd: prior + own });
+  return { ...applied, metadata: { ...applied.metadata, ...(usage ? { usage } : {}) } };
+}
+
+function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
@@ -174,12 +218,12 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode,
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])];
     try {
       chat = query({
-        prompt,
+        prompt: claudePrompt(prompt, attachments, cwd),
         options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, resumeRef, abortController, canUseTool, plugins }),
       });
 
       for await (const message of chat) {
-        host.emit({ type: "reply", update: (reply) => applySdkMessage(reply, message) });
+        host.emit({ type: "reply", update: (reply) => applyClaudeMessage(reply, message, priorCostUsd) });
 
         if (message.type === "system" && message.subtype === "init") {
           host.emit({ type: "session", ref: message.session_id });

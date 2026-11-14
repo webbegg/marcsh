@@ -4,6 +4,7 @@ import type { SupportedChatModelId } from "../../lib/models";
 import type { EngineId } from "../../lib/engine";
 import type { ApprovalMode } from "../../lib/approval-policy";
 import type { ToastContextValue } from "../../providers/toast";
+import type { SessionCommands } from "./session-commands";
 
 export type CommandContext = {
   /** What was typed after the command's name (`/agents install acme/flows` → `install acme/flows`), trimmed; empty when picked from the menu. */
@@ -35,6 +36,8 @@ export type CommandContext = {
   /** Selects an agent by ID and keeps the choice. */
   selectAgent: (id: string) => void;
   setModel: (model: SupportedChatModelId) => void;
+  /** What the open session can do; null outside a session (the home screen). */
+  session: SessionCommands | null;
 };
 
 export type Command = {
@@ -44,5 +47,7 @@ export type Command = {
   /** Where an engine's command comes from (`claude`; pi: `extension`, `prompt`, `skill`); marcsh's own commands leave it unset. */
   source?: string;
   argumentHint?: string;
+  /** `session`: works on the open session, so the `/` menu lists it only there. */
+  scope?: "session";
   action?: (ctx: CommandContext) => void | Promise<void>;
 };
