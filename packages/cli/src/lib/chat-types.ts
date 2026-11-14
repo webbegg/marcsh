@@ -56,6 +56,13 @@ export type TurnSnapshot = {
   abandoned?: boolean;
 };
 
+/** A file the user attached to a message: only where it is and what it is, never its bytes (the engine got those when the message was sent). */
+export type MessageAttachment = {
+  path: string;
+  mime: string;
+  kind: "image" | "pdf" | "file";
+};
+
 export type ChatMessageMetadata = {
   mode?: ModeType;
   /** The name of the agent that answered (stored under the key `agent`); older messages have none and show their mode. */
@@ -64,6 +71,8 @@ export type ChatMessageMetadata = {
   durationMs?: number;
   costUsd?: number;
   usage?: ChatUsage;
+  /** The files attached to a user message. */
+  attachments?: MessageAttachment[];
   /** A user message typed during a turn and delivered to it (shown with a marker). */
   steered?: boolean;
   /** Set on the last reply of a turn when the project's files could be snapshotted around it. */

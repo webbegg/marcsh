@@ -461,3 +461,23 @@ Type `@` and the start of a path to list files and folders of the project.
 - With no match, the menu says "No matching files or folders".
 - An `@` right after a letter, digit or path character (as in an email address) does not open the menu.
 - Only paths inside the project folder are offered. The path is inserted into your message as text.
+
+### Attaching files and images
+
+Paste or drop a file into the prompt of a session and it goes with your next message. Terminals paste a dropped file as its path; marcsh accepts it plain, in quotes, with `\ ` escapes for spaces, or as a `file://` address. You can paste several files at once (up to 32).
+
+- **Images** (PNG, JPEG, GIF, WebP) and **PDFs** show above the prompt as `[image: name.png]` or `[pdf: name.pdf]`. They are sent with the next message and shown under it in the chat. They can be up to 20 MB each.
+- **Other files** are inserted into the prompt as an `@path` mention (the same form the `@` menu inserts), relative to the project folder when the file is inside it.
+- **Send** with `Enter`. A message can be only attachments, with no text. After it is sent the chips are cleared.
+- **Remove** the last chip with `Backspace` when the prompt is empty. `Ctrl+C` on an empty prompt clears all of them.
+- Text that is not a path, or a path that does not exist, is pasted as ordinary text. A bare name such as `package.json` is also ordinary text; write `./package.json` or paste the full path to attach it. Relative image and PDF names (`shot.png`) are looked up in the project folder.
+- An image or PDF over 20 MB, or one that cannot be read, is not attached, and a message says why ("shot.png is larger than 20 MB, so it was not attached."). The file is read when you send, not when you paste. If it has gone by then, it is sent as an `@path` mention and a message says so.
+
+How each engine takes them:
+
+| Engine | Images | PDFs |
+| --- | --- | --- |
+| Claude | Sent as image input with your message. | Sent as a document with your message. |
+| pi | Sent as image input when the model takes images. Otherwise sent as an `@path` mention, with the message "This model cannot take images as input, so shot.png goes as an @path reference." | Sent as an `@path` mention, with the message "This engine cannot take PDFs as input, so spec.pdf goes as an @path reference." |
+
+Attachments work inside a session. On the home screen a pasted path is ordinary text. Only the path, the type and the kind are saved with the session, never the file's contents, and `/export` lists them under your message.

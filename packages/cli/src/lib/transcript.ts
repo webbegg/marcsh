@@ -70,7 +70,10 @@ function renderMarkdown(session: TranscriptSession): string {
   const lines = [`# ${field(session.title)}`, "", `- Date: ${day(session.createdAt)}`, `- Engine: ${field(session.engine)}${model ? ` (${field(model)})` : ""}`];
 
   for (const message of session.messages) {
-    const blocks = message.parts.map(markdownPart).filter((block): block is string => block !== null);
+    const blocks = [
+      ...message.parts.map(markdownPart).filter((block): block is string => block !== null),
+      ...(message.metadata?.attachments ?? []).map((attachment) => `- Attached ${attachment.kind} ${code(field(attachment.path))}`),
+    ];
     // Consecutive tool lines stay one list; everything else is a paragraph of its own.
     const body = blocks.reduce((out, block, index) => {
       if (index === 0) return block;
@@ -135,6 +138,9 @@ function renderJson(session: TranscriptSession): string {
       role: message.role,
       ...(message.metadata?.agent !== undefined && { agent: cleanJson(message.metadata.agent) }),
       ...(message.metadata?.model !== undefined && { model: cleanJson(message.metadata.model) }),
+      ...(message.metadata?.attachments?.length && {
+        attachments: message.metadata.attachments.map(({ path, mime, kind }) => ({ path: cleanJson(path), mime: cleanJson(mime), kind })),
+      }),
       parts: message.parts.map(jsonPart).filter((part) => part !== null),
     })),
   };

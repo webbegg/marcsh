@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 import { InputBar } from "./input-bar";
 import { Spinner } from "./spinner";
 import { usePromptConfig } from "../providers/prompt-config";
-import type { ChatMessage } from "../lib/chat-types";
+import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 
 type Props = {
   children?: ReactNode;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, attachments?: MessageAttachment[]) => void;
   inputDisabled?: boolean;
   loading?: boolean;
   interruptible?: boolean;

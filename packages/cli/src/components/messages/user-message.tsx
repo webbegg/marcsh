@@ -3,6 +3,8 @@ import { Mode, type ModeType } from "../../lib/modes";
 import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
 import { escapeTranscriptText } from "../../lib/display-text";
+import { attachmentLabel } from "../../lib/attachments";
+import type { MessageAttachment } from "../../lib/chat-types";
 
 type Props = {
   message: string;
@@ -11,9 +13,11 @@ type Props = {
   marker?: string;
   /** Not sent yet: shown dim. */
   pending?: boolean;
+  /** The files attached to the message, listed under its text. */
+  attachments?: MessageAttachment[];
 };
 
-export function UserMessage({ message, mode, marker, pending = false }: Props) {
+export function UserMessage({ message, mode, marker, pending = false, attachments }: Props) {
   const { colors } = useTheme();
 
   return (
@@ -34,7 +38,10 @@ export function UserMessage({ message, mode, marker, pending = false }: Props) {
           backgroundColor={colors.surface}
           width="100%"
         >
-          <text attributes={pending ? TextAttributes.DIM : undefined}>{escapeTranscriptText(message)}</text>
+          {message ? <text attributes={pending ? TextAttributes.DIM : undefined}>{escapeTranscriptText(message)}</text> : null}
+          {attachments?.map((attachment, index) => (
+            <text key={`${index}-${attachment.path}`} attributes={TextAttributes.DIM}>{escapeTranscriptText(attachmentLabel(attachment))}</text>
+          ))}
           {marker ? <text attributes={TextAttributes.DIM}>{marker}</text> : null}
         </box>
       </box>

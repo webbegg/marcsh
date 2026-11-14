@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 import { createContext, useContext, useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
-import { TextAttributes } from "@opentui/core";
+import { decodePasteBytes, stripAnsiSequences, TextAttributes } from "@opentui/core";
 
 import type { TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
@@ -25,7 +25,8 @@ import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
-import type { ChatMessage } from "../lib/chat-types";
+import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
+import { attachmentLabel, mentionFor, parsePastedPaths, resolvePastedAttachments } from "../lib/attachments";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
@@ -269,7 +270,8 @@ function FileMentionMenu({
 };
 
 type Props = {
-  onSubmit: (text: string) => void;
+  /** `attachments`: the images and PDFs pasted since the last send (only on a screen that can send them, see `canAttach`). */
+  onSubmit: (text: string, attachments?: MessageAttachment[]) => void;
   disabled?: boolean;
   /** Directory that `@` mentions resolve against. */
   cwd?: string;
@@ -377,6 +379,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     setLeaderPending(false);
   }, []);
   useEffect(() => endLeader, [endLeader]);
+
+  // Images and PDFs whose paths were pasted: shown as chips above the text, sent with the next message. Other files become `@path` text.
+  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  // Only where a message can carry them (an open session); elsewhere a pasted path is just text.
+  const canAttach = session !== null && !typeOnly;
+  const pasteStateRef = useRef({ canAttach, disabled, isTopLayer, cwd });
+  pasteStateRef.current = { canAttach, disabled, isTopLayer, cwd };
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -534,6 +545,33 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return true;
     });
   }, [renderer]);
+
+  // Terminals paste a dropped file as its path. A paste that is made of existing paths attaches them; the check is asynchronous, so the
+  // paste is held back only when it looks like paths, and goes in as text if it turns out not to be (the same text the textarea would have taken).
+  useEffect(() => {
+    const onPaste = (event: { bytes: Uint8Array; preventDefault(): void }) => {
+      const state = pasteStateRef.current;
+      const textarea = textareaRef.current;
+      if (!textarea || !state.canAttach || state.disabled || !state.isTopLayer("base")) return;
+      const text = stripAnsiSequences(decodePasteBytes(event.bytes));
+      if (!parsePastedPaths(text)) return;
+      event.preventDefault();
+      void resolvePastedAttachments(text, state.cwd)
+        .catch(() => null)
+        .then((found) => {
+          if (!found) return void textarea.insertText(text);
+          for (const problem of found.problems) toast.show({ variant: "error", message: problem });
+          const chips = found.attachments.filter((attachment) => attachment.kind !== "file");
+          const mentions = found.attachments.filter((attachment) => attachment.kind === "file").map((attachment) => `${mentionFor(attachment.path, state.cwd)} `);
+          if (chips.length > 0) setAttachments((current) => [...current, ...chips]);
+          if (mentions.length > 0) textarea.insertText(mentions.join(""));
+        });
+    };
+    renderer.keyInput.on("paste", onPaste);
+    return () => {
+      renderer.keyInput.off("paste", onPaste);
+    };
+  }, [renderer, toast]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
   useEffect(() => {
@@ -709,7 +747,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!textarea) return;
 
     const text = textarea.plainText.trim();
-    if (text.length === 0) return;
+    // Attachments alone make a message, but only one that starts a turn: a steer or a follow-up carries text only.
+    if (text.length === 0 && (attachmentsRef.current.length === 0 || turnInput.active || turnInput.starting)) return;
 
     // While a turn takes input, `/queue <text>` queues like Alt+Enter does; before it can, the text stays where it is.
     const queuedByCommand = turnInput.active || turnInput.starting ? QUEUE_COMMAND.exec(text) : null;
@@ -741,10 +780,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       return;
     }
     // The text is gone from the input before anything can navigate away: what the bar hands over on unmount is only what is typed after.
-    rememberPrompt(text);
+    const attached = attachmentsRef.current;
+    if (text.length > 0) rememberPrompt(text);
     clearKeyActivity(renderer);
     textarea.setText("");
-    onSubmit(text);
+    if (attached.length === 0) return onSubmit(text);
+    setAttachments([]);
+    onSubmit(text, attached);
   }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer, rememberPrompt])
 
   // Keep the file picker in sync with the current @mention token.
@@ -809,6 +851,12 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   useKeyboard((key) => {
     if (disabled) return;
     if (!isTopLayer("base")) return;
+    // Backspace on an empty input takes the last attachment back.
+    if (key.name === "backspace" && !key.ctrl && !key.meta && attachmentsRef.current.length > 0 && textareaRef.current?.plainText.length === 0) {
+      key.preventDefault();
+      setAttachments((current) => current.slice(0, -1));
+      return;
+    }
     // The palette and the leader work where a command can run: not on a screen that only takes keys. A key bound here is not typing.
     if (!typeOnly) {
       if (leaderRef.current) {
@@ -855,6 +903,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       const textarea = textareaRef.current;
       if (textarea && textarea.plainText.length > 0) {
         textarea.setText("");
+        return true;
+      }
+      if (attachmentsRef.current.length > 0) {
+        setAttachments([]);
         return true;
       }
       return false;
@@ -960,6 +1012,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
               />
             </box>
           )}
+          {attachments.length > 0 && <text attributes={TextAttributes.DIM}>{attachments.map(attachmentLabel).join(" ")}</text>}
           <textarea
             ref={textareaRef}
             focused={
