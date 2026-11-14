@@ -1,8 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
+
+// Every turn runs real git (a snapshot before and after); on a loaded machine that takes longer than Bun's 5 s. A test that times out
+// inside act() leaves the act pending and fails every later screen test in the process ("overlapping act() calls").
+setDefaultTimeout(60_000);
 
 process.env.MARCSH_DB_PATH = ":memory:";
 // Never the real ~/.marcsh: not the preferences, and above all not the shadow repos, which hold copies of project files. The variables
@@ -35,7 +39,11 @@ const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
+const { useSessionCommands } = await import("../hooks/use-session-commands");
+import type { SessionCommands } from "../components/command-menu/session-commands";
 import type { ChatMessage } from "../lib/chat-types";
+import type { SnapshotStore, SnapshotStoreResult } from "../lib/snapshot";
+import type { StoredSession } from "../lib/storage";
 
 beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} }));
 afterAll(() => {
@@ -355,5 +363,119 @@ describe("/diff (S11)", () => {
     await command("/diff");
     await settle(150);
     expect(frame()).toContain("No turn in this session has a file snapshot");
+  });
+});
+
+describe("/undo while a message is sent (R3-007, R4-002)", () => {
+  const before = "a".repeat(40);
+  const after = "b".repeat(40);
+  const reply: ChatMessage = { id: "r1", role: "assistant", parts: [{ type: "text", text: "done" }], metadata: { snapshot: { before, after } } };
+
+  /** A store whose planning waits for the test and whose restore is watched. */
+  function fakeStore(modified: string[]) {
+    const seen = { restores: 0, signals: [] as (AbortSignal | undefined)[], planned: null as null | (() => void) };
+    const planning = new Promise<void>((resolve) => (seen.planned = resolve));
+    const store = {
+      track: async () => after,
+      changedFiles: async () => ["a.txt"],
+      diff: async () => "",
+      modifiedSince: async (_tree: string, _files: string[], signal?: AbortSignal) => {
+        seen.signals.push(signal);
+        await planning;
+        return modified;
+      },
+      restore: async () => {
+        seen.restores++;
+        return { written: ["a.txt"], deleted: [] };
+      },
+    };
+    return { store: store as unknown as SnapshotStore, seen };
+  }
+
+  let commands: SessionCommands | undefined;
+  let busy = false;
+  let notices: string[] = [];
+  let harness: { session: StoredSession; snapshots: SnapshotStoreResult } | undefined;
+
+  function Harness() {
+    commands = useSessionCommands({
+      session: harness!.session,
+      chat: {
+        getMessages: () => [reply],
+        editMessages: () => undefined,
+        snapshotIssue: () => undefined,
+        hasConversation: () => true,
+        compact: async () => ({ ok: true }),
+        get busy() {
+          return busy;
+        },
+      },
+      snapshots: harness!.snapshots,
+      compactModel: async () => "opus",
+      compactWithTurn: () => {},
+      addNotice: (text) => void notices.push(text),
+    });
+    return <text>HARNESS</text>;
+  }
+
+  async function openHarness(store: SnapshotStore) {
+    busy = false;
+    notices = [];
+    commands = undefined;
+    harness = { session: getStorage().createSession({ title: "h", cwd: home, engine: "claude" }), snapshots: { available: true, store } };
+    const router = createMemoryRouter([{ path: "/", element: <RootLayout />, children: [{ index: true, element: <Harness /> }] }], { initialEntries: ["/"] });
+    screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 20 });
+    await settle(80);
+  }
+
+  test("control: with no turn running the plan is applied", async () => {
+    const { store, seen } = fakeStore([]);
+    await openHarness(store);
+    const running = commands!.undo();
+    seen.planned!();
+    await act(() => running);
+    expect(seen.restores).toBe(1);
+    expect(notices.join("\n")).toContain("Undid the last turn's file changes");
+  });
+
+  test("a turn that starts while the plan waits for git means nothing is restored, and the user is told", async () => {
+    const { store, seen } = fakeStore([]);
+    await openHarness(store);
+    const running = commands!.undo();
+    await settle(30);
+    busy = true;
+    seen.planned!();
+    await act(() => running);
+    await settle(80);
+
+    expect(seen.restores).toBe(0);
+    expect(notices).toEqual([]);
+    expect(frame()).toContain("A turn is running; try /undo again when it ends");
+  });
+
+  test("a turn that starts while the overwrite question is open means nothing is restored", async () => {
+    const { store, seen } = fakeStore(["a.txt"]);
+    await openHarness(store);
+    const running = commands!.undo();
+    seen.planned!();
+    await act(() => running);
+    await until(() => frame().includes("Overwrite changed files?"));
+    busy = true;
+    await confirmSecond();
+    await settle(100);
+
+    expect(seen.restores).toBe(0);
+    expect(frame()).toContain("A turn is running; try /undo again when it ends");
+  });
+
+  test("the plan's git work is given a deadline that is not already over", async () => {
+    const { store, seen } = fakeStore([]);
+    await openHarness(store);
+    const running = commands!.undo();
+    seen.planned!();
+    await act(() => running);
+    expect(seen.signals).toHaveLength(1);
+    expect(seen.signals[0]).toBeInstanceOf(AbortSignal);
+    expect(seen.signals[0]!.aborted).toBe(false);
   });
 });

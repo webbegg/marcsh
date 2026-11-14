@@ -77,6 +77,8 @@ A headless turn has nobody to answer, so marcsh never asks:
 
 So a headless turn can read your project but cannot write files or run new commands unless a rule already allows them. There is no option yet that approves on its own.
 
+A headless run denies *asks*; it does not turn off rules you already granted. A pi "always allow" rule and a Claude settings allow rule still apply, so a headless turn can use a tool you allowed before. Check what you allowed before you run `marcsh run` on a project you do not know.
+
 ### Exit codes
 
 | Code | Meaning |

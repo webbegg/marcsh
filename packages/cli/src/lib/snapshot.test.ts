@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createSnapshotStore, defaultSnapshotRoot, type SnapshotStore } from "./snapshot";
+
+// Real git in temp projects: slower than Bun's 5 s on a loaded machine.
+setDefaultTimeout(60_000);
 
 let base: string;
 let root: string;
@@ -29,7 +32,7 @@ const read = (dir: string, path: string) => readFileSync(join(dir, path), "utf8"
 /** Runs the real git on the project itself, with a clean environment so the test never depends on the developer's config. */
 const projectGit = (cwd: string, ...args: string[]) => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-  const result = Bun.spawnSync(["git", "-c", "commit.gpgsign=false", ...args], {
+  const result = Bun.spawnSync(["git", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], {
     cwd,
     env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
   });
@@ -566,6 +569,149 @@ describe("shadow repo configuration", () => {
   });
 });
 
+describe("marcsh's own data inside the project", () => {
+  test("folders and files named in `exclude` are not snapshotted, listed, diffed or restored, and a tree from before is cleaned", async () => {
+    put(project, "keep.txt", "k0");
+    put(project, "data/marcsh.db", "d0");
+    put(project, "data/sub/x", "x0");
+    put(project, "prefs.json", "p0");
+    const plain = createSnapshotStore({ cwd: project, root });
+    if (!plain.available) throw new Error(plain.reason);
+    const old = await plain.store.track();
+
+    const created = createSnapshotStore({ cwd: project, root, exclude: [join(project, "data"), join(project, "prefs.json")] });
+    if (!created.available) throw new Error(created.reason);
+    const store = created.store;
+    const before = await store.track();
+    put(project, "keep.txt", "k1");
+    put(project, "data/marcsh.db", "d1");
+    put(project, "prefs.json", "p1");
+    const after = await store.track();
+
+    expect(await store.changedFiles(old, before)).toEqual([]);
+    expect(await store.changedFiles(before, after)).toEqual(["keep.txt"]);
+    expect(await store.diff(before, after)).not.toContain("marcsh.db");
+    expect(await store.diff(old, after)).not.toContain("prefs.json");
+    await store.restore(old, ["data/marcsh.db", "prefs.json", "keep.txt"]);
+    expect(read(project, "data/marcsh.db")).toBe("d1");
+    expect(read(project, "prefs.json")).toBe("p1");
+    expect(read(project, "keep.txt")).toBe("k0");
+  });
+
+  test("an aborted track rejects, and the next one still works", async () => {
+    put(project, "a.txt", "a");
+    const store = open();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(store.track(cancelled.signal)).rejects.toThrow();
+
+    const running = new AbortController();
+    for (let i = 0; i < 600; i += 1) put(project, `many/${i}.txt`, String(i));
+    const slow = store.track(running.signal);
+    setTimeout(() => running.abort(), 5);
+    await slow.then(() => undefined, () => undefined);
+    expect(await store.track()).toMatch(/^[0-9a-f]{40,64}$/);
+  }, 30_000);
+
+  test("the shadow root and its folders are private to the user", async () => {
+    put(project, "a.txt", "a");
+    await open().track();
+
+    expect(statSync(root).mode & 0o777).toBe(0o700);
+    const [shadow] = readdirSync(root);
+    expect(statSync(join(root, shadow!)).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe("reading the current files can be given up on (R4-002)", () => {
+  test("changedFiles, diff and modifiedSince that read the current files reject at once under an aborted signal; the store keeps working", async () => {
+    put(project, "a.txt", "one");
+    const store = open();
+    const tree = await store.track();
+    const cancelled = AbortSignal.abort();
+
+    await expect(store.changedFiles(tree, undefined, cancelled)).rejects.toThrow("cancelled");
+    await expect(store.diff(tree, undefined, cancelled)).rejects.toThrow("cancelled");
+    await expect(store.modifiedSince(tree, ["a.txt"], cancelled)).rejects.toThrow("cancelled");
+
+    expect(await store.modifiedSince(tree, ["a.txt"], new AbortController().signal)).toEqual([]);
+    expect(await store.changedFiles(tree)).toEqual([]);
+  });
+});
+
+describe("one shadow repo shared by several marcsh processes (R4-004)", () => {
+  const shadowDir = () => join(root, readdirSync(root)[0]!);
+  const lockPath = () => join(shadowDir(), "index.lock");
+  const ago = (ms: number) => new Date(Date.now() - ms);
+  const makeLock = (age: number) => {
+    writeFileSync(lockPath(), "");
+    utimesSync(lockPath(), ago(age), ago(age));
+  };
+
+  test("a lock left by a killed process (older than two minutes) is removed and the snapshot goes on", async () => {
+    put(project, "a.txt", "one");
+    const first = await open().track();
+    makeLock(5 * 60_000);
+
+    // A new marcsh process: its own store, as after a restart.
+    const again = await open().track();
+
+    expect(again).toBe(first);
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a fresh lock may be a live git's: it is left alone and the failure is reported", async () => {
+    put(project, "a.txt", "one");
+    await open().track();
+    makeLock(5_000);
+
+    await expect(open().track()).rejects.toThrow("index.lock");
+
+    expect(existsSync(lockPath())).toBe(true);
+  });
+
+  test("info/exclude is not rewritten when its content is the same, and is replaced whole when it changes", async () => {
+    put(project, "a.txt", "one");
+    const options = { cwd: project, root, exclude: [join(project, "private")] };
+    const make = () => {
+      const created = createSnapshotStore(options);
+      if (!created.available) throw new Error(created.reason);
+      return created.store;
+    };
+    await make().track();
+    const exclude = join(shadowDir(), "info", "exclude");
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/private\n");
+    utimesSync(exclude, ago(60_000), ago(60_000));
+    const before = statSync(exclude);
+
+    await make().track();
+    const after = statSync(exclude);
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/private\n");
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+
+    const other = createSnapshotStore({ ...options, exclude: [join(project, "secret")] });
+    if (!other.available) throw new Error(other.reason);
+    await other.store.track();
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/secret\n");
+    // No temporary file is left next to it.
+    expect(readdirSync(join(shadowDir(), "info"))).toEqual(["exclude"]);
+  });
+
+  test("two processes starting together do not write the [core] block twice", async () => {
+    put(project, "a.txt", "one");
+
+    // The three `add`s may meet each other's lock (a live git's: reported, not removed); the initialization is what is checked.
+    const settled = await Promise.allSettled([open().track(), open().track(), open().track()]);
+
+    expect(settled.some((result) => result.status === "fulfilled")).toBe(true);
+    expect(await open().track()).toMatch(/^[0-9a-f]{40,64}$/);
+    const config = readFileSync(join(shadowDir(), "config"), "utf8");
+    expect(config.match(/hooksPath = \/dev\/null/g)).toHaveLength(1);
+    expect(config.match(/bare = false/g)).toHaveLength(1);
+  });
+});
+
 describe("availability", () => {
   test("reports unavailable, without throwing, when git is not installed", () => {
     const saved = process.env.PATH;
@@ -583,6 +729,16 @@ describe("availability", () => {
     const created = createSnapshotStore({ cwd: join(base, "missing"), root });
 
     expect(created.available).toBe(false);
+  });
+
+  test("is off in the home folder and in /, with the reason", () => {
+    // `homedir()` is fixed when the process starts, so the home folder is chosen in a child process.
+    const script = `import { createSnapshotStore } from ${JSON.stringify(join(import.meta.dir, "snapshot"))}; console.log(JSON.stringify(createSnapshotStore({ cwd: process.env.HOME!, root: process.argv[1]! })));`;
+    const child = Bun.spawnSync([process.execPath, "-e", script, root], { env: { ...process.env, HOME: project }, cwd: base });
+    expect(JSON.parse(child.stdout.toString())).toEqual({ available: false, reason: "snapshots are off in your home folder" });
+    const top = createSnapshotStore({ cwd: "/", root });
+    expect(top.available).toBe(false);
+    if (!top.available) expect(top.reason).toContain("root folder");
   });
 
   test("root defaults to ~/.marcsh/snapshots under the home directory", () => {

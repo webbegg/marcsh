@@ -64,6 +64,10 @@ Before and after every turn marcsh takes a snapshot of your project's files. `/u
 - Snapshots live in a shadow git repository per project under `~/.marcsh/snapshots/<project-hash>`. The hash is taken from the project folder's real path. The repository has its own git directory with your project as its work tree. Your project's own `.git` is never read or changed, and nothing is committed.
 - Your project's `.gitignore` is respected, and `.git` folders (also inside the project) are never included. Files that are ignored (such as `.env` and `node_modules`) are neither copied nor restored.
 - The shadow repository holds a copy of every other file of the project, including each version a turn saved. This can be a lot of data and can include secrets in files that are not ignored. marcsh never removes it, and deleting a session does not either. Delete the `<project-hash>` folder to forget a project's snapshots.
+- Snapshots skip marcsh's own data. When the project folder contains `~/.marcsh` (or a file or folder that `MARCSH_DB_PATH`, `MARCSH_PREFERENCES_PATH` and similar variables point to), the database, settings, agents and the shadow repositories themselves are left out, so `/undo` and `/diff` never list them and never write them.
+- Snapshots are off in your home folder and in `/`, because they hold marcsh's data, other projects and private files. `/undo` then says "snapshots are off in your home folder". Start marcsh in a project folder instead.
+- A snapshot that times out is cancelled: marcsh stops its `git` process, so it does not keep copying files in the background.
+- The `snapshots` folder and each project folder in it are private to you (mode 0700).
 - Snapshots need `git` on your `PATH`. Without it, or when a snapshot fails or takes longer than 10 seconds, the turn still runs and `/undo` says why it cannot help. After a snapshot times out, that session takes no more.
 - Taking them costs time before and after each turn: on the marcsh repository, about 0.25 s for each snapshot after the first (0.65 s the first time).
 - `MARCSH_SNAPSHOTS_DIR` moves the folder, and `MARCSH_SNAPSHOTS=off` turns snapshots off.

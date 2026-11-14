@@ -195,7 +195,8 @@ describe("models and Claude sessions", () => {
     expect(f).not.toContain("v-select/");
     await press("RETURN");
     await settle(80);
-    expect(JSON.parse(readFileSync(prefsPath, "utf8"))).toEqual({ themeName: "nord", defaultEngine: "pi", piModel: "v-key/v-key-m" });
+    // The choice is also a recent model (S10); nothing else is added to the file.
+    expect(JSON.parse(readFileSync(prefsPath, "utf8"))).toEqual({ themeName: "nord", defaultEngine: "pi", piModel: "v-key/v-key-m", recentModels: { pi: ["v-key/v-key-m"] } });
     await screen!.renderer.destroy(); screen = null;
 
     // log out; a new mount falls back but the stored file stays byte-identical

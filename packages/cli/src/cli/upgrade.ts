@@ -15,8 +15,11 @@ export type UpgradeDeps = {
   io?: Io;
   /** The environment: where `MARCSH_INSTALLER_URL` is read from and what the installer inherits. */
   env?: Record<string, string | undefined>;
-  fetch?: (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+  fetch?: (url: string, init?: { signal?: AbortSignal; redirect?: "manual" }) => Promise<Response>;
 };
+
+/** How many redirects are followed before the download is given up on. */
+const MAX_REDIRECTS = 5;
 
 /** https, or plain http only for this machine: the rule install.sh applies to its own download base. */
 function allowedUrl(text: string): URL | undefined {
@@ -68,10 +71,20 @@ export async function upgradeCommand(args: UpgradeArgs, deps: UpgradeDeps = {}):
   io.stdout(`Downloading the installer from ${shown(url)}\n`);
   let script: string;
   try {
-    const response = await get(url.href, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    // Redirects are followed here, one hop at a time: each one must lead somewhere the address itself could have.
+    const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+    let current = url;
+    let response = await get(current.href, { signal, redirect: "manual" });
+    for (let hops = 0; response.status >= 300 && response.status < 400 && response.headers.has("location"); hops += 1) {
+      const next = new URL(response.headers.get("location")!, current);
+      if (hops >= MAX_REDIRECTS) throw new DownloadError(`redirected to ${shown(next)} (more than ${MAX_REDIRECTS} redirects)`);
+      const allowed = allowedUrl(next.href);
+      if (!allowed) throw new DownloadError(`redirected to ${shown(next)}, which is not allowed`);
+      await response.body?.cancel();
+      current = allowed;
+      response = await get(current.href, { signal, redirect: "manual" });
+    }
     if (!response.ok) throw new DownloadError(`HTTP ${response.status}`);
-    // A redirect must not lead anywhere the address itself could not.
-    if (response.url && !allowedUrl(response.url)) throw new DownloadError(`redirected to ${shown(new URL(response.url))}`);
     script = await readLimited(response);
   } catch (err) {
     return fail(`cannot download the installer from ${shown(url)}: ${err instanceof Error ? err.message : String(err)}`);

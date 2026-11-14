@@ -204,6 +204,57 @@ describe("runHeadless: sessions", () => {
     expect(storage.listSessions()).toHaveLength(1);
   });
 
+  test("a resumed Claude session passes what its conversation had cost, so the reply stores only this turn's share", async () => {
+    const { engine, requests } = fakeEngine((_r, host) => say(host, "second"));
+    engines.set("claude", engine);
+    const made = storage.createSession({ title: "first", cwd, engine: "claude" });
+    const earlier: ChatMessage[] = [
+      { id: "m1", role: "user", parts: [{ type: "text", text: "one" }] },
+      { id: "m2", role: "assistant", parts: [{ type: "text", text: "first" }], metadata: { usage: { cumulativeCostUsd: 0.5, costUsd: 0.5 } } },
+    ];
+    storage.saveMessages(made.id, earlier, "ref-old");
+
+    await run({ session: made.id, message: "hi" });
+    await run({ message: "fresh" });
+
+    expect(requests[0]!.priorCostUsd).toBe(0.5);
+    // A new session has no earlier conversation to subtract.
+    expect(requests[1]!.priorCostUsd).toBeUndefined();
+    expect(requests[1]!.resumeRef).toBeUndefined();
+  });
+
+  test("a session with messages and no engine reference (a fork) is sent primed with its transcript, once the engine has no conversation to continue", async () => {
+    const { engine, requests } = fakeEngine((_r, host) => say(host, "second"));
+    engines.set("claude", engine);
+    const made = storage.createSession({ title: "forked", cwd, engine: "claude" });
+    storage.saveMessages(made.id, [
+      { id: "m1", role: "user", parts: [{ type: "text", text: "what is the capital of France" }] },
+      { id: "m2", role: "assistant", parts: [{ type: "text", text: "Paris" }] },
+    ]);
+
+    await run({ session: made.id, message: "and Spain?" });
+
+    const prompt = requests[0]!.prompt;
+    expect(prompt).toContain("what is the capital of France");
+    expect(prompt).toContain("Paris");
+    expect(prompt.endsWith("and Spain?")).toBe(true);
+    // What is saved is what was typed.
+    const saved = storage.getSession(made.id)!;
+    expect(saved.messages.at(-2)!.parts).toEqual([{ type: "text", text: "and Spain?" }]);
+  });
+
+  test("a session with an engine reference, and a new session, are sent the bare prompt", async () => {
+    const { engine, requests } = fakeEngine((_r, host) => say(host, "ok"));
+    engines.set("claude", engine);
+    const made = storage.createSession({ title: "x", cwd, engine: "claude" });
+    storage.saveMessages(made.id, [{ id: "m1", role: "user", parts: [{ type: "text", text: "one" }] }], "ref-old");
+
+    await run({ session: made.id, message: "two" });
+    await run({ message: "three" });
+
+    expect(requests.map((r) => r.prompt)).toEqual(["two", "three"]);
+  });
+
   test("--session with an unknown id is a usage error (exit 2)", async () => {
     engines.set("claude", fakeEngine(() => {}).engine);
 
@@ -304,6 +355,31 @@ describe("runHeadless: nobody to ask (A1)", () => {
       "marcsh: denied Bash (headless runs cannot ask for approval)",
       "marcsh: denied Write (headless runs cannot ask for approval)",
     ]);
+  });
+
+  test("text format strips terminal control sequences from the reply, engine errors, notices and tool names; newlines and tabs stay", async () => {
+    const osc = "\x1b]52;c;ZXZpbA==\x07";
+    const clear = "\x1b[2J";
+    engines.set(
+      "claude",
+      fakeEngine(async (request, host) => {
+        await host.askPermission({ toolName: `Ba${osc}sh${clear}`, input: {} }, request.signal);
+        host.notify?.(`note${osc}`, "warning");
+        host.emit({ type: "error", message: `bad${clear}${osc} thing\x1b[31m` });
+        say(host, `line one${osc}\n\tindented${clear}\nend\x1b`);
+      }).engine,
+    );
+
+    await run();
+
+    expect(out).not.toContain("\x1b");
+    expect(out).not.toContain("\x07");
+    expect(out).toContain("line one\n\tindented");
+    expect(err).not.toContain("\x1b");
+    expect(err).not.toContain("\x07");
+    expect(err).toContain("marcsh: denied Bash (");
+    expect(err).toContain("marcsh: bad thing\n");
+    expect(err).toContain("marcsh: note\n");
   });
 
   test("notices from the engine go to stderr, never stdout", async () => {

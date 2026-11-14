@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ChatMessage, TurnSnapshot } from "./chat-types";
 import { createSnapshotStore, defaultSnapshotRoot, type SnapshotStore, type SnapshotStoreResult } from "./snapshot";
 
@@ -13,26 +15,43 @@ export const SNAPSHOT_TIMEOUT_MS = 10_000;
 /** Where the shadow repos live: `MARCSH_SNAPSHOTS_DIR`, else `~/.marcsh/snapshots`. */
 export const snapshotRoot = (): string => process.env.MARCSH_SNAPSHOTS_DIR?.trim() || defaultSnapshotRoot();
 
+/** The environment variables that move one of marcsh's own files or folders away from `~/.marcsh`. */
+const DATA_ENV = ["MARCSH_DB_PATH", "MARCSH_PREFERENCES_PATH", "MARCSH_KEYBINDS_PATH", "MARCSH_HISTORY_PATH", "MARCSH_AGENT_DIR", "MARCSH_AGENTS_DIR", "MARCSH_PACKS_DIR"];
+
 /**
- * The snapshot store of the project at `cwd`, or why there is none (no git, a folder that cannot be read, `MARCSH_SNAPSHOTS=off`).
+ * marcsh's own data: `~/.marcsh`, and each file or folder that an environment variable moved elsewhere (with the database's `-wal`,
+ * `-shm` and `-journal` files). A project folder that contains any of it must not snapshot or restore it.
+ */
+export function marcshDataPaths(): string[] {
+  const moved = DATA_ENV.flatMap((name) => process.env[name]?.trim() || []);
+  const database = process.env.MARCSH_DB_PATH?.trim();
+  return [join(homedir(), ".marcsh"), ...moved, ...(database ? ["-wal", "-shm", "-journal"].map((suffix) => database + suffix) : [])];
+}
+
+/**
+ * The snapshot store of the project at `cwd`, or why there is none (no git, a folder that cannot be read, the home folder or `/`, `MARCSH_SNAPSHOTS=off`).
  * Tests run with `MARCSH_SNAPSHOTS=off` and a temp `MARCSH_SNAPSHOTS_DIR` (test-preload.ts).
  */
 export function openSnapshots(cwd: string): SnapshotStoreResult {
   if (process.env.MARCSH_SNAPSHOTS?.trim().toLowerCase() === "off") return { available: false, reason: "turned off by MARCSH_SNAPSHOTS=off" };
-  return createSnapshotStore({ cwd, root: snapshotRoot() });
+  return createSnapshotStore({ cwd, root: snapshotRoot(), exclude: marcshDataPaths() });
 }
 
 /**
- * A snapshot of the project now: its tree, or the reason there is none (`timedOut` when it was given up on: the work goes on in the
- * background, so the next one would only queue behind it). Never throws, and never waits longer than `timeoutMs`.
+ * A snapshot of the project now: its tree, or the reason there is none (`timedOut` when it was given up on: the git process is killed,
+ * so it stops copying files, and the next snapshot would be as slow). Never throws, and never waits longer than `timeoutMs`.
  */
 export async function trackWithin(store: SnapshotStore, timeoutMs = SNAPSHOT_TIMEOUT_MS): Promise<{ tree: string } | { reason: string; timedOut?: true }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const cancel = new AbortController();
   const timeout = new Promise<{ reason: string; timedOut: true }>((resolve) => {
-    timer = setTimeout(() => resolve({ reason: `the snapshot took longer than ${Math.round(timeoutMs / 1000)} s`, timedOut: true }), timeoutMs);
+    timer = setTimeout(() => {
+      cancel.abort();
+      resolve({ reason: `the snapshot took longer than ${Math.round(timeoutMs / 1000)} s`, timedOut: true });
+    }, timeoutMs);
   });
   try {
-    const tracked = store.track().then((tree) => ({ tree }), (error: unknown) => ({ reason: error instanceof Error ? error.message : String(error) }));
+    const tracked = store.track(cancel.signal).then((tree) => ({ tree }), (error: unknown) => ({ reason: error instanceof Error ? error.message : String(error) }));
     return await Promise.race([tracked, timeout]);
   } finally {
     clearTimeout(timer);
@@ -81,9 +100,9 @@ export type NoStep = { kind: "none"; skipped: number };
 /**
  * The turn `/undo` (the newest reply with a snapshot that is not undone) or `/redo` (the oldest reply that is undone and not abandoned:
  * undo works backwards, so that is the one undone last) would act on. A turn that changed no files is passed over for the next one.
- * Writes nothing.
+ * Writes nothing. Aborting `signal` stops the git work that reads the project's current files.
  */
-export async function planStep(store: SnapshotStore, messages: ChatMessage[], direction: Direction): Promise<StepPlan | NoStep> {
+export async function planStep(store: SnapshotStore, messages: ChatMessage[], direction: Direction, signal?: AbortSignal): Promise<StepPlan | NoStep> {
   const turns = messages.flatMap((message) => {
     const snapshot = snapshotOf(message);
     return snapshot ? [{ id: message.id, snapshot }] : [];
@@ -95,7 +114,7 @@ export async function planStep(store: SnapshotStore, messages: ChatMessage[], di
 
   let skipped = 0;
   for (const { id, snapshot } of candidates) {
-    const files = await store.changedFiles(snapshot.before, snapshot.after);
+    const files = await store.changedFiles(snapshot.before, snapshot.after, signal);
     if (files.length === 0) {
       skipped += 1;
       continue;
@@ -107,7 +126,7 @@ export async function planStep(store: SnapshotStore, messages: ChatMessage[], di
       direction,
       messageId: id,
       files,
-      modified: await store.modifiedSince(expected, files),
+      modified: await store.modifiedSince(expected, files, signal),
       target: direction === "undo" ? snapshot.before : snapshot.after,
       skipped,
     };

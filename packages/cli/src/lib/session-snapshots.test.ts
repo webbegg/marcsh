@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,9 @@ import {
   withSnapshot,
 } from "./session-snapshots";
 import { createSnapshotStore, type SnapshotStore } from "./snapshot";
+
+// Real git against a real project: slower than Bun's 5 s on a loaded machine.
+setDefaultTimeout(60_000);
 
 let base: string;
 let project: string;
@@ -104,6 +107,13 @@ describe("trackWithin", () => {
     const result = await trackWithin(fake(() => new Promise(() => {})), 20);
     expect("reason" in result && result.reason).toContain("took longer than");
     expect("reason" in result && result.timedOut).toBe(true);
+  });
+
+  test("giving up on a snapshot aborts the signal handed to the store, so its git process can be killed", async () => {
+    let signal: AbortSignal | undefined;
+    const stuck = { track: (given?: AbortSignal) => ((signal = given), new Promise<string>(() => {})) } as unknown as SnapshotStore;
+    await trackWithin(stuck, 20);
+    expect(signal?.aborted).toBe(true);
   });
 
   test("a failure is not a timeout", async () => {
