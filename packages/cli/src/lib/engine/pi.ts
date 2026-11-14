@@ -477,8 +477,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const failure = errors.observe(event);
         if (failure) fail(failure);
         // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
-        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event));
-        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event));
+        // pi's messages carry no context window: the resolved model's lets the status line show how full the context is.
+        const usageOptions = { contextWindow: resolved.contextWindow };
+        if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event, usageOptions));
+        else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event, usageOptions));
         const queued = queue.observe(event);
         if (queued) {
           // What was streamed so far belongs to the reply before the message that was just sent.
