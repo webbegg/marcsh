@@ -40,7 +40,20 @@ export type ChatUsage = {
   contextTokens?: number;
   /** The model's context window in tokens. */
   contextWindow?: number;
+  /** What the engine's session had cost in all when this reply ended; the next resumed turn subtracts it, since Claude's running total carries over. */
+  cumulativeCostUsd?: number;
   costUsd?: number;
+};
+
+/**
+ * The project's files before and after the turn this reply ended, as snapshot tree hashes (see `snapshot.ts`).
+ * `undone` is set while `/undo` has put the turn's files back, and `abandoned` once a later turn made that undo permanent (no `/redo`).
+ */
+export type TurnSnapshot = {
+  before: string;
+  after: string;
+  undone?: boolean;
+  abandoned?: boolean;
 };
 
 export type ChatMessageMetadata = {
@@ -53,6 +66,8 @@ export type ChatMessageMetadata = {
   usage?: ChatUsage;
   /** A user message typed during a turn and delivered to it (shown with a marker). */
   steered?: boolean;
+  /** Set on the last reply of a turn when the project's files could be snapshotted around it. */
+  snapshot?: TurnSnapshot;
 };
 
 export type ChatMessage = {

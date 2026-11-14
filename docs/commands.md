@@ -12,7 +12,9 @@ Type `/` in the prompt to run a command. This page lists every marcsh command, h
 
 Picking a command that is not one of marcsh's own (for example one from the engine) puts `/name ` in the prompt. Add what it needs and press `Enter`.
 
-Only `/agents` takes arguments. For the other commands, text after the name is ignored.
+`/agents`, `/rename` and `/export` take arguments. For the other commands, text after the name is ignored.
+
+The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
 
 Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to move, `Enter` to choose and `Esc` to close.
 
@@ -142,8 +144,110 @@ Browse past sessions.
 
 - Opens "Sessions" with your past sessions. Type to filter by title. Each row shows the clock time of its last update, without a date.
 - Choose one to open it.
+- `Ctrl+D` deletes the highlighted session, after a question that names it. The first answer, "Keep it", is the one selected. Deleting the session you have open takes you home.
 
 See [Sessions](sessions.md).
+
+### /rename
+
+Rename this session.
+
+```
+/rename <title>
+```
+
+- Sets the title shown in [/sessions](#sessions). Runs of spaces become one space, and terminal control characters are removed.
+- Without a title you see "Usage: /rename <title>". The session keeps its place in the recent list.
+
+### /fork
+
+Continue in a copy of this session.
+
+```
+/fork
+```
+
+- Creates a new session titled "<title> (fork)" with the messages saved so far, and opens it at once. The original is untouched.
+- The copy does not carry the engine's own reference to the conversation, so its first turn starts a fresh engine conversation. The engine is told the earlier messages as a transcript. See [Sessions](sessions.md#rename-fork-export-and-delete).
+- Not available while a turn is running.
+
+### /export
+
+Save this session as a file.
+
+```
+/export [md|json] [path]
+```
+
+- With no arguments, writes markdown to `marcsh-<first 8 characters of the session id>-<YYYY-MM-DD>.md` in the session's project folder.
+- `md` writes a readable transcript, `json` a structured one (`version`, `session`, `messages`). Reasoning is left out of both.
+- A relative path is relative to the session's project folder, and `~/` is your home folder. The folder must exist.
+- An export never overwrites: when the file exists, `-1`, `-2`, … is added before the extension. The toast says where it was written ("Exported to …").
+
+### /undo
+
+Put back the files the last turn changed.
+
+```
+/undo
+```
+
+- Restores, to how they were before the turn, only the files that the newest turn with a snapshot that is not yet undone changed, and deletes the ones that turn created. Repeat it to go back one turn at a time.
+- The conversation is not rewound: the engine's history cannot be cut, so the model still remembers what it did. A line is added to the chat that names the restored and deleted files.
+- If you changed one of those files after the turn, marcsh lists them and asks before overwriting. "Keep my changes" is the first, selected answer.
+- A turn that changed no files is passed over and the one before it is undone; the chat line says how many were passed.
+- It says why when it cannot help: no git ("File undo is unavailable: …"), a snapshot that failed or took too long, or a session with no snapshots.
+- Not available while a turn is running. A failure (a path marcsh refuses to write, a disk error) is an error toast; the turn is then not marked undone.
+
+See [Undo, redo and diff](sessions.md#undo-redo-and-diff) for how snapshots work.
+
+### /redo
+
+Re-apply the file changes `/undo` took back.
+
+```
+/redo
+```
+
+- Writes the turn's files as the turn left them, starting with the turn that was undone last.
+- Starting a new turn after an undo ends the redo for the turns that were undone: they stay undone.
+- Like `/undo`, it asks before overwriting a file you changed since.
+
+### /diff
+
+Show the files changed in this session.
+
+```
+/diff
+```
+
+- Opens a scrollable dialog with the changes between the project as it was before the session's first snapshotted turn and the files now, as unified diffs. Each file has a header (path, new file, deleted or modified, and the number of added and removed lines). Added lines are green, removed lines red.
+- It compares with the files as they are now, so changes you made yourself are included, and an undone turn no longer shows.
+- Scroll with `Up`, `Down`, `PageUp`, `PageDown`, `Home` and `End`. Past 3000 rows the rest is counted, not drawn.
+- With nothing changed you see "No file changes since this session's first turn".
+
+### /compact
+
+Compact this session's context.
+
+```
+/compact
+```
+
+- On Claude it runs a turn whose prompt is `/compact`, which Claude Code handles itself.
+- On pi it asks pi to summarize the older part of the conversation. The session is busy meanwhile (`Esc` cancels). The toast reports the tokens before and after, and the status line shows the smaller context until the next reply. No pi extension, skill or MCP server is loaded for this.
+- A session with no conversation yet says "Nothing to compact yet". An engine that cannot compact says so.
+
+### /copy
+
+Copy the last reply to the clipboard.
+
+```
+/copy
+```
+
+- Copies the text of the last reply that has any (its text parts, one blank line apart; tool calls and reasoning are left out).
+- On macOS it uses `pbcopy`. Anywhere else, or if `pbcopy` fails, it sends an OSC 52 sequence to the terminal; the toast then says so, because marcsh cannot tell whether your terminal allowed it (it works over SSH where the terminal supports it).
 
 ### /theme
 
@@ -337,6 +441,7 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `@` | Mention a file or folder. See below. |
 | `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
+| `Ctrl+D` | In the `/sessions` dialog, delete the highlighted session after a confirmation. |
 
 The keys for approval prompts (`y`, `a`, `n`) are in [The screen](screen.md#approving-tool-calls). The keys for the trust list (`t`, `d`) are in [Security](security.md#project-trust).
 

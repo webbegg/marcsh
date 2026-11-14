@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { TextAttributes } from "@opentui/core";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
@@ -17,6 +18,7 @@ import { TrustPrompt } from "../components/trust-prompt";
 import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
+import { useSessionCommands } from "../hooks/use-session-commands";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
 import { getStorage, type StoredSession } from "../lib/storage";
@@ -26,6 +28,9 @@ import { modelForEngine } from "../lib/models";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { giveBackText } from "../lib/prompt-lock";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
+import { SessionCommandsContext } from "../components/command-menu/session-commands";
+import { escapeTranscriptText } from "../lib/display-text";
+import { openSnapshots } from "../lib/session-snapshots";
 import { userCommandTurn } from "../lib/user-commands";
 
 const sessionLocationSchema = z.object({
@@ -67,6 +72,19 @@ function ChatMessage(
   );
 };
 
+/** A line the session says about itself (an undo's files), between the messages it came after and before. */
+function NoticeLine({ text }: { text: string }) {
+  return (
+    <box paddingX={2}>
+      <text attributes={TextAttributes.DIM} wrapMode="word" width="100%">
+        {`· ${escapeTranscriptText(text)}`}
+      </text>
+    </box>
+  );
+}
+
+type Notice = { id: number; /** How many messages there were when it was said. */ at: number; text: string };
+
 function SessionChat({ 
   session,
   initialPrompt,
@@ -84,6 +102,8 @@ function SessionChat({
     [session.engine],
   );
   const toast = useToast();
+  // Where this project's files are snapshotted around each turn; none (and a reason) without git.
+  const snapshots = useMemo(() => openSnapshots(session.cwd), [session.cwd]);
   // An engine's notices are toasts (an extension's text is stripped of terminal controls); a warning has no color of its own, so it says so.
   const chatOptions = useMemo(
     () => ({
@@ -93,10 +113,13 @@ function SessionChat({
       },
       // Text the engine did not take goes back to the input on screen; once this session is left there is no input of its own to return it to.
       restore: (text: string) => mountedRef.current && giveBackText(renderer, text),
+      snapshots,
     }),
-    [toast, renderer],
+    [toast, renderer, snapshots],
   );
-  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest } = useChat(session, engine, chatOptions);
+  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest, compacting, editMessages, getMessages, hasConversation, snapshotIssue, compact } = useChat(session, engine, chatOptions);
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const addNotice = useCallback((text: string) => setNotices((prev) => [...prev, { id: prev.length, at: getMessages().length, text }]), [getMessages]);
   const hasSubmittedInitialPromptRef = useRef(false);
   const textEntryRef = useRef(false);
   const setTextEntry = useCallback((active: boolean) => {
@@ -135,6 +158,15 @@ function SessionChat({
     },
     [session.engine, submit, refreshPiModel],
   );
+
+  const sessionCommands = useSessionCommands({
+    session,
+    chat: { getMessages, editMessages, snapshotIssue, hasConversation, compact, busy },
+    snapshots,
+    compactModel: () => (session.engine === "pi" ? refreshPiModel() : Promise.resolve(model)),
+    compactWithTurn: () => send("/compact", agent, model),
+    addNotice,
+  });
 
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
   const sendTyped = useCallback(
@@ -187,7 +219,10 @@ function SessionChat({
     send(initialPrompt.message, first, initialPrompt.model, initialPrompt.agentModel);
   }, [initialPrompt, agents, agent, send]);
 
+  const noticesAt = (from: number, to: number) => notices.filter((notice) => notice.at >= from && notice.at < to).map((notice) => <NoticeLine key={`notice-${notice.id}`} text={notice.text} />);
+
   return (
+    <SessionCommandsContext.Provider value={sessionCommands}>
     <TurnInputContext.Provider value={turnInput}>
       <SessionShell
         cwd={session.cwd}
@@ -195,13 +230,17 @@ function SessionChat({
         draftKey={session.id}
         messages={messages}
         onSubmit={sendTyped}
-        inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null}
+        inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null || compacting}
         loading={busy}
         interruptible={busy}
       >
-        {messages.map((msg) => (
-          <ChatMessage key={msg.id} msg={msg} />
+        {messages.map((msg, index) => (
+          <Fragment key={msg.id}>
+            {noticesAt(index, index + 1)}
+            <ChatMessage msg={msg} />
+          </Fragment>
         ))}
+        {noticesAt(messages.length, Infinity)}
         {queued.steering.map((text, index) => (
           <UserMessage key={`steer-${index}`} message={text} mode={agent.mode} marker="↳ steer · pending" pending />
         ))}
@@ -221,6 +260,7 @@ function SessionChat({
       {/* The trust question owns the whole screen while pending, so its title and key hints never scroll away. */}
       {pendingRequest?.kind === "trust" && <TrustPrompt key={pendingRequest.id} request={pendingRequest} />}
     </TurnInputContext.Provider>
+    </SessionCommandsContext.Provider>
   );
 }
 

@@ -13,15 +13,15 @@ import { COMMAND_NAMES } from "./commands";
 
 // Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
 // The plugin's own commands are read from disk, so they are listed even with an empty cache. So are the user's: a file added since start is listed.
-function loadMenuCommands(engine: string, cwd: string): Command[] {
+function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
   const user = loadUserCommands({ cwd, builtinNames: COMMAND_NAMES });
   const pluginPath = marcshPluginPath();
   // Each engine has its own cache and its own names for the plugin's commands (on pi, `marcsh:feature` is a template).
   const bundled = !pluginPath ? [] : engine === "pi" ? bundledPiCommands(pluginPath) : readPluginCommands(pluginPath);
   try {
-    return getMenuCommands(combineClaudeCommands(getStorage().getCommands(engine), bundled), user);
+    return getMenuCommands(combineClaudeCommands(getStorage().getCommands(engine), bundled), user, inSession);
   } catch {
-    return getMenuCommands(bundled, user);
+    return getMenuCommands(bundled, user, inSession);
   }
 }
 
@@ -37,8 +37,11 @@ type UseCommandMenuReturn = {
   setSelectedIndex: (index: number) => void;
 };
 
-/** The `/` menu of the engine the prompt runs on: its commands and the user's after marcsh's own. `cwd` is the project whose commands are listed. */
-export function useCommandMenu(engine: string, cwd: string = process.cwd()): UseCommandMenuReturn {
+/**
+ * The `/` menu of the engine the prompt runs on: its commands and the user's after marcsh's own. `cwd` is the project whose commands are listed.
+ * `inSession` lists the commands on the open session too.
+ */
+export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSession = false): UseCommandMenuReturn {
   const [textValue, setTextValue] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
@@ -47,7 +50,7 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd()): Use
 
   const commandQuery = showCommandMenu && textValue.startsWith("/") ? textValue.slice(1) : "";
 
-  const menuCommands = useMemo(() => (showCommandMenu ? loadMenuCommands(engine, cwd) : []), [showCommandMenu, engine, cwd]);
+  const menuCommands = useMemo(() => (showCommandMenu ? loadMenuCommands(engine, cwd, inSession) : []), [showCommandMenu, engine, cwd, inSession]);
   const filteredCommands = useMemo(
     () => getFilteredCommands(commandQuery, menuCommands),
     [commandQuery, menuCommands],

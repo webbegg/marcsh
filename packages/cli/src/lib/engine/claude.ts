@@ -1,9 +1,11 @@
-import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type CanUseTool, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
+import type { ChatMessage } from "../chat-types";
+import { mergeUsage } from "../usage";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
 import { prepareViewForTurn } from "../packs";
@@ -96,7 +98,21 @@ export function claudeQueryOptions({
   };
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+/**
+ * Folds one SDK message into the reply. The SDK's `total_cost_usd` is a running total that a resumed conversation continues from
+ * (the first result of a resumed turn already holds the earlier turns), so the reply keeps only the difference from `priorCostUsd`,
+ * and the running total itself is stored beside it for the next turn. A total below the prior one means nothing was carried over.
+ */
+export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, priorCostUsd: number | undefined): ChatMessage {
+  if (message.type !== "result" || typeof message.total_cost_usd !== "number") return applySdkMessage(reply, message);
+  const prior = priorCostUsd ?? 0;
+  const own = message.total_cost_usd >= prior ? message.total_cost_usd - prior : message.total_cost_usd;
+  const applied = applySdkMessage(reply, { ...message, total_cost_usd: own });
+  const usage = mergeUsage(applied.metadata?.usage, { cumulativeCostUsd: prior + own });
+  return { ...applied, metadata: { ...applied.metadata, ...(usage ? { usage } : {}) } };
+}
+
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   const canUseTool = createCanUseTool(host, deniedTools);
@@ -117,7 +133,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
       });
 
       for await (const message of chat) {
-        host.emit({ type: "reply", update: (reply) => applySdkMessage(reply, message) });
+        host.emit({ type: "reply", update: (reply) => applyClaudeMessage(reply, message, priorCostUsd) });
 
         if (message.type === "system" && message.subtype === "init") {
           host.emit({ type: "session", ref: message.session_id });
