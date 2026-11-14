@@ -187,6 +187,27 @@ describe("background results in the chat (S2)", () => {
     expect(idle.map((batch) => batch.ids)).toEqual([["bg-1"]]);
   });
 
+  test("after Esc, answering a background request does not start a turn: the results keep waiting (R3-8)", async () => {
+    const hub = createBackgroundHub({ debounceMs: 5 });
+    const idle = idleSink(hub);
+    const { engine } = scriptedEngine();
+    await open(engine, hub);
+    const running = latest.submit({ userText: "go", mode: "BUILD", model: "opus" });
+    await settle();
+    void hub.host!.askPermission({ toolName: "bash", input: { command: "ls" } }, new AbortController().signal);
+    hub.finish(result);
+    await settle(30);
+    act(() => latest.interrupt());
+    await running;
+    await settle(30);
+    expect(idle).toEqual([]);
+
+    act(() => (latest.pendingRequest as { respond: (decision: PermissionDecision) => void }).respond("allow"));
+    await settle(30);
+    expect(idle).toEqual([]);
+    expect(hub.pending().map((r) => r.id)).toEqual(["bg-1"]);
+  });
+
   test("the ask channel is dropped when the chat unmounts", async () => {
     const hub = createBackgroundHub({ debounceMs: 5 });
     const { engine } = scriptedEngine();

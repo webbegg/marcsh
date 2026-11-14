@@ -12,7 +12,7 @@ import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
-import { BG_PLAN_TOOLS, createBackgroundTerminalsExtension } from "./pi-bg-tools";
+import { BG_PLAN_TOOLS, BG_START_TOOL, createBackgroundTerminalsExtension } from "./pi-bg-tools";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS, type RuleStore } from "./pi-permissions";
@@ -216,7 +216,24 @@ export function createQueueTracker() {
   };
 }
 
-/** The `customType` of the message that carries a batch of background results into a running turn (pi sends it to the model as a user message). */
+/** The parent turn's host, with each approval holding the Task call's clock while the user is asked (see `RunChild`'s `holdClock`). */
+function holdingClock(host: Pick<TurnHost, "askPermission">, holdClock: () => () => void): Pick<TurnHost, "askPermission"> {
+  return {
+    askPermission: async (ask, signal) => {
+      const release = holdClock();
+      try {
+        return await host.askPermission(ask, signal);
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
+/**
+ * The `customType` of the message that carries a batch of background results into a running turn (pi sends it to the model as a user
+ * message). Its content is the batch's text, which marks each result as background output, not the user's words (see `backgroundResultsText`).
+ */
 const BACKGROUND_MESSAGE = "marcsh-background";
 
 type BackgroundDetails = Pick<BackgroundBatch, "ids" | "notice">;
@@ -284,7 +301,23 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   };
 
   function startTurn(
-    { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, background, promptKind, signal }: TurnRequest,
+    {
+      prompt,
+      attachments,
+      cwd,
+      mode,
+      model,
+      systemPromptAppend,
+      approvalMode,
+      currentApprovalMode,
+      currentPlanMode,
+      packPluginPath,
+      deniedTools,
+      resumeRef,
+      background,
+      promptKind,
+      signal,
+    }: TurnRequest,
     host: TurnHost,
   ): EngineTurn {
     const startedAt = Date.now();
@@ -432,6 +465,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         });
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
       // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
+      // It follows the session's plan mode as it is at each call: once the session is in plan, only its read-only calls run.
       const runBackgroundChild: BackgroundRunChild | undefined =
         background &&
         (({ description, prompt, signal: childSignal, onProgress, onEvent }) => {
@@ -442,7 +476,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
           return runChild({ prompt, signal: childSignal, onProgress, onEvent }, [
             ...packHooksFor(childSignal, notify),
-            createApprovalExtension({ ...approval, host: askHost, signal: childSignal }),
+            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, ...(currentPlanMode ? { currentPlanMode } : {}) }),
           ]);
         });
       const resourceLoader = new pi.DefaultResourceLoader({
@@ -457,19 +491,22 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
           ...denying,
           // Ahead of the pack hooks and approval, which get the model's input while the call runs with the default timeout (see `pi-tool-timeout.ts`).
-          createBashTimeoutExtension(options.toolTimeoutMs),
+          // Its message points at bg_start only when this turn has it.
+          createBashTimeoutExtension(options.toolTimeoutMs, { background: Boolean(background) && mode !== Mode.PLAN && tools.allowed(BG_START_TOOL) }),
           ...packHooks,
           createApprovalExtension(approval),
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
           // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
           ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd })] : []),
-          // A foreground child has the parent turn's host, so it asks the same way. A turn with a hub also offers the task tools; plan mode starts no background child.
+          // A foreground child has the parent turn's host, so it asks the same way; the call's clock stops while the user is asked.
+          // A turn with a hub also offers the task tools; plan mode starts no background child.
           createSubagentExtension({
             host,
             signal: turnEnded.signal,
             timeoutMs: options.toolTimeoutMs,
-            runChild: (request) => runChild(request, [...packHooks, createApprovalExtension(approval)]),
+            runChild: ({ holdClock, ...request }) =>
+              runChild(request, [...packHooks, createApprovalExtension(holdClock ? { ...approval, host: holdingClock(host, holdClock) } : approval)]),
             ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),
           }),
         ],
@@ -535,7 +572,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // The run can take background results now: those that waited for it go in.
         if (event.type === "agent_start") background?.retry();
         const delivered = event.type === "message_start" ? backgroundDetails(event.message) : undefined;
-        if (event.type === "message_start" && delivered && delivered.ids.filter((id) => sentToPi.delete(id)).length > 0) {
+        const arrived = delivered ? delivered.ids.filter((id) => sentToPi.delete(id)) : [];
+        if (event.type === "message_start" && delivered && arrived.length > 0) {
+          // The model has them now: the hub forgets them.
+          background?.confirm(arrived);
           // What was streamed so far belongs to the reply before the results.
           feed.flush();
           host.emit({ type: "delivered", kind: "background", text: backgroundMessageText({ notice: delivered.notice, text: userText(event.message as { content?: unknown }) }) });
@@ -603,7 +643,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         tools.record(session);
         // Before the turn settles: a result that comes now goes to the idle path, and those pi never started are delivered there, not lost.
         detachBackground?.();
-        if (sentToPi.size > 0) background?.requeue([...sentToPi]);
+        // No retry of its own: the chat retries when it is idle again, and not after Esc (the user stopped the agent).
+        if (sentToPi.size > 0) background?.requeue([...sentToPi], { retry: false });
         sentToPi.clear();
         settle();
         feed.close();

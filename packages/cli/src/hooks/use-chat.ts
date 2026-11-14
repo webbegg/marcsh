@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentTools } from "../lib/agent-tools";
-import type { ModeType } from "../lib/modes";
+import { Mode, type ModeType } from "../lib/modes";
 import { loadAttachments, referenceText, type Attachment } from "../lib/attachments";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
@@ -94,6 +94,8 @@ export type ChatOptions = {
    * background work, and the chat tells it to retry delivery whenever it goes idle.
    */
   background?: BackgroundHub;
+  /** The session's agent mode as it is now: a background subagent started by a turn follows it (in plan it only reads). Absent: the turn's mode. */
+  currentMode?: () => ModeType;
 };
 
 /** How a compaction ended; `reason` is for the user. */
@@ -174,6 +176,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const pendingRequestsRef = useRef(new Set<PendingRequest>());
   const backgroundRef = useRef(options.background);
   backgroundRef.current = options.background;
+  const currentModeRef = useRef(options.currentMode);
+  currentModeRef.current = options.currentMode;
   const notifyRef = useRef(options.notify);
   notifyRef.current = options.notify;
   const restoreRef = useRef(options.restore);
@@ -212,8 +216,9 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
           signal.removeEventListener("abort", onAbort);
           setPermissionQueue((queue) => queue.filter((r) => r !== request));
           resolve(value);
-          // The last answer an idle chat waited for: background results held back by it may go now.
-          if (pendingRequestsRef.current.size === 0 && statusRef.current === "ready") backgroundRef.current?.retry();
+          // The last answer an idle chat waited for: background results held back by it may go now. Not after Esc: the user stopped
+          // the agent, so answering a background request does not start it again (like the turn-end path).
+          if (pendingRequestsRef.current.size === 0 && statusRef.current === "ready" && !interruptedRef.current) backgroundRef.current?.retry();
         };
         const onAbort = () => respond(declined);
         const request = build(respond);
@@ -410,6 +415,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             mode,
             approvalMode: approvalModeRef.current,
             currentApprovalMode: () => approvalModeRef.current,
+            // Read at each call of a background subagent; without the session's mode, the turn's.
+            currentPlanMode: () => (currentModeRef.current?.() ?? mode) === Mode.PLAN,
             model,
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),

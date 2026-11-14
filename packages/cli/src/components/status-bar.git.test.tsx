@@ -48,6 +48,14 @@ describe("StatusBar git", () => {
     expect(frame).toContain("42.1k/200k (21%) · $0.34 · main · 3 files changed · enter steers");
   });
 
+  // R1-1b: in a project that is not trusted the files are not counted; the branch still shows.
+  test("shows the branch alone when the files were not counted", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "main", changed: null })} messages={[usage]} hint="enter steers" />);
+
+    expect(frame).toContain("42.1k/200k (21%) · $0.34 · main · enter steers");
+    expect(frame).not.toContain("changed");
+  });
+
   test("shows nothing for git outside a repo or without a folder", async () => {
     const bare = await render(<StatusBar />);
     const outside = await render(<StatusBar cwd="/elsewhere" readGit={gitOf(null)} />);
@@ -57,6 +65,14 @@ describe("StatusBar git", () => {
     expect(outside).toBe(bare);
     expect(noFolder).toBe(bare);
     expect(asked).toBe(false);
+  });
+
+  // R1-6: a branch name may hold characters that reorder text (git allows bidi overrides in ref names); they show as escapes.
+  test("escapes the branch name like the rest of the transcript text", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "fix‮txt.exe", changed: 0 })} />);
+
+    expect(frame).toContain("fix\\u202etxt.exe");
+    expect(frame).not.toContain("‮");
   });
 
   test("drops the usage first, then git, and keeps the engine label", async () => {

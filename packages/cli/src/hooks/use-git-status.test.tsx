@@ -6,7 +6,8 @@ import { act, useState } from "react";
 import type { GitStatus } from "../lib/git-status";
 
 const { testRender } = await import("@opentui/react/test-utils");
-const { useGitStatus } = await import("./use-git-status");
+const { useGitStatus, trustedForGit } = await import("./use-git-status");
+const { getStorage } = await import("../lib/storage");
 
 // S6: the git segment is refreshed every few seconds and after tool calls, with one git call at a time.
 
@@ -43,7 +44,7 @@ function Probe(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus |
 
 let setTrigger: (value: number) => void = () => {};
 // Holds the trigger in state so a test can change it without remounting.
-function Host(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus | null> }) {
+function Host(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus | null>; intervalMs?: number }) {
   const [trigger, set] = useState(0);
   setTrigger = set;
   return <Probe {...props} trigger={trigger} />;
@@ -120,6 +121,80 @@ describe("useGitStatus", () => {
     expect(fake.calls.length).toBe(2);
   });
 
+  // R4-6: a git that times out (or a folder outside a repo) is not asked again every few seconds.
+  test("backs off after a read that found nothing, a trigger still reads, and a good read resets the interval", async () => {
+    const fake = fakeRead();
+    await mount(<Host cwd="/repo" read={fake.read} intervalMs={60} />);
+    await fake.answer(null);
+    // The next read waits twice the interval (120 ms), not 60.
+    await settle(90);
+    expect(fake.calls.length).toBe(1);
+    await settle(80);
+    expect(fake.calls.length).toBe(2);
+
+    await fake.answer(null);
+    await act(async () => setTrigger(1));
+    expect(fake.calls.length).toBe(3);
+    await fake.answer({ branch: "main", changed: 0 });
+    await settle(100);
+    expect(fake.calls.length).toBe(4);
+    expect(latest).toEqual({ branch: "main", changed: 0 });
+  });
+
+  // R1-1b: the changed files are counted only in a project the user trusted; its trust is asked again at every read.
+  test("tells the reader whether the project is trusted, as it is at each read", async () => {
+    const asked: { cwd: string; trusted: boolean }[] = [];
+    let trusted = false;
+    const read = async (cwd: string, options: { trusted: boolean }) => (asked.push({ cwd, trusted: options.trusted }), { branch: "main", changed: null });
+    function TrustProbe() {
+      const [trigger, set] = useState(0);
+      setTrigger = set;
+      latest = useGitStatus("/repo", { read, trigger, isTrusted: () => trusted, intervalMs: 60_000 });
+      return <text>probe</text>;
+    }
+    await mount(<TrustProbe />);
+    trusted = true;
+    await act(async () => setTrigger(1));
+    await settle();
+
+    expect(asked).toEqual([
+      { cwd: "/repo", trusted: false },
+      { cwd: "/repo", trusted: true },
+    ]);
+  });
+
+  test("a trust check that throws counts as not trusted", async () => {
+    const asked: boolean[] = [];
+    const read = async (_cwd: string, options: { trusted: boolean }) => (asked.push(options.trusted), null);
+    function ThrowingProbe() {
+      latest = useGitStatus("/repo", { read, isTrusted: () => { throw new Error("no store"); }, intervalMs: 60_000 });
+      return <text>probe</text>;
+    }
+    await mount(<ThrowingProbe />);
+
+    expect(asked).toEqual([false]);
+  });
+
+  test("the backoff stops at a minute", async () => {
+    const fake = fakeRead();
+    const timers: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (typeof ms === "number" && ms >= 1000) timers.push(ms);
+      return realSetTimeout(fn, ms, ...rest);
+    }) as typeof setTimeout;
+    try {
+      await mount(<Host cwd="/repo" read={fake.read} intervalMs={20_000} />);
+      for (let i = 0; i < 4; i++) {
+        await fake.answer(null);
+        await act(async () => setTrigger(i + 1));
+      }
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    expect(timers.filter((ms) => ms > 20_000)).toEqual([40_000, 60_000, 60_000, 60_000]);
+  });
+
   test("stops polling and never updates after unmount", async () => {
     const fake = fakeRead();
     await mount(<Probe cwd="/repo" read={fake.read} intervalMs={10} />);
@@ -170,11 +245,44 @@ describe("useGitStatus without a reader", () => {
     expect(latest).toBeNull();
   });
 
-  test("otherwise it reads the folder with git", async () => {
+  test("otherwise it reads the branch of a folder that is not trusted, and no count", async () => {
     delete process.env.MARCSH_GIT_STATUS;
     await mount(<DefaultProbe cwd={repo} />);
     const start = Date.now();
     while (latest === null && Date.now() - start < 3000) await settle(25);
-    expect(latest).toEqual({ branch: "trunk", changed: 0 });
+    expect(latest).toEqual({ branch: "trunk", changed: null });
+  });
+
+  test("and counts the changed files of a trusted one", async () => {
+    delete process.env.MARCSH_GIT_STATUS;
+    getStorage().setProjectTrust(repo, "trusted");
+    try {
+      await mount(<DefaultProbe cwd={repo} />);
+      const start = Date.now();
+      while (latest === null && Date.now() - start < 3000) await settle(25);
+      expect(latest).toEqual({ branch: "trunk", changed: 0 });
+    } finally {
+      getStorage().setProjectTrust(repo, null);
+    }
+  });
+});
+
+// R1-1b: marcsh's own per-project decision (`/trust`, the pi trust question): only a stored "trusted" counts.
+describe("trustedForGit", () => {
+  let folder: string;
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "marcsh-git-trust-"));
+  });
+  afterEach(() => {
+    getStorage().setProjectTrust(folder, null);
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  test("is false while undecided or untrusted, true once trusted", () => {
+    expect(trustedForGit(folder)).toBe(false);
+    getStorage().setProjectTrust(folder, "untrusted");
+    expect(trustedForGit(folder)).toBe(false);
+    getStorage().setProjectTrust(folder, "trusted");
+    expect(trustedForGit(folder)).toBe(true);
   });
 });

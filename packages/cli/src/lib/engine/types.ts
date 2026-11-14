@@ -86,6 +86,11 @@ export type TurnRequest = {
    * later call (also in Task children). Absent: `approvalMode` for the whole turn. `approvalMode` still feeds the system-prompt mode line.
    */
   currentApprovalMode?: () => ApprovalMode;
+  /**
+   * Reads whether the session is in plan mode now. A background subagent outlives the turn that started it: while this says plan, its
+   * calls are blocked like a plan turn's (only the read-only tools run). Absent: the mode the turn started in (`mode`).
+   */
+  currentPlanMode?: () => boolean;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
   /**

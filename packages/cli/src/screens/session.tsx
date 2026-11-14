@@ -107,6 +107,9 @@ function SessionChat({
   initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string };
 }) {
   const { agents, agent, model, setModel, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  // The agent selected now, for what runs later than a render: background results' turns and background subagents' plan mode.
+  const agentRef = useRef(agent);
+  agentRef.current = agent;
   const { isTopLayer } = useKeyboardLayer();
   const renderer = useRenderer();
   const mountedRef = useRef(true);
@@ -131,6 +134,8 @@ function SessionChat({
       restore: (text: string) => mountedRef.current && giveBackText(renderer, text),
       snapshots,
       background: hub,
+      // The agent selected now, not the one a turn started with: a background subagent stops writing once the session is in plan.
+      currentMode: () => agentRef.current.mode,
     }),
     [toast, renderer, snapshots, hub],
   );
@@ -229,8 +234,6 @@ function SessionChat({
   // A background result that finishes while the session is idle starts a turn of its own, as the agent and model selected at that
   // moment; its tool calls ask like any other's. While anything else holds the session (a turn, the model check, a request waiting for
   // the user, a compaction) the hub keeps the result and retries once the chat is idle again.
-  const agentRef = useRef(agent);
-  agentRef.current = agent;
   const modelRef = useRef(model);
   modelRef.current = model;
   useEffect(() => {
@@ -238,8 +241,10 @@ function SessionChat({
     hub.setIdleSink((batch) => {
       if (!mountedRef.current || choosingModelRef.current || !isIdle()) return false;
       const requeue = () => hub.requeue(batch.ids);
+      // A turn that started has the results as its prompt: the hub forgets them. One that did not gives them back, retried later.
       send(backgroundMessageText(batch), agentRef.current, modelRef.current, undefined, undefined, batch).then((started) => {
-        if (!started) requeue();
+        if (started) hub.confirm(batch.ids);
+        else requeue();
       }, requeue);
       return true;
     });

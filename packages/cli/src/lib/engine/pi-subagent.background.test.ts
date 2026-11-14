@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, InMemoryCredentialStore, type FauxResponseStep, type Message } from "@earendil-works/pi-ai";
+import type { ApprovalMode } from "../approval-policy";
 import { createBackgroundHub, type BackgroundBatch, type BackgroundHub } from "../background/hub";
 import { subagentsFor } from "../background/session-subagents";
 import { Mode } from "../modes";
@@ -189,5 +190,71 @@ describe("a background subagent in a pi turn (S4)", () => {
     await run(engine, "faux/faux-1", { background: hub, mode: Mode.PLAN }).turn.done;
     expect(results[0]![0]).toContain("Background subagents are not available");
     expect(subagentsFor(hub).list()).toEqual([]);
+  }, 30000);
+
+  test("the child follows the session's plan mode as it is at each call: once in plan its writes are blocked, back in build they run (R1-3)", async () => {
+    const { hub, idle } = newHub();
+    const sessionAsks: PermissionAsk[] = [];
+    hub.host = { askPermission: async (ask) => (sessionAsks.push(ask), "allow") };
+    let plan = false;
+    let parentDone = false;
+    const { engine, model, seen } = await setup({
+      parent: startInBackground,
+      child: async (results) => {
+        if (results.length === 0) {
+          await until(() => parentDone);
+          // The user switches the session to plan while the child runs.
+          plan = true;
+          return call("bash", { command: "touch planned" }, "b1");
+        }
+        if (results.length === 1) return (plan = false), call("bash", { command: "touch built" }, "b2");
+        return fauxAssistantMessage([fauxText("done")]);
+      },
+    });
+    const { turn } = run(engine, model, { background: hub, currentPlanMode: () => plan });
+    await turn.done;
+    parentDone = true;
+    await until(() => idle.length === 1);
+
+    expect(seen.childResults.at(-1)![0]).toContain("Plan mode");
+    expect(existsSync(join(cwd, "planned"))).toBe(false);
+    expect(existsSync(join(cwd, "built"))).toBe(true);
+    // Blocked without asking; back in build the call asked as usual.
+    expect(sessionAsks.map((ask) => ask.input.command)).toEqual(["touch built"]);
+  }, 30000);
+
+  test("the child asks under the session's approval mode as it is at each call, also after the parent turn ended", async () => {
+    // Auto and yolo relax only on a feature branch: the project is a real repository on one.
+    const git = Bun.spawnSync(["git", "init", "-q", "-b", "feat/x"], { cwd, stdout: "ignore", stderr: "pipe" });
+    expect(git.exitCode).toBe(0);
+    const { hub, idle } = newHub();
+    const sessionAsks: PermissionAsk[] = [];
+    hub.host = { askPermission: async (ask) => (sessionAsks.push(ask), "deny") };
+    let approvalMode: ApprovalMode = "auto";
+    let parentDone = false;
+    const { engine, model, seen } = await setup({
+      parent: startInBackground,
+      child: async (results) => {
+        if (results.length === 0) {
+          await until(() => parentDone);
+          return call("bash", { command: "echo AUTO-RAN" }, "b1");
+        }
+        // The user switches the session's mode while the child runs.
+        if (results.length === 1) return (approvalMode = "normal"), call("bash", { command: "echo NORMAL-ASKED" }, "b2");
+        if (results.length === 2) return (approvalMode = "yolo"), call("bash", { command: "npm install left-pad" }, "b3");
+        return fauxAssistantMessage([fauxText("done")]);
+      },
+    });
+    const { turn, asks } = run(engine, model, { background: hub, approvalMode: "auto", currentApprovalMode: () => approvalMode });
+    await turn.done;
+    parentDone = true;
+    await until(() => idle.length === 1);
+
+    expect(asks).toEqual([]);
+    // auto: the ordinary command ran unasked; normal: it asked; yolo: the floor command asked, without always.
+    expect(seen.childResults.at(-1)![0]).toContain("AUTO-RAN");
+    expect(sessionAsks).toHaveLength(2);
+    expect(sessionAsks[0]).toEqual({ toolName: "bash", input: { command: "echo NORMAL-ASKED" }, description: "Background subagent: List files" });
+    expect(sessionAsks[1]).toMatchObject({ toolName: "bash", input: { command: "npm install left-pad" }, suppressAlwaysAllowRule: true, description: "Background subagent: List files" });
   }, 30000);
 });

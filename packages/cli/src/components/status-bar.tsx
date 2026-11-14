@@ -9,8 +9,9 @@ import { agentLabel } from "../lib/agents";
 import { PI_VERSION } from "../lib/engine/pi-version";
 import type { ChatMessage } from "../lib/chat-types";
 import { formatUsage, sessionUsage } from "../lib/usage";
-import { formatGit, type GitStatus } from "../lib/git-status";
-import { useGitStatus } from "../hooks/use-git-status";
+import { formatGit } from "../lib/git-status";
+import { escapeTranscriptText } from "../lib/display-text";
+import { useGitStatus, type GitReader } from "../hooks/use-git-status";
 
 /** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
 const engineLabel = (engineId: string) => (engineId === "pi" ? `pi v${PI_VERSION}` : engineId);
@@ -22,10 +23,10 @@ type Props = {
   messages?: readonly ChatMessage[];
   /** What the keys do right now, when that is not the usual (typing during a turn). Several wordings, longest first: the first that fits the line is shown, none if even the last does not. */
   hint?: string | readonly string[];
-  /** The project folder, for its git branch and changed files; no git segment without one. */
+  /** The project folder, for its git branch and (once the project is trusted) changed files; no git segment without one. */
   cwd?: string;
   /** Reads the git state of a folder; injectable so screen tests do not spawn git. */
-  readGit?: (cwd: string) => Promise<GitStatus | null>;
+  readGit?: GitReader;
   /** What runs in the background (`2 background terminals running · /ps`); none when empty. The first segment dropped when narrow. */
   background?: string;
 };
@@ -68,7 +69,8 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, background }: 
   const usageText = useMemo(() => (messages ? formatUsage(sessionUsage(messages)) : ""), [messages]);
   const toolCalls = useMemo(() => finishedToolCalls(messages), [messages]);
   const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls });
-  const gitText = git ? formatGit(git) : "";
+  // The branch name comes from the folder, which may be untrusted: what could act on the terminal shows as an escape.
+  const gitText = git ? formatGit({ ...git, branch: escapeTranscriptText(git.branch) }) : "";
   const gitShown = gitText !== "" && (width === null || baseUsed + 1 + 2 + gitText.length <= width);
   const withGit = baseUsed + (gitShown ? 1 + 2 + gitText.length : 0);
   const usageShown = usageText !== "" && (width === null || withGit + 1 + 2 + usageText.length <= width);

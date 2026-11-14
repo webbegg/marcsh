@@ -12,7 +12,8 @@ import type { BackgroundSubagents, SubagentSnapshot } from "../../lib/background
 import { formatElapsed } from "../../lib/background/terminals";
 import { BotMessage } from "../messages/bot-message";
 
-// The /subagents viewer follows davi7's background subagents "takeover" view (MIT license): a list, and a live read-only transcript.
+// The /subagents viewer follows davi7's background subagents "takeover" view (MIT license; see THIRD_PARTY_NOTICES.md): a list,
+// and a live read-only transcript.
 
 const MAX_VISIBLE_ROWS = 8;
 
@@ -130,17 +131,26 @@ function SubagentTranscript({ snapshot, subagents, onBack }: { snapshot: Subagen
 export const SubagentsDialogContent = ({ hub }: { hub: BackgroundHub }) => {
   const subagents = useSubagents(hub);
   const { isTopLayer } = useKeyboardLayer();
-  const [selected, setSelected] = useState(0);
+  // The highlight is a subagent, not a row: one started or pruned meanwhile does not move it. When the highlighted one is
+  // pruned, the row it was on keeps the highlight.
+  const [selected, setSelected] = useState<{ id: string | null; index: number }>({ id: null, index: 0 });
   const [openId, setOpenId] = useState<string | null>(null);
   const list = [...subagents.list()].reverse();
-  const index = Math.min(selected, Math.max(0, list.length - 1));
+  const found = selected.id === null ? -1 : list.findIndex((snapshot) => snapshot.id === selected.id);
+  const index = found >= 0 ? found : Math.min(selected.index, Math.max(0, list.length - 1));
   const open = openId ? subagents.get(openId) : undefined;
+  const select = (at: number) => setSelected({ id: list[at]?.id ?? null, index: at });
+  // Pin what is highlighted (the first row on opening, the next one after a prune) to its subagent.
+  const highlightedId = list[index]?.id ?? null;
+  useEffect(() => {
+    if (highlightedId !== selected.id) setSelected({ id: highlightedId, index });
+  }, [highlightedId, selected.id, index]);
 
   useKeyboard((key) => {
     if (!isTopLayer("dialog") || open) return;
     const highlighted = list[index];
-    if (key.name === "up") setSelected(Math.max(0, index - 1));
-    else if (key.name === "down") setSelected(Math.min(list.length - 1, index + 1));
+    if (key.name === "up") select(Math.max(0, index - 1));
+    else if (key.name === "down") select(Math.min(list.length - 1, index + 1));
     else if ((key.name === "return" || key.name === "enter") && highlighted) setOpenId(highlighted.id);
     else if (key.name === "x" && highlighted) subagents.requestCancel(highlighted.id);
   });

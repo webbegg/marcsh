@@ -17,7 +17,7 @@ const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { createPiEngine } = await import("../lib/engine/pi");
-const { backgroundMessageText } = await import("../lib/background/hub");
+const { backgroundMessageText, backgroundResultsText } = await import("../lib/background/hub");
 type FauxResponseStep = import("@earendil-works/pi-ai").FauxResponseStep;
 type Engine = import("../lib/engine/types").Engine;
 type TurnRequest = import("../lib/engine/types").TurnRequest;
@@ -109,23 +109,31 @@ describe("background results on the session screen (S2)", () => {
     const hub = requests[0]!.background!;
     expect(hub).toBeDefined();
 
-    await act(async () => hub.finish({ id: "bg-1", kind: "terminal", title: "build", text: "BUILD-LOG-TAIL exit code 0" }));
+    const finished = { id: "bg-1", kind: "terminal", title: "build", text: "BUILD-LOG-TAIL exit code 0" };
+    // What the model gets: the result marked as background output, not as the user's words (R1-2).
+    const envelope = backgroundResultsText([finished]);
+    await act(async () => hub.finish(finished));
     const after = await frameContaining("the build passed");
     expect(faux.state.callCount).toBe(2);
-    expect(contexts[0]).toEqual(["hi", "BUILD-LOG-TAIL exit code 0"]);
+    expect(contexts[0]).toEqual(["hi", envelope]);
     expect(after).toContain("[background] build finished");
     // Only the notice is shown: the result itself is for the model.
     expect(after).not.toContain("BUILD-LOG-TAIL");
     // The turn runs as the session's agent and model at that moment, as a background prompt with the same hub.
     expect(requests).toHaveLength(2);
-    expect(requests[1]).toMatchObject({ prompt: "BUILD-LOG-TAIL exit code 0", promptKind: "background", mode: "BUILD", model: "faux/faux-1" });
+    expect(requests[1]).toMatchObject({ prompt: envelope, promptKind: "background", mode: "BUILD", model: "faux/faux-1" });
     expect(requests[1]!.background).toBe(hub);
+    // The turn started with them: the hub forgot them, so a late requeue brings nothing back (R4-3).
+    hub.requeue(["bg-1"]);
+    expect(hub.pending()).toEqual([]);
+    // The session's mode reaches the turn, read live (R1-3).
+    expect(requests[1]!.currentPlanMode?.()).toBe(false);
 
     while (getStorage().getSession(session.id)!.messages.length < 4 && Date.now() - start < 8000) await settle(25);
     const saved = getStorage().getSession(session.id)!.messages;
     expect(saved[2]).toMatchObject({
       role: "user",
-      parts: [{ type: "text", text: backgroundMessageText({ notice: "[background] build finished", text: "BUILD-LOG-TAIL exit code 0" }) }],
+      parts: [{ type: "text", text: backgroundMessageText({ notice: "[background] build finished", text: envelope }) }],
       metadata: { background: true },
     });
 
