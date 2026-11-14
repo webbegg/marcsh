@@ -162,6 +162,7 @@ Agents work on both engines. A few details differ:
 - **Web tools.** Claude has web tools, so `web: false` takes them away. pi has none, so there is nothing to remove. If you write `web: false` by name, marcsh warns that it changes nothing on pi. It does not warn when `web` is removed by a list or by `"*"`.
 - **Models.** Each engine takes its own kind of model name. See [Model](#model-and-fallback).
 - **Pack hooks.** Only some hook events run on pi. See [Pack hooks](pack-hooks.md).
+- **Subagent time limit.** On pi, a subagent started with `Task` is stopped after 3 minutes. The model gets an error that says so and suggests `background: true` for longer work.
 
 See [Engines and models](engines-and-models.md) for the engines themselves.
 

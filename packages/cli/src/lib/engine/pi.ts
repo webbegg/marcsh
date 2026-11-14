@@ -18,6 +18,7 @@ import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from 
 import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
+import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
@@ -70,6 +71,8 @@ export type PiEngineOptions = {
   guard?: Guard;
   /** The marcsh plugin whose `feature` command and `workflow` skill pi loads in place. Default: the bundled one; null for none. */
   pluginPath?: string | null;
+  /** How long a foreground `bash` or `Task` call may run (see `pi-tool-timeout.ts`). Default: 3 minutes; tests use less. */
+  toolTimeoutMs?: number;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -402,6 +405,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
           ...denying,
+          // Ahead of the pack hooks and approval, which get the model's input while the call runs with the default timeout (see `pi-tool-timeout.ts`).
+          createBashTimeoutExtension(options.toolTimeoutMs),
           ...packHooks,
           createApprovalExtension(approval),
           ...denying,
@@ -410,6 +415,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           createSubagentExtension({
             host,
             signal: turnEnded.signal,
+            timeoutMs: options.toolTimeoutMs,
             runChild: (request) =>
               runChildSession(pi, {
                 ...request,
