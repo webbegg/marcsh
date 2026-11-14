@@ -22,9 +22,13 @@ import { useSessionCommands } from "../hooks/use-session-commands";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
 import { getStorage, type StoredSession } from "../lib/storage";
-import { getEngine, unknownEngine, warmUpEngineCommands } from "../lib/engine";
+import { getEngine, getPiRuntime, unknownEngine, warmUpEngineCommands } from "../lib/engine";
+import { listAvailablePiModels } from "../lib/engine/pi-models";
 import type { NoticeLevel } from "../lib/engine/types";
-import { modelForEngine } from "../lib/models";
+import { modelForEngine, SUPPORTED_CHAT_MODELS } from "../lib/models";
+import { nextRecent } from "../lib/model-picks";
+import { notifyTurnDone } from "../lib/notify";
+import { getRecentModels, recordRecentModel } from "../lib/preferences";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { giveBackText } from "../lib/prompt-lock";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
@@ -45,6 +49,12 @@ const sessionLocationSchema = z.object({
     })
     .optional(),
 });
+
+const isChatModel = (value: string): value is (typeof SUPPORTED_CHAT_MODELS)[number]["id"] =>
+  SUPPORTED_CHAT_MODELS.some((candidate) => candidate.id === value);
+
+/** A pi model ref ("provider/id"), the only form the saved pi models take. */
+const isPiRef = (value: string) => /^[^/\s]+\/\S+$/.test(value);
 
 function ChatMessage(
   { msg }: {
@@ -92,7 +102,7 @@ function SessionChat({
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string };
 }) {
-  const { agents, agent, model, refreshPiModel } = usePromptConfig();
+  const { agents, agent, model, setModel, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const { isTopLayer } = useKeyboardLayer();
   const renderer = useRenderer();
   const mountedRef = useRef(true);
@@ -129,6 +139,37 @@ function SessionChat({
   // A pi turn waits for the model check (a login or logout can change which models exist) before it starts.
   const [choosingModel, setChoosingModel] = useState(false);
 
+  // Tells the user when a turn ends: not when the session opens, not when they interrupted it, not when they left. It is `submit` settling
+  // that says so (a turn that fails at once never shows as busy on screen), and the effect reads whether the turn failed once that has rendered.
+  const turnInterruptedRef = useRef(false);
+  const errorRef = useRef(error);
+  errorRef.current = error;
+  const [turnsEnded, setTurnsEnded] = useState(0);
+  const startTurn = useCallback(
+    (request: Parameters<typeof submit>[0]) => {
+      const before = getMessages();
+      const done = submit(request);
+      // A turn that is still running keeps the request out: nothing was started, so nothing will end.
+      if (getMessages() === before) return;
+      turnInterruptedRef.current = false;
+      void done.finally(() => {
+        if (mountedRef.current && !turnInterruptedRef.current) setTurnsEnded((count) => count + 1);
+      });
+    },
+    [submit, getMessages],
+  );
+  useEffect(() => {
+    if (turnsEnded === 0) return;
+    let title = session.title;
+    try {
+      // `/rename` may have changed it since this session opened.
+      title = getStorage().getSession(session.id)?.title ?? title;
+    } catch {}
+    notifyTurnDone(`${stripControlChars(title)}: ${errorRef.current ? "failed" : "done"}`);
+    // Only a turn ending is news: a rename or an error showing up later is not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnsEnded]);
+
   // Stop the pending reply when the user leaves this session.
   useEffect(() => {
     return () => {
@@ -144,19 +185,23 @@ function SessionChat({
       const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
       const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
-        void submit({ ...turn, model: agentModel ?? modelForEngine(session.engine, claudeModel) });
+        const used = agentModel ?? modelForEngine(session.engine, claudeModel);
+        if (session.engine === "claude" && isChatModel(used)) recordRecentModel("claude", used);
+        startTurn({ ...turn, model: used });
         return;
       }
       setChoosingModel(true);
       void refreshPiModel(agentModel)
-        .then((piModel) => {
-          if (mountedRef.current) void submit({ ...turn, model: piModel });
+        .then((used) => {
+          if (!mountedRef.current) return;
+          if (isPiRef(used)) recordRecentModel("pi", used);
+          startTurn({ ...turn, model: used });
         })
         .finally(() => {
           if (mountedRef.current) setChoosingModel(false);
         });
     },
-    [session.engine, submit, refreshPiModel],
+    [session.engine, startTurn, refreshPiModel],
   );
 
   const sessionCommands = useSessionCommands({
@@ -201,11 +246,48 @@ function SessionChat({
     if (session.engine === "pi") void warmUpEngineCommands("pi", { cwd: session.cwd });
   }, [session.engine, session.cwd]);
 
+  // F2 switches to the next recent model of this session's engine, by the same path the model dialog uses; a claude model alias or a
+  // pi model that still has credentials. A pi switch waits for the credential check, so a second F2 meanwhile is ignored.
+  const cyclingRef = useRef(false);
+  const cycleModel = useCallback(async () => {
+    if (cyclingRef.current) return;
+    cyclingRef.current = true;
+    try {
+      if (session.engine === "pi") {
+        let available: string[];
+        try {
+          available = (await listAvailablePiModels(await getPiRuntime())).map((candidate) => candidate.ref);
+        } catch {
+          toast.show({ variant: "error", message: "Could not check which pi models are available" });
+          return;
+        }
+        const next = nextRecent(getRecentModels("pi").filter((ref) => available.includes(ref)), piModel);
+        if (!next) return void toast.show({ variant: "info", message: "No other recent model" });
+        setPiModel(next);
+        toast.show({ variant: "success", message: `Model: ${next}` });
+      } else {
+        const next = SUPPORTED_CHAT_MODELS.find((candidate) => candidate.id === nextRecent(getRecentModels("claude"), model));
+        if (!next) return void toast.show({ variant: "info", message: "No other recent model" });
+        setModel(next.id);
+        toast.show({ variant: "success", message: `Model: ${next.id}` });
+      }
+    } finally {
+      cyclingRef.current = false;
+    }
+  }, [session.engine, model, piModel, setModel, setPiModel, toast]);
+
   // Let the user cancel a reply even before the first message arrives.
   useKeyboard((key) => {
+    // A dialog or a prompt (approval, question, trust) owns the keys while it is open.
+    if (key.name === "f2" && isTopLayer("base") && !pendingRequest && !compacting) {
+      key.preventDefault();
+      void cycleModel();
+      return;
+    }
     // Esc inside a question's free-text field only closes the field; on the project trust question it only means "not now", and the turn goes on untrusted.
     if (key.name === "escape" && isTopLayer("base") && busy && !textEntryRef.current && pendingRequest?.kind !== "trust") {
       key.preventDefault();
+      turnInterruptedRef.current = true;
       interrupt();
     }
   });
