@@ -6,7 +6,18 @@ import type { ClaudeCommand } from "../claude-commands";
 import type { ModeType } from "../modes";
 import type { ProjectTrustAsk, TrustAnswer } from "./pi-trust";
 
-export type PermissionDecision = "allow" | "always" | "deny";
+/**
+ * "Allow this program under this folder": allows the call, and every later one with the same program whose targets are inside the
+ * folder (a path rule, per project). Written `path:<dir>`, so a decision stays a plain string.
+ */
+export type PathAnswer = `path:${string}`;
+
+export type PermissionDecision = "allow" | "always" | "deny" | PathAnswer;
+
+export const pathAnswer = (dir: string): PathAnswer => `path:${dir}`;
+
+/** The folder of a path answer, or null for any other decision. */
+export const pathAnswerDir = (decision: PermissionDecision): string | null => (decision.startsWith("path:") ? decision.slice("path:".length) : null);
 
 /** A tool call the engine wants the user to approve. */
 export type PermissionAsk = {
@@ -19,6 +30,8 @@ export type PermissionAsk = {
   /** The ask must not be approvable by one keystroke: no one-key approve, no always-allow. */
   defaultToNo?: boolean;
   suppressAlwaysAllowRule?: boolean;
+  /** A shell command made of one path program: the folders (narrowest first) the user may allow it under. Offered even when `suppressAlwaysAllowRule` is set. */
+  pathRule?: { program: string; dirs: string[] };
 };
 
 export type EngineEvent =

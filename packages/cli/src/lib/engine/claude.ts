@@ -9,6 +9,7 @@ import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
 import { Mode } from "../modes";
 import { prepareViewForTurn } from "../packs";
+import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import { marcshPluginPath } from "../plugin";
 import {
   applySdkMessage,
@@ -18,6 +19,7 @@ import {
   toPermissionMode,
   toPermissionResult,
 } from "../sdk-messages";
+import { getStorage } from "../storage";
 import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
@@ -51,8 +53,15 @@ function policyCall(toolName: string, input: Record<string, unknown>): ToolCall 
  *
  * With an approval mode, the session's policy decides next, except for asks Claude forces itself (the user's ask rules, `defaultToNo`,
  * a blocked path): those always ask. The mode never turns an ask into an always-allow rule: a policy ask suppresses it.
+ *
+ * With `pathRules`, a `Bash` call covered by a stored folder rule ("allow `rm` under /tmp/x") runs without asking, in every mode and also past a
+ * floor ask, but never past the catastrophic block or for a forced ask; an ask for a path command offers to store one.
  */
-export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] | undefined, policy?: { approvalMode: ApprovalMode; cwd: string }): CanUseTool {
+export function createCanUseTool(
+  host: TurnHost,
+  deniedTools: readonly Group[] | undefined,
+  policy?: { approvalMode: ApprovalMode; cwd: string; pathRules?: PathRuleStore },
+): CanUseTool {
   return async (toolName, input, options) => {
     if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
 
@@ -68,6 +77,11 @@ export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] |
     if (verdict?.action === "allow") return { behavior: "allow", updatedInput: input };
     const floor = verdict?.action === "ask" ? verdict : undefined;
 
+    const folders = forced || !policy?.pathRules ? undefined : { rules: policy.pathRules, cwd: policy.cwd };
+    const command = folders && toolName === "Bash" && typeof input.command === "string" ? input.command : undefined;
+    if (folders && command !== undefined && hasMatchingPathRule(folders.rules, command, folders.cwd)) return { behavior: "allow", updatedInput: input };
+    const candidate = folders && command !== undefined ? pathRuleCandidate(command, folders.cwd) : null;
+
     const decision = await host.askPermission(
       {
         toolName,
@@ -78,9 +92,12 @@ export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] |
         blockedPath: options.blockedPath,
         defaultToNo: options.defaultToNo,
         suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule,
+        ...(candidate ? { pathRule: candidate } : {}),
       },
       options.signal,
     );
+    const answered = folders ? answeredPathRule(decision, folders.cwd, candidate) : null;
+    if (answered) folders?.rules.addPathRule(answered);
     return toPermissionResult(decision, input, options.suggestions, {
       suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule || options.defaultToNo,
     });
@@ -127,7 +144,12 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode,
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
-  const canUseTool = createCanUseTool(host, deniedTools, { approvalMode: mode === Mode.PLAN ? "normal" : (approvalMode ?? "normal"), cwd });
+  // Folder rules do not apply in plan mode either: Claude's read-only guarantee stays as it is.
+  const canUseTool = createCanUseTool(host, deniedTools, {
+    approvalMode: mode === Mode.PLAN ? "normal" : (approvalMode ?? "normal"),
+    cwd,
+    ...(mode === Mode.PLAN ? {} : { pathRules: getStorage() }),
+  });
 
   let chat: Query | null = null;
   const done = (async () => {

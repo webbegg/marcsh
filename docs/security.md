@@ -90,6 +90,18 @@ The agent is told the mode, so it runs what the mode allows instead of asking yo
 
 The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. Use `yolo` only in a project you can afford to lose work in.
 
+### Allow similar commands under a folder
+
+When marcsh asks about a command that only works on paths, the prompt also offers `p`: ``allow `rm` under /tmp/x``. Press `Left` to widen the folder to its parent and `Right` to narrow it again, then `p`. The commands are `rm`, `rmdir`, `unlink`, `mv`, `cp`, `mkdir`, `touch` and `find <folder> … -delete`. It is offered in every mode, also on the asks that never offer "always allow", and on both engines. It is not offered on prompts that need `y` then `Enter`.
+
+Later commands run without asking only when they match:
+
+- Every command in the line is the same program, with nothing else in it: no `cd`, `sudo`, redirects, substitutions or nested shells.
+- Every target is a literal path strictly inside the folder. Variables, `~`, `..` and `.git` do not match, and a glob (`*`, `?`) only in the last name.
+- The command is not one of the blocked ones (`rm -rf ~`, `rm -rf /`). A rule never overrides the git guard or Plan.
+
+The rule is stored per project folder in marcsh's database, next to the pi "always allow" rules. There is no screen to list or revoke these rules yet. Matching is on the command text: a symlink inside the folder that points elsewhere is followed by the command, not stopped by the rule.
+
 ### Plan is read-only
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:

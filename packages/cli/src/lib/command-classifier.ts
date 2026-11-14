@@ -638,6 +638,18 @@ function analyze(command: string, depth: number): CommandAnalysis {
   return { matches, writes };
 }
 
+/** One simple command of a command line: its words as the shell would pass them (quotes removed), and whether it redirects output. */
+export type SimpleCommand = { argv: string[]; redirected: boolean };
+
+/**
+ * The simple commands of a command line, in order. For callers that read a command's own words (path rules): wrappers,
+ * assignments and nested scripts are left as they are. Null when a quote or substitution is left open.
+ */
+export function simpleCommands(command: string): SimpleCommand[] | null {
+  const tokens = tokenize(command);
+  return tokens ? tokens.segments.map(({ argv, redirects }) => ({ argv, redirected: redirects.length > 0 })) : null;
+}
+
 /** The risky parts of a shell command and the files it redirects output to. */
 export function analyzeCommand(command: string): CommandAnalysis {
   return analyze(command, 0);

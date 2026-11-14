@@ -5,14 +5,14 @@ import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } 
 import { Mode } from "../modes";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
-import { getStorage, type Storage } from "../storage";
+import { getStorage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
-import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
+import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, type RuleStore, runsUnasked } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
@@ -61,8 +61,8 @@ export type PiEngineOptions = {
   sessionDir?: string;
   /** Model and auth runtime. Default: one reading `auth.json` and `models.json` from `agentDir`. */
   modelRuntime?: ModelRuntime;
-  /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
-  permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  /** Where "always" approvals (and folder rules) are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
+  permissionRules?: RuleStore;
   /** Where each project's trust decision is kept (see `pi-trust.ts`). Default: marcsh's SQLite, opened only for a project that has pi files. */
   projectTrust?: ProjectTrustRecords;
   /** The branch/ship guard for pi's `bash` tool. Default: the decision Claude's PreToolUse hook makes (tests inject others). */
