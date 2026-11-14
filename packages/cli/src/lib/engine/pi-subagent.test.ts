@@ -9,6 +9,7 @@ import {
   TASK_TOOL,
   upsertTask,
 } from "./pi-subagent";
+import { ToolCallTimeoutError, toolTimeoutMessage } from "./pi-tool-timeout";
 import type { EngineEvent } from "./types";
 
 const emptyReply = (): ChatMessage => ({ id: "reply", role: "assistant", parts: [] });
@@ -16,7 +17,7 @@ const tasks = (reply: ChatMessage) => reply.parts.flatMap((part) => (part.type =
 
 const FINISHED: ChildRun = { text: "The answer is 42.", toolUses: 2, totalTokens: 900, costUsd: 0 };
 
-function setup(runChild: RunChild = async () => FINISHED) {
+function setup(runChild: RunChild = async () => FINISHED, timeoutMs?: number) {
   const events: EngineEvent[] = [];
   const turnEnded = new AbortController();
   const requests: Parameters<RunChild>[0][] = [];
@@ -27,6 +28,7 @@ function setup(runChild: RunChild = async () => FINISHED) {
       requests.push(request);
       return runChild(request);
     },
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   const run = (params: unknown, id = "call-1", signal?: AbortSignal) => tool.execute(id, params as never, signal, undefined, undefined as never);
   const reply = () => {
@@ -268,5 +270,54 @@ describe("interrupting a task", () => {
     await expect(run({ description: "Never", prompt: "go" })).rejects.toThrow("interrupted");
 
     expect(requests).toEqual([]);
+  });
+});
+
+describe("a task that runs too long", () => {
+  const hanging: RunChild = ({ signal }) =>
+    new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+
+  test("is aborted after the timeout, fails with the timeout message and marks the task failed, not stopped", async () => {
+    const { run, reply, requests } = setup(hanging, 50);
+
+    const error = await run({ description: "Slow", prompt: "go" }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ToolCallTimeoutError);
+    expect((error as Error).message).toBe(toolTimeoutMessage("Task", 50));
+    expect(requests[0]!.signal.aborted).toBe(true);
+    expect(tasks(reply())).toEqual([{ type: "task", taskId: "call-1", description: "Slow", status: "failed", error: toolTimeoutMessage("Task", 50) }]);
+  });
+
+  test("an interrupt before the timeout is still an interrupt", async () => {
+    const { run, reply, turnEnded } = setup(hanging, 5_000);
+
+    const running = run({ description: "Slow", prompt: "go" });
+    await Promise.resolve();
+    turnEnded.abort();
+
+    await expect(running).rejects.toThrow("interrupted");
+    expect(tasks(reply())[0]?.status).toBe("stopped");
+  });
+
+  test("a child that finishes in time completes as usual", async () => {
+    const { run, reply } = setup(async () => FINISHED, 5_000);
+
+    const result = await run({ description: "Quick", prompt: "go" });
+
+    expect(textOf(result)).toBe("The answer is 42.");
+    expect(tasks(reply())[0]?.status).toBe("completed");
+  });
+
+  test("a background call is not timed", async () => {
+    const { run, reply } = setup(async ({ signal }) => {
+      await Bun.sleep(120);
+      expect(signal.aborted).toBe(false);
+      return FINISHED;
+    }, 20);
+
+    const result = await run({ description: "Long", prompt: "go", background: true });
+
+    expect(textOf(result)).toBe("The answer is 42.");
+    expect(tasks(reply())[0]?.status).toBe("completed");
   });
 });

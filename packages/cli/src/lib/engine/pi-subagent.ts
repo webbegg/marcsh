@@ -4,6 +4,7 @@ import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { createErrorTracker } from "./pi-events";
 import { disposePiSession } from "./pi-mcp";
 import type { ToolSource } from "./pi-permissions";
+import { isBackgroundCall, runWithToolTimeout, TOOL_CALL_TIMEOUT_MS, ToolCallTimeoutError } from "./pi-tool-timeout";
 import type { TurnHost } from "./types";
 
 export const TASK_TOOL = "Task";
@@ -49,7 +50,7 @@ export type ChildRun = ChildProgress & { text: string; costUsd: number };
 
 export type RunChild = (request: {
   prompt: string;
-  /** Aborts when the turn is interrupted or over, or when pi aborts the Task call. */
+  /** Aborts when the turn is interrupted or over, when pi aborts the Task call, or when the call runs too long. */
   signal: AbortSignal;
   onProgress(progress: ChildProgress): void;
 }) => Promise<ChildRun>;
@@ -59,6 +60,8 @@ export type SubagentOptions = {
   /** Aborts when the turn ends. */
   signal: AbortSignal;
   runChild: RunChild;
+  /** How long a foreground call may run before the child is aborted. Default: `TOOL_CALL_TIMEOUT_MS`. */
+  timeoutMs?: number;
 };
 
 /** The child's text as one short line for the task line. */
@@ -82,7 +85,7 @@ const parameters = {
   required: ["description", "prompt"],
 } as unknown as ToolDefinition["parameters"];
 
-export function createTaskTool({ host, signal: turnEnded, runChild }: SubagentOptions): ToolDefinition {
+export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS }: SubagentOptions): ToolDefinition {
   return {
     name: TASK_TOOL,
     label: "Subagent task",
@@ -101,13 +104,19 @@ export function createTaskTool({ host, signal: turnEnded, runChild }: SubagentOp
         host.emit({ type: "reply", update: (reply) => upsertTask(reply, toolCallId, changes) });
 
       update({ description, status: "running" });
+      const start = (childSignal: AbortSignal) => runChild({ prompt, signal: childSignal, onProgress: (progress) => update(progress) });
       let run: ChildRun;
       try {
-        run = await runChild({ prompt, signal, onProgress: (progress) => update(progress) });
+        // A background call is not timed; a foreground one is aborted once it runs too long.
+        run = isBackgroundCall(params) ? await start(signal) : await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start);
       } catch (error) {
         if (signal.aborted) {
           update({ status: "stopped" });
           throw new Error(INTERRUPTED);
+        }
+        if (error instanceof ToolCallTimeoutError) {
+          update({ status: "failed", error: error.message });
+          throw error;
         }
         const message = error instanceof Error ? error.message : String(error);
         update({ status: "failed", error: message });
