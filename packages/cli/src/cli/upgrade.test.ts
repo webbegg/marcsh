@@ -146,6 +146,48 @@ describe("upgrade", () => {
     expect(out).toContain(`http://***@127.0.0.1:${server.port}/install.sh`);
   });
 
+  test("a redirect to an allowed address (even a relative one) is followed, one hop at a time, without letting fetch follow it", async () => {
+    const seen: { url: string; redirect?: string }[] = [];
+    const code = await run({}, envFor(), {
+      fetch: async (input, init) => {
+        seen.push({ url: String(input), redirect: init?.redirect });
+        return String(input).includes("/moved/") ? new Response(FAKE_INSTALLER) : new Response(null, { status: 302, headers: { location: "/moved/install.sh" } });
+      },
+    });
+    expect(code).toBe(0);
+    expect(seen).toEqual([
+      { url: url(), redirect: "manual" },
+      { url: `http://127.0.0.1:${server.port}/moved/install.sh`, redirect: "manual" },
+    ]);
+  });
+
+  test("a redirect to a refused address stops there, and the refused address is never requested", async () => {
+    const seen: string[] = [];
+    const code = await run({}, envFor(), {
+      fetch: async (input) => {
+        seen.push(String(input));
+        return new Response(null, { status: 301, headers: { location: "http://example.com/install.sh" } });
+      },
+    });
+    expect(code).toBe(1);
+    expect(err).toContain("redirected to http://example.com/install.sh");
+    expect(seen).toEqual([url()]);
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  test("a redirect loop is given up on after 5 hops", async () => {
+    let requests = 0;
+    const code = await run({}, envFor(), {
+      fetch: async () => {
+        requests += 1;
+        return new Response(null, { status: 302, headers: { location: `/hop${requests}` } });
+      },
+    });
+    expect(code).toBe(1);
+    expect(err).toContain("redirected to");
+    expect(requests).toBe(6);
+  });
+
   test("a blank MARCSH_INSTALLER_URL means the default", async () => {
     const seen: string[] = [];
     await run({}, envFor({ MARCSH_INSTALLER_URL: "  " }), {
