@@ -51,6 +51,25 @@ describe("StatusBar usage", () => {
     expect(bare).not.toContain("$");
   });
 
+  test("shows the approval mode and the usage together (permission modes S6, usage S5)", async () => {
+    const prefs = process.env.MARCSH_PREFERENCES_PATH!;
+    writeFileSync(prefs, JSON.stringify({ defaultEngine: "claude", approvalMode: "yolo" }), "utf8");
+    try {
+      const usage = { contextTokens: 42_100, contextWindow: 200_000, costUsd: 0.34 };
+      const wide = await render(<StatusBar messages={[reply({ usage })]} />);
+      expect(wide).toContain("· yolo");
+      expect(wide).toContain("42.1k/200k (21%) · $0.34");
+      expect(wide.indexOf("yolo")).toBeLessThan(wide.indexOf("42.1k"));
+
+      // Too narrow for both: the usage goes first, the approval mode (a safety signal) stays.
+      const narrow = await render(<StatusBar messages={[reply({ usage })]} />, 36);
+      expect(narrow).toContain("· yolo");
+      expect(narrow).not.toContain("42.1k");
+    } finally {
+      writeFileSync(prefs, JSON.stringify({ defaultEngine: "claude" }), "utf8");
+    }
+  });
+
   test("drops the usage, not the engine label, when the row is too narrow for it", async () => {
     const frame = await render(<StatusBar messages={[reply({ usage: { contextTokens: 42_100, contextWindow: 200_000, costUsd: 0.34 } })]} />, 30);
 

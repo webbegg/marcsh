@@ -94,7 +94,8 @@ describe("the command palette (S8)", () => {
     expect(frame()).not.toContain("Command Palette");
     await ctrlP();
     expect(frame()).toContain("Command Palette");
-    for (const name of ["/new", "/agents", "/models", "/sessions"]) expect(frame()).toContain(name);
+    // The first rows that fit the dialog (the rest scroll): /permissions is built in and comes before /sessions.
+    for (const name of ["/new", "/agents", "/models", "/permissions"]) expect(frame()).toContain(name);
     await press("escape");
     expect(frame()).not.toContain("Command Palette");
   });
@@ -135,6 +136,18 @@ describe("the command palette (S8)", () => {
     await press("return");
     expect(frame()).not.toContain("Command Palette");
     expect(frame()).toContain("Select Theme");
+  });
+
+  test("/permissions is in the palette, shows its leader key, and Enter opens its dialog", async () => {
+    await render();
+    await ctrlP();
+    await type("permis");
+    expect(frame()).toContain("/permissions");
+    expect(frame()).toContain("ctrl+x p");
+    await press("return");
+    expect(frame()).not.toContain("Command Palette");
+    expect(frame()).toContain("Permissions");
+    expect(frame()).toContain("normal");
   });
 
   test("Up and Down move the highlight", async () => {

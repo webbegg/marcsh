@@ -8,12 +8,15 @@ import {
   LoginDialogContent,
   LogoutDialogContent,
   ModelsDialogContent,
+  PermissionsDialogContent,
   PiModelsDialogContent,
   SessionsDialogContent,
   ThemeDialogContent,
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
+import { branchState } from "../../lib/git-branch";
+import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { SessionCommands } from "./session-commands";
 import type { Command, CommandContext } from "./types";
 
@@ -166,6 +169,41 @@ export const COMMANDS: Command[] = [
           />
         ),
       })
+    },
+  },
+  {
+    name: "permissions",
+    description: "Choose how much runs without asking",
+    value: "/permissions",
+    action: (ctx) => {
+      // `/permissions <mode>` and `/permissions default <mode>` skip the dialog.
+      const command = parsePermissionsCommand(ctx.args);
+      switch (command.kind) {
+        case "set":
+          ctx.setApprovalMode(command.mode);
+          ctx.toast.show({ variant: "success", message: sessionModeMessage(command.mode, branchState(ctx.cwd)) });
+          return;
+        case "default":
+          ctx.setDefaultApprovalMode(command.mode);
+          ctx.toast.show({ variant: "success", message: defaultModeMessage(command.mode) });
+          return;
+        case "usage":
+          ctx.toast.show({ variant: "error", message: command.message });
+          return;
+        case "dialog":
+          ctx.dialog.open({
+            title: "Permissions",
+            children: (
+              <PermissionsDialogContent
+                currentMode={ctx.approvalMode}
+                defaultMode={ctx.defaultApprovalMode}
+                cwd={ctx.cwd}
+                onSelectMode={ctx.setApprovalMode}
+                onSelectDefault={ctx.setDefaultApprovalMode}
+              />
+            ),
+          });
+      }
     },
   },
   {

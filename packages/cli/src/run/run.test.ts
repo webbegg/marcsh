@@ -3,9 +3,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage, MessagePart } from "../lib/chat-types";
+import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { engines } from "../lib/engine";
+import { createCanUseTool } from "../lib/engine/claude";
+import type { BranchState } from "../lib/git-branch";
 import type { Engine, EngineEvent, PermissionDecision, TurnHost, TurnRequest } from "../lib/engine/types";
-import { setDefaultEngine } from "../lib/preferences";
+import { setDefaultApprovalMode, setDefaultEngine } from "../lib/preferences";
 import type { QuitTurn } from "../lib/quit";
 import { openStorage, type Storage } from "../lib/storage";
 import { runHeadless, type RunOptions } from "./run";
@@ -355,6 +358,42 @@ describe("runHeadless: nobody to ask (A1)", () => {
       "marcsh: denied Bash (headless runs cannot ask for approval)",
       "marcsh: denied Write (headless runs cannot ask for approval)",
     ]);
+  });
+
+  test("a saved approvalMode preference is not used: the turn runs as normal, and the asks yolo would skip are still denied", async () => {
+    setDefaultApprovalMode("yolo");
+    const feature: BranchState = { kind: "feature", branch: "feat/x" };
+    const results: unknown[] = [];
+    const { engine, requests } = fakeEngine(async (request, host) => {
+      // What the Claude engine builds from the request: an absent mode is normal. The branch is a feature branch, where yolo would not ask.
+      const canUseTool = createCanUseTool(host, request.deniedTools, {
+        approvalMode: request.approvalMode ?? "normal",
+        ...(request.currentApprovalMode ? { currentApprovalMode: request.currentApprovalMode } : {}),
+        cwd: request.cwd,
+        branchOf: () => feature,
+      });
+      const call = (toolName: string, input: Record<string, unknown>) =>
+        canUseTool(toolName, input, { signal: request.signal, toolUseID: "t", requestId: "r" } as Parameters<CanUseTool>[2]);
+      results.push((await call("Write", { file_path: join(request.cwd, "a.txt"), content: "x" }))?.behavior);
+      results.push((await call("Bash", { command: "git commit -m wip" }))?.behavior);
+      results.push((await call("Bash", { command: "touch b.txt" }))?.behavior);
+    });
+    engines.set("claude", engine);
+
+    try {
+      expect(await run()).toBe(0);
+
+      expect(requests[0]!.approvalMode).toBe("normal");
+      expect(requests[0]!.currentApprovalMode).toBeUndefined();
+      expect(results).toEqual(["deny", "deny", "deny"]);
+      expect(err.trim().split("\n")).toEqual([
+        "marcsh: denied Write (headless runs cannot ask for approval)",
+        "marcsh: denied Bash (headless runs cannot ask for approval)",
+        "marcsh: denied Bash (headless runs cannot ask for approval)",
+      ]);
+    } finally {
+      setDefaultApprovalMode("normal");
+    }
   });
 
   test("text format strips terminal control sequences from the reply, engine errors, notices and tool names; newlines and tabs stay", async () => {

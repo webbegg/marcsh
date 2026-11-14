@@ -74,12 +74,13 @@ Short messages called toasts appear in the top right corner for a few seconds. T
 
 ## Approving tool calls
 
-By default the Build agent asks before it edits files or runs commands. [Security](security.md#what-asks) lists what asks on each engine. A prompt appears above the input. It shows the tool and what it will do. Answer with one key:
+By default the Build agent asks before it edits files or runs commands. `/permissions` changes how much asks, see [Permission modes](security.md#permission-modes). [Security](security.md#what-asks) lists what asks on each engine. A prompt appears above the input. It shows the tool and what it will do. Answer with one key:
 
 | Key | Meaning |
 | --- | --- |
 | `y` | Allow this call once. |
 | `a` | Always allow. What this covers depends on the engine, see [Security](security.md#what-always-allow-covers). |
+| `p` | Allow this program under a folder from now on, for example `rm` under `/tmp/build`. `←` and `→` pick a wider or narrower folder. Offered only for commands like `rm`, `mv` or `cp`, see [Security](security.md#allow-similar-commands-under-a-folder). |
 | `n` | Deny it. The agent is told you said no. |
 | `Esc` | Deny it and stop the reply. |
 

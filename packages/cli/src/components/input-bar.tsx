@@ -332,7 +332,23 @@ type HistoryWalk = {
 const idleWalk = (): HistoryWalk => ({ entries: [], index: -1, draft: "", shown: null });
 
 export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages }: Props) {
-  const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const {
+    agent,
+    mode,
+    cycleAgent,
+    selectAgent,
+    reloadAgents,
+    setModel,
+    defaultEngine,
+    setDefaultEngine,
+    piModel,
+    setPiModel,
+    refreshPiModel,
+    approvalMode,
+    setApprovalMode,
+    defaultApprovalMode,
+    setDefaultApprovalMode,
+  } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -637,11 +653,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
         setModel,
         session,
+        approvalMode,
+        setApprovalMode,
+        defaultApprovalMode,
+        setDefaultApprovalMode,
       });
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, session]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, session, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode]);
 
   // The palette and the leader run a command the way a typed `/command` does. One that needs text after its name (`/rename`, a
   // custom or engine command) puts `/name ` in the prompt for the user to finish, which needs the prompt to be empty.

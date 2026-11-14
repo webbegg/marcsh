@@ -7,6 +7,7 @@ import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
+import { useApprovalMode } from "../providers/prompt-config";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
 import { dropRedo, SNAPSHOT_TIMEOUT_MS, trackWithin, withSnapshot } from "../lib/session-snapshots";
@@ -136,6 +137,11 @@ export type QueuedInput = { steering: string[]; followUp: string[] };
 const NOTHING_QUEUED: QueuedInput = { steering: [], followUp: [] };
 
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
+  // The mode in force when a turn starts; outside a provider (tests) it is normal.
+  const approvalMode = useApprovalMode();
+  // Read by the engine when each tool call is decided, so a /permissions switch during a turn applies to the next call.
+  const approvalModeRef = useRef(approvalMode);
+  approvalModeRef.current = approvalMode;
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
@@ -359,6 +365,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             ...(loaded ? { attachments: loaded } : {}),
             cwd: session.cwd,
             mode,
+            approvalMode: approvalModeRef.current,
+            currentApprovalMode: () => approvalModeRef.current,
             model,
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),

@@ -2,24 +2,25 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { branchState } from "../git-branch";
 import { Mode } from "../modes";
 import { referenceText, splitAttachments } from "../attachments";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
-import { getStorage, type Storage } from "../storage";
+import { getStorage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
-import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
+import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, type RuleStore, runsUnasked } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
-import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
+import { systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -62,8 +63,8 @@ export type PiEngineOptions = {
   sessionDir?: string;
   /** Model and auth runtime. Default: one reading `auth.json` and `models.json` from `agentDir`. */
   modelRuntime?: ModelRuntime;
-  /** Where "always" approvals are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
-  permissionRules?: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  /** Where "always" approvals (and folder rules) are kept. Default: marcsh's SQLite, opened on the first turn that needs it. */
+  permissionRules?: RuleStore;
   /** Where each project's trust decision is kept (see `pi-trust.ts`). Default: marcsh's SQLite, opened only for a project that has pi files. */
   projectTrust?: ProjectTrustRecords;
   /** The branch/ship guard for pi's `bash` tool. Default: the decision Claude's PreToolUse hook makes (tests inject others). */
@@ -266,7 +267,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
@@ -384,7 +385,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         signal: turnEnded.signal,
         planMode: mode === Mode.PLAN,
         guard: options.guard,
+        approvalMode,
+        currentApprovalMode,
       };
+      // Plan mode stays read-only whatever the approval mode, so it gets no mode line. The line says whether the mode is active or paused on the branch the turn starts on; each call reads the branch again.
+      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, () => branchState(cwd));
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
@@ -397,7 +402,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         ...resourcesFor(packTurn?.view ?? undefined),
         // Added to whatever APPEND_SYSTEM.md pi found; `appendSystemPrompt` would replace it. A fresh loader per turn is why a switched agent applies from the next turn.
-        ...(systemPromptAppend ? { appendSystemPromptOverride: (base: string[]) => [...base, systemPromptAppend] } : {}),
+        ...(promptAppend ? { appendSystemPromptOverride: (base: string[]) => [...base, promptAppend] } : {}),
         extensionFactories: [
           // MCP tools are ordinary non-built-in tools: loaded before the approval extension, so its handler still runs last.
           createMarcshMcpExtension(pi.createMcpExtension, agentDir, await importLoadMcpConfig()),
