@@ -320,6 +320,28 @@ describe("createPackHooksExtension", () => {
     expect(existsSync(out)).toBe(false);
   });
 
+  test("a bg_start with a working_dir runs its Bash hooks in that directory, which the payload names as cwd (S1a, B1)", async () => {
+    const out = join(dir, "stdin.json");
+    const other = join(dir, "other");
+    mkdirSync(other);
+    const { call, result } = load({ PreToolUse: group(`cat > ${out}; pwd > ${out}.pwd`, "Bash"), PostToolUse: group(`cat > ${out}.post`, "Bash") });
+    expect(await call("bg_start", { command: "make", title: "m", working_dir: "../other" })).toBeUndefined();
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ cwd: other, tool_name: "Bash", tool_input: { command: "make" } });
+    expect(readFileSync(`${out}.pwd`, "utf8").trim()).toBe(realpathSync(other));
+    await result("bg_start", { command: "make", title: "m", working_dir: other }, "Started bt-1");
+    expect(JSON.parse(readFileSync(`${out}.post`, "utf8"))).toMatchObject({ cwd: other });
+    // Without a working_dir, it is the session's folder.
+    await call("bg_start", { command: "make", title: "m" });
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ cwd });
+  });
+
+  test("a bg_start whose working_dir is not a directory is blocked before any hook runs (S1a, B1)", async () => {
+    const out = join(dir, "stdin.json");
+    const { call } = load({ PreToolUse: group(`cat > ${out}`, "Bash") });
+    expect(await call("bg_start", { command: "make", title: "m", working_dir: "missing" })).toEqual({ block: true, reason: `working_dir is not a directory: ${join(cwd, "missing")}` });
+    expect(existsSync(out)).toBe(false);
+  });
+
   test("pi's path input of read, edit and write is also given as file_path, like Claude's", async () => {
     const out = join(dir, "stdin.json");
     const { call } = load({ PreToolUse: group(`cat > ${out}`) });

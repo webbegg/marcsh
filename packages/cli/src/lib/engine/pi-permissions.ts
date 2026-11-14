@@ -1,7 +1,8 @@
+import { resolve } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
-import { BG_PLAN_TOOLS, isMarcshBgStart, isMarcshBgTool } from "./pi-bg-tools";
+import { BG_PLAN_TOOLS, bgStartDir, hasWorkingDir, isMarcshBgStart, isMarcshBgTool, workingDirError } from "./pi-bg-tools";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
 import { isMarcshTask, isMarcshTaskTool, TASK_PLAN_TOOLS } from "./pi-subagent";
 import type { TurnHost } from "./types";
@@ -82,7 +83,8 @@ type Call = { toolName: string; input: Record<string, unknown> };
 
 /**
  * The call as approval judges it: marcsh's `bg_start` is `bash` with the same command, so it gets bash's guard verdict and
- * shares bash's exact-command rule (an "always" for one covers the other). The ask itself still shows the real call.
+ * shares bash's exact-command rule (an "always" for one covers the other) when it runs in the session's folder. The ask itself
+ * still shows the real call.
  */
 function judgedAs(call: Call, tools: readonly ToolSource[]): Call {
   const tool = tools.find((candidate) => candidate.name === call.toolName);
@@ -110,12 +112,21 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
     }
     if (!needsApproval(call.toolName, tools())) return undefined;
 
-    const verdict = guardVerdict(guard, cwd, call, tools());
+    // marcsh's `bg_start` runs in its `working_dir`: that is where it is judged, and a folder that is not there is an error before anything runs.
+    const tool = tools().find((candidate) => candidate.name === call.toolName);
+    const runDir = tool && isMarcshBgStart(tool) ? bgStartDir(cwd, call.input) : cwd;
+    const dirError = runDir !== cwd && hasWorkingDir(call.input) ? workingDirError(runDir) : undefined;
+    if (dirError) return { block: true, reason: dirError };
+
+    const verdict = guardVerdict(guard, runDir, call, tools());
     if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
     // A guarded action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const guarded = verdict?.decision === "ask" ? verdict : undefined;
+    // Rules are kept per session folder: one saved there does not cover a command run in another folder, and an "always" for
+    // it could only be saved for the session folder, so it is not offered.
+    const elsewhere = resolve(runDir) !== resolve(cwd);
     const judged = judgedAs(call, tools());
-    const rule = guarded ? undefined : ruleFor(cwd, judged.toolName, judged.input);
+    const rule = guarded || elsewhere ? undefined : ruleFor(cwd, judged.toolName, judged.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
@@ -123,7 +134,14 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
       decision = await host.askPermission(
         guarded
           ? { toolName: call.toolName, input: call.input, decisionReason: guarded.reason, suppressAlwaysAllowRule: true }
-          : { toolName: call.toolName, input: call.input },
+          : elsewhere
+            ? {
+                toolName: call.toolName,
+                input: call.input,
+                decisionReason: `This runs in ${runDir}, outside the session folder: rules saved for the session folder do not cover it.`,
+                suppressAlwaysAllowRule: true,
+              }
+            : { toolName: call.toolName, input: call.input },
         signal,
       );
     } catch {

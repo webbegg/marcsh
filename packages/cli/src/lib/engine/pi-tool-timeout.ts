@@ -72,8 +72,8 @@ export async function runWithToolTimeout<T>(toolName: string, ms: number, signal
 }
 
 /**
- * Gives pi's own `bash` tool a `timeout` of `ms` when the call passes none and is not a background call, so
- * pi's bash stops the command and its process tree itself. The tool is not replaced, so its shell settings stay.
+ * Gives pi's own `bash` tool a `timeout` of `ms` when the call passes none, so pi's bash stops the command and its
+ * process tree itself. A `background` field on a bash call changes nothing: only `bg_start` and `Task` run in the background. The tool is not replaced, so its shell settings stay.
  *
  * pi runs a call with the object its first `tool_call` handler gets as `event.input`, and hands the same event to
  * each handler in load order. The timeout goes on that object, and the handlers after this one (pack hooks,
@@ -94,7 +94,7 @@ export function createBashTimeoutExtension(ms: number = TOOL_CALL_TIMEOUT_MS): I
       const isPiBash = () => pi.getAllTools().some((tool) => tool.name === BASH_TOOL && tool.sourceInfo.path === BUILTIN_BASH);
 
       pi.on("tool_call", (event) => {
-        if (event.toolName !== BASH_TOOL || isBackgroundCall(event.input)) return;
+        if (event.toolName !== BASH_TOOL) return;
         const input = event.input as Record<string, unknown>;
         if (input.timeout !== undefined && input.timeout !== null) return;
         if (!isPiBash()) return;

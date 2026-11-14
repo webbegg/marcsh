@@ -39,6 +39,26 @@ export function isMarcshBgTool(tool: ToolSource): boolean {
 
 export const isMarcshBgStart = (tool: ToolSource) => tool.name === BG_START_TOOL && isMarcshBgTool(tool);
 
+/**
+ * Where a `bg_start` call runs: its `working_dir` resolved against the session's folder, or that folder without one. Approval, pack
+ * hooks and `bg_start` itself all use this, so the command is judged in the directory it runs in.
+ */
+export function bgStartDir(cwd: string, input: Record<string, unknown>): string {
+  const dir = input.working_dir;
+  return resolve(cwd, typeof dir === "string" && dir ? dir : ".");
+}
+
+/** Whether the call names a `working_dir` of its own. */
+export const hasWorkingDir = (input: Record<string, unknown>) => typeof input.working_dir === "string" && input.working_dir !== "";
+
+/** Why `bg_start` cannot run in `dir`, or undefined when it is a directory. */
+export function workingDirError(dir: string): string | undefined {
+  try {
+    if (statSync(dir).isDirectory()) return undefined;
+  } catch {}
+  return `working_dir is not a directory: ${dir}`;
+}
+
 export type BackgroundToolsOptions = {
   hub: BackgroundHub;
   /** The session's project directory: where a command runs unless it names a `working_dir`. */
@@ -74,12 +94,9 @@ export function createBackgroundTools({ hub, cwd }: BackgroundToolsOptions): Too
       const command = typeof input.command === "string" ? input.command.trim() : "";
       if (!command) throw new Error("command must be a non-empty string.");
       const title = (typeof input.title === "string" ? input.title : "").replace(/\s+/g, " ").trim().slice(0, 80) || "terminal";
-      const dir = resolve(cwd, typeof input.working_dir === "string" && input.working_dir ? input.working_dir : ".");
-      let isDir = false;
-      try {
-        isDir = statSync(dir).isDirectory();
-      } catch {}
-      if (!isDir) throw new Error(`working_dir is not a directory: ${dir}`);
+      const dir = bgStartDir(cwd, input);
+      const error = workingDirError(dir);
+      if (error) throw new Error(error);
       const snapshot = terminals().start({ command, title, cwd: dir });
       return text(buildStartResult(snapshot), { id: snapshot.id, title: snapshot.title, cwd: dir, pid: snapshot.pid });
     },
@@ -136,11 +153,12 @@ export function createBackgroundTools({ hub, cwd }: BackgroundToolsOptions): Too
       const missing = ids.find((id) => !terminals().get(id));
       if (missing) throw unknownId(missing, knownIds());
       const results = await terminals().kill(ids);
-      // What no one reported yet is this call's to report, and is never announced.
-      const reported = new Set(hub.consume(ids));
+      // This call reports them, so they are never announced. The hub may have handed a result on already, to a turn that can still
+      // end before the model reads it: the output is shown here anyway (a duplicate, never a loss).
+      hub.consume(ids);
       const lines = results.map((result) => {
         const snapshot = terminals().get(result.id);
-        return reported.has(result.id) && snapshot ? `${describeKill(result)}\n${buildTerminalResult(snapshot)}` : describeKill(result);
+        return snapshot && snapshot.status !== "running" ? `${describeKill(result)}\n${buildTerminalResult(snapshot)}` : describeKill(result);
       });
       return text(lines.join("\n\n"), { results });
     },
