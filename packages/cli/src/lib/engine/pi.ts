@@ -20,6 +20,7 @@ import { createPiUiContext } from "./pi-ui";
 import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
+import { backgroundMessageText, type BackgroundBatch } from "../background/hub";
 import { TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 /**
@@ -213,6 +214,17 @@ export function createQueueTracker() {
   };
 }
 
+/** The `customType` of the message that carries a batch of background results into a running turn (pi sends it to the model as a user message). */
+const BACKGROUND_MESSAGE = "marcsh-background";
+
+type BackgroundDetails = Pick<BackgroundBatch, "ids" | "notice">;
+
+function backgroundDetails(message: { role: string; customType?: string; details?: unknown }): BackgroundDetails | undefined {
+  if (message.role !== "custom" || message.customType !== BACKGROUND_MESSAGE) return undefined;
+  const details = message.details as Partial<BackgroundDetails> | undefined;
+  return Array.isArray(details?.ids) && typeof details.notice === "string" ? { ids: details.ids, notice: details.notice } : undefined;
+}
+
 function parseModel(ref: string): { provider: string; id: string } | null {
   const slash = ref.indexOf("/");
   if (slash <= 0 || slash === ref.length - 1) return null;
@@ -269,7 +281,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn(
+    { prompt, attachments, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, background, promptKind, signal }: TurnRequest,
+    host: TurnHost,
+  ): EngineTurn {
     const startedAt = Date.now();
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
@@ -280,6 +295,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     // Streamed text reaches the host at most ~30 times a second; the feed is closed (queue sent, timer gone) when the turn ends.
     const feed = createReplyFeed((event) => host.emit(event));
     const queue = createQueueTracker();
+    // Background result ids sent to pi in this turn that pi has not started yet.
+    const sentToPi = new Set<string>();
     // Typed before the prompt reached pi: held until it did, in the order typed. Each entry's promise settles when pi took the text
     // or, if the turn ends first (startup failed, interrupted), rejects so the host can give the text back to the user.
     let promptSent = false;
@@ -488,6 +505,14 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const usageOptions = { contextWindow: resolved.contextWindow };
         if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event, usageOptions));
         else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event, usageOptions));
+        // The run can take background results now: those that waited for it go in.
+        if (event.type === "agent_start") background?.retry();
+        const delivered = event.type === "message_start" ? backgroundDetails(event.message) : undefined;
+        if (event.type === "message_start" && delivered && delivered.ids.filter((id) => sentToPi.delete(id)).length > 0) {
+          // What was streamed so far belongs to the reply before the results.
+          feed.flush();
+          host.emit({ type: "delivered", kind: "background", text: backgroundMessageText({ notice: delivered.notice, text: userText(event.message as { content?: unknown }) }) });
+        }
         const queued = queue.observe(event);
         if (queued) {
           // What was streamed so far belongs to the reply before the message that was just sent.
@@ -499,17 +524,31 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       });
       if (session.sessionFile) host.emit({ type: "session", ref: session.sessionFile });
 
+      // Background results that finish while pi runs go into the run as a follow-up (pi's own queue, not the user's: the queue tracker
+      // never sees it). Ids sent to pi but not seen starting by the time the turn ends go back to the hub (see the `finally`).
+      const detachBackground = background?.attachTurn((batch) => {
+        if (aborted || settled || !started.isStreaming) return false;
+        for (const id of batch.ids) sentToPi.add(id);
+        const details: BackgroundDetails = { ids: batch.ids, notice: batch.notice };
+        started.sendCustomMessage({ customType: BACKGROUND_MESSAGE, content: batch.text, display: true, details }, { deliverAs: "followUp", triggerTurn: true }).catch(() => {
+          for (const id of batch.ids) sentToPi.delete(id);
+          background.requeue(batch.ids);
+        });
+        return true;
+      });
+
       try {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
-        const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
+        // A batch of background results is sent as it is: its text came from commands' output, not from the user.
+        const expanded = promptKind === "background" ? prompt : expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
         // An image goes as image input when the model takes images; pi has no PDF input. What does not go inline is mentioned as `@path`.
         const split = splitAttachments(attachments ?? [], { image: resolved.input?.includes("image") === true, pdf: false });
         const images = split.inline.filter((attachment) => attachment.bytes);
         const mentioned = [...split.references, ...split.inline.filter((attachment) => !attachment.bytes)];
         for (const notice of split.notices) host.notify?.(notice, "warning");
         const options = {
-          ...(expanded === prompt ? {} : { expandPromptTemplates: false }),
+          ...(expanded === prompt && promptKind !== "background" ? {} : { expandPromptTemplates: false }),
           ...(images.length > 0 ? { images: images.map((image) => ({ type: "image" as const, data: Buffer.from(image.bytes!).toString("base64"), mimeType: image.mime })) } : {}),
         };
         const sending = session.prompt(referenceText(expanded, mentioned, cwd), Object.keys(options).length > 0 ? options : undefined);
@@ -535,6 +574,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         }
       } finally {
         tools.record(session);
+        // Before the turn settles: a result that comes now goes to the idle path, and those pi never started are delivered there, not lost.
+        detachBackground?.();
+        if (sentToPi.size > 0) background?.requeue([...sentToPi]);
+        sentToPi.clear();
         settle();
         feed.close();
         host.emit({ type: "reply", update: (reply) => withDuration(reply, Date.now() - startedAt) });

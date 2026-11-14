@@ -65,6 +65,10 @@ The Plan agent, and any agent with `permission: read-only`, cannot change anythi
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).
 
+### Turns marcsh starts
+
+When background work finishes while a pi session is idle, marcsh starts a turn to give the agent the result (see [The screen](screen.md#background-results)). That turn is like one you start. It runs as the agent and model selected at that moment, and every tool call it makes asks the same way, including in Plan. Its message is the work's output, sent as it is: a `/command` in it is not run.
+
 ## Project trust
 
 Project trust applies to the **pi** engine.

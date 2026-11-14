@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentTools } from "../lib/agent-tools";
 import type { ModeType } from "../lib/modes";
 import { loadAttachments, referenceText, type Attachment } from "../lib/attachments";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
+import type { BackgroundBatch, BackgroundHost, BackgroundHub } from "../lib/background/hub";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
@@ -87,6 +88,11 @@ export type ChatOptions = {
   snapshots?: SnapshotStoreResult;
   /** How long a snapshot may take before the turn goes on without it. Default: `SNAPSHOT_TIMEOUT_MS`. */
   snapshotTimeoutMs?: number;
+  /**
+   * The session's background hub (a pi session's screen has one): each turn gets it, the chat is its ask channel (`host`) for
+   * background work, and the chat tells it to retry delivery whenever it goes idle.
+   */
+  background?: BackgroundHub;
 };
 
 /** How a compaction ended; `reason` is for the user. */
@@ -127,8 +133,12 @@ function decline(request: PendingRequest) {
 
 /** The agent answering a turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
 export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools };
-/** `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts. */
-export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent; attachments?: MessageAttachment[] };
+/**
+ * `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts.
+ * `background`: the turn delivers this batch of background results; `userText` is what the transcript keeps of it, and the engine
+ * gets only the batch's text, as it is.
+ */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent; attachments?: MessageAttachment[]; background?: BackgroundBatch };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -156,6 +166,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const interruptedRef = useRef(false);
   const inputClosedRef = useRef(false);
   const pendingRequestsRef = useRef(new Set<PendingRequest>());
+  const backgroundRef = useRef(options.background);
+  backgroundRef.current = options.background;
   const notifyRef = useRef(options.notify);
   notifyRef.current = options.notify;
   const restoreRef = useRef(options.restore);
@@ -180,8 +192,94 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     setStatus(next);
   }, []);
 
+  // One queue for approvals, questions and the engine's dialogs; each request resolves its promise once and an abort declines it.
+  // `owner` holds the requests of whoever asked (a turn, or the session's background work), so a turn ending declines only its own.
+  const waitForUser = useCallback(
+    <T,>(owner: Set<PendingRequest>, signal: AbortSignal, declined: T, build: (respond: (value: T) => void) => PendingRequest) =>
+      new Promise<T>((resolve) => {
+        // An abort that already happened would never be heard: decline without showing anything.
+        if (signal.aborted) return resolve(declined);
+        const respond = (value: T) => {
+          // Already answered, declined by abort, or declined at turn end: never resolve twice.
+          if (!pendingRequestsRef.current.delete(request)) return;
+          owner.delete(request);
+          signal.removeEventListener("abort", onAbort);
+          setPermissionQueue((queue) => queue.filter((r) => r !== request));
+          resolve(value);
+          // The last answer an idle chat waited for: background results held back by it may go now.
+          if (pendingRequestsRef.current.size === 0 && statusRef.current === "ready") backgroundRef.current?.retry();
+        };
+        const onAbort = () => respond(declined);
+        const request = build(respond);
+        signal.addEventListener("abort", onAbort, { once: true });
+        pendingRequestsRef.current.add(request);
+        owner.add(request);
+        setPermissionQueue((queue) => [...queue, request]);
+      }),
+    [],
+  );
+
+  const makeHost = useCallback(
+    (owner: Set<PendingRequest>, emit: (event: EngineEvent) => void): TurnHost => ({
+      emit,
+      askPermission: (ask, signal) => waitForUser<PermissionDecision>(owner, signal, "deny", (respond) => ({ ...ask, kind: "permission", respond })),
+      askQuestions: (questions, signal) =>
+        waitForUser<Record<string, string> | null>(owner, signal, null, (respond) => ({
+          kind: "question",
+          id: crypto.randomUUID(),
+          questions,
+          respond,
+        })),
+      select: (title, options, signal) =>
+        waitForUser<string | undefined>(owner, signal, undefined, (respond) => ({
+          kind: "select",
+          id: crypto.randomUUID(),
+          title,
+          options,
+          respond,
+        })),
+      confirm: (title, message, signal) =>
+        waitForUser<boolean>(owner, signal, false, (respond) => ({ kind: "confirm", id: crypto.randomUUID(), title, message, respond })),
+      input: (title, placeholder, signal) =>
+        waitForUser<string | undefined>(owner, signal, undefined, (respond) => ({
+          kind: "input",
+          id: crypto.randomUUID(),
+          title,
+          placeholder,
+          respond,
+        })),
+      editor: (title, prefill, signal) =>
+        waitForUser<string | undefined>(owner, signal, undefined, (respond) => ({
+          kind: "editor",
+          id: crypto.randomUUID(),
+          title,
+          prefill,
+          respond,
+        })),
+      askProjectTrust: (ask, signal) =>
+        waitForUser<TrustAnswer>(owner, signal, "skip", (respond) => ({ kind: "trust", id: crypto.randomUUID(), ...ask, respond })),
+      notify: (message, level) => notifyRef.current?.(message, level),
+    }),
+    [waitForUser],
+  );
+
+  // Background work asks the user through the session, not through the turn that started it (which may have ended).
+  const hub = options.background;
+  useEffect(() => {
+    if (!hub) return;
+    // What background work asked: no turn's end declines it, leaving the session does.
+    const requests = new Set<PendingRequest>();
+    const { askPermission, notify } = makeHost(requests, () => {});
+    const channel: BackgroundHost = { askPermission, notify };
+    hub.host = channel;
+    return () => {
+      if (hub.host === channel) hub.host = undefined;
+      for (const request of [...requests]) decline(request);
+    };
+  }, [hub, makeHost]);
+
   const submit = useCallback(
-    async ({ userText, mode, model, turnAgent, attachments }: SubmitParams) => {
+    async ({ userText, mode, model, turnAgent, attachments, background }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
@@ -190,20 +288,22 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
 
       // A session opened with messages but no engine conversation (a fork) starts one primed with what was said, once; the chat shows only
       // what was typed. An engine that never reports a conversation is not primed again on each turn.
-      let enginePrompt = userText;
+      const said = background ? background.text : userText;
+      let enginePrompt = said;
       if (needsPrimerRef.current && !resumeRefRef.current) {
-        enginePrompt = primeWithTranscript(userText, session, messagesRef.current);
-        if (enginePrompt !== userText) needsPrimerRef.current = false;
+        enginePrompt = primeWithTranscript(said, session, messagesRef.current);
+        if (enginePrompt !== said) needsPrimerRef.current = false;
       }
 
       // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
       let replyId = crypto.randomUUID();
       const replyIds = [replyId];
       const metadata = { mode, model, ...(turnAgent ? { agent: turnAgent.name } : {}) };
+      const userMetadata = { ...metadata, ...(attachments?.length ? { attachments } : {}), ...(background ? { background: true } : {}) };
       updateMessages((prev) => [
         // A new turn ends every redo: what an undo took back stays gone.
         ...dropRedo(prev),
-        { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata: attachments?.length ? { ...metadata, attachments } : metadata },
+        { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata: userMetadata },
         { id: replyId, role: "assistant", parts: [], metadata },
       ]);
 
@@ -217,25 +317,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       let finishTurn = () => {};
       const finished = new Promise<void>((resolve) => (finishTurn = resolve));
       const unregisterTurn = registerTurn({ stop: () => abortController.abort(), done: finished });
-
-      // One queue for approvals, questions and the engine's dialogs; each request resolves its promise once and an abort declines it.
-      const waitForUser = <T,>(signal: AbortSignal, declined: T, build: (respond: (value: T) => void) => PendingRequest) =>
-        new Promise<T>((resolve) => {
-          // An abort that already happened would never be heard: decline without showing anything.
-          if (signal.aborted) return resolve(declined);
-          const respond = (value: T) => {
-            // Already answered, declined by abort, or declined at turn end: never resolve twice.
-            if (!pendingRequestsRef.current.delete(request)) return;
-            signal.removeEventListener("abort", onAbort);
-            setPermissionQueue((queue) => queue.filter((r) => r !== request));
-            resolve(value);
-          };
-          const onAbort = () => respond(declined);
-          const request = build(respond);
-          signal.addEventListener("abort", onAbort, { once: true });
-          pendingRequestsRef.current.add(request);
-          setPermissionQueue((queue) => [...queue, request]);
-        });
+      // What this turn asked the user: declined when it ends unanswered.
+      const turnRequests = new Set<PendingRequest>();
 
       const onEvent = (event: EngineEvent) => {
         switch (event.type) {
@@ -277,7 +360,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
                 id: crypto.randomUUID(),
                 role: "user",
                 parts: [{ type: "text", text: event.text }],
-                metadata: event.kind === "steer" ? { ...metadata, steered: true } : metadata,
+                metadata: event.kind === "steer" ? { ...metadata, steered: true } : event.kind === "background" ? { ...metadata, background: true } : metadata,
               },
               { id: next, role: "assistant", parts: [], metadata },
             ]);
@@ -286,47 +369,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         }
       };
 
-      const host: TurnHost = {
-        emit: onEvent,
-        askPermission: (ask, signal) =>
-          waitForUser<PermissionDecision>(signal, "deny", (respond) => ({ ...ask, kind: "permission", respond })),
-        askQuestions: (questions, signal) =>
-          waitForUser<Record<string, string> | null>(signal, null, (respond) => ({
-            kind: "question",
-            id: crypto.randomUUID(),
-            questions,
-            respond,
-          })),
-        select: (title, options, signal) =>
-          waitForUser<string | undefined>(signal, undefined, (respond) => ({
-            kind: "select",
-            id: crypto.randomUUID(),
-            title,
-            options,
-            respond,
-          })),
-        confirm: (title, message, signal) =>
-          waitForUser<boolean>(signal, false, (respond) => ({ kind: "confirm", id: crypto.randomUUID(), title, message, respond })),
-        input: (title, placeholder, signal) =>
-          waitForUser<string | undefined>(signal, undefined, (respond) => ({
-            kind: "input",
-            id: crypto.randomUUID(),
-            title,
-            placeholder,
-            respond,
-          })),
-        editor: (title, prefill, signal) =>
-          waitForUser<string | undefined>(signal, undefined, (respond) => ({
-            kind: "editor",
-            id: crypto.randomUUID(),
-            title,
-            prefill,
-            respond,
-          })),
-        askProjectTrust: (ask, signal) =>
-          waitForUser<TrustAnswer>(signal, "skip", (respond) => ({ kind: "trust", id: crypto.randomUUID(), ...ask, respond })),
-        notify: (message, level) => notifyRef.current?.(message, level),
-      };
+      const host = makeHost(turnRequests, onEvent);
 
       let before: string | undefined;
       let started = false;
@@ -365,6 +408,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             ...(resumeRefRef.current ? { priorCostUsd: priorCumulativeCost(messagesRef.current) } : {}),
+            ...(backgroundRef.current ? { background: backgroundRef.current } : {}),
+            ...(background ? { promptKind: "background" as const } : {}),
             signal: abortController.signal,
           },
           host,
@@ -379,8 +424,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       } finally {
         turnRef.current = null;
         // Requests the engine is still waiting on (it can end the turn without aborting) are declined, not just dropped.
-        for (const request of [...pendingRequestsRef.current]) decline(request);
-        setPermissionQueue([]);
+        // Only this turn's: what background work asked through the session stays until it is answered.
+        for (const request of [...turnRequests]) decline(request);
         for (const id of replyIds) applyToReply(finishReply, id);
         // The files as the turn left them, kept on its last reply. The input stays as the turn left it until this is done.
         if (before !== undefined && started && snapshotsRef.current?.available) {
@@ -404,9 +449,11 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         }
         unregisterTurn();
         finishTurn();
+        // Idle again: results that finished meanwhile go now. Not after Esc: the user stopped the agent, so nothing restarts it by itself.
+        if (!interruptedRef.current) backgroundRef.current?.retry();
       }
     },
-    [session, engine, updateMessages, updateStatus],
+    [session, engine, updateMessages, updateStatus, makeHost],
   );
 
   const interrupt = useCallback(() => {
@@ -463,6 +510,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   // Whether the engine has a conversation of this session to continue (its first turn reported one).
   const hasConversation = useCallback(() => resumeRefRef.current != null, []);
   const snapshotIssue = useCallback(() => snapshotIssueRef.current, []);
+  // Whether a turn could start now: none runs, nothing is compacting, and no request waits for the user.
+  const isIdle = useCallback(() => statusRef.current === "ready" && compactingRef.current === null && pendingRequestsRef.current.size === 0, []);
 
   // Asks the engine to compact the conversation outside a turn. The session is busy meanwhile; Esc or leaving it cancels.
   const compact = useCallback(
@@ -500,6 +549,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         compactingRef.current = null;
         setCompacting(false);
         updateStatus("ready");
+        if (!controller.signal.aborted) backgroundRef.current?.retry();
       }
     },
     [engine, session.cwd, editMessages, updateStatus],
@@ -517,6 +567,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     getMessages,
     hasConversation,
     snapshotIssue,
+    isIdle,
     compact,
     steer,
     followUp,

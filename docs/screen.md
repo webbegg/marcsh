@@ -42,6 +42,17 @@ The hint next to the status line tells you what the keys do right now, for examp
 
 On a Claude session the input is off while a reply runs. Wait for the reply, or press `Esc` to stop it.
 
+## Background results
+
+On a pi session the agent can leave work running in the background. When it finishes, its result goes to the agent once:
+
+- If a reply is running, the result joins it. The agent sees it before its next step.
+- If the session is idle, marcsh starts a turn for it, as the agent and model selected at that moment.
+
+Either way the conversation shows one line per result, `[background] <title> finished`, marked `background`. The output itself goes to the agent, not to the screen. Results that finish together arrive as one message.
+
+Text you typed or queued is never replaced: a result waits while an approval, a question or a compaction is open, or while a turn is starting. After you stop a reply with `Esc`, results wait too, until the next turn ends or another result finishes. If the agent already read a result with a tool, it is not sent again.
+
 ## Stopping and quitting
 
 - `Esc` stops a running reply. It also declines an approval prompt or a question that is waiting. Two cases differ. In a question's free-text field, `Esc` only closes the field. On the project-trust question, `Esc` means "not now": the turn goes on without the project's files.
