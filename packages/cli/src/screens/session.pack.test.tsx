@@ -98,6 +98,14 @@ afterAll(() => {
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// Waits for what a turn does asynchronously (the plugin view, the first query) instead of guessing how long it takes: a loaded machine
+// is slower than any fixed sleep. A condition that never holds fails with its name rather than with a later, unrelated assertion.
+async function until(condition: () => boolean, what: string, timeoutMs = 3000) {
+  for (let waited = 0; !condition(); waited += 10) {
+    if (waited >= timeoutMs) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    await settle(10);
+  }
+}
 
 async function runTurn(selected: string) {
   calls = [];
@@ -108,7 +116,9 @@ async function runTurn(selected: string) {
     { initialEntries: [{ pathname: `/sessions/${session.id}`, state: { initialPrompt: { message: "hi", mode: "BUILD", model: "sonnet", agentId: selected } } }] },
   );
   screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
-  await settle(80);
+  await until(() => calls.length > 0, "the turn's query");
+  // One turn, not a repeat: a short grace for a second query that should not come.
+  await settle(30);
   expect(calls).toHaveLength(1);
   return calls[0]!.options;
 }
@@ -176,10 +186,11 @@ describe("a Claude turn with a pack agent (S11, S12)", () => {
 
     // Agents: build, plan, user/mine, acme/flows/ftd → Tab wraps to Build.
     await act(async () => screen!.mockInput.pressTab());
-    await settle(60);
+    await until(() => frameText().includes("Build ›"), "the agent switch to Build");
     await act(() => screen!.mockInput.typeText("again"));
     await act(async () => screen!.mockInput.pressEnter());
-    await settle(80);
+    await until(() => calls.length > 1, "the second turn's query");
+    await settle(30);
 
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options.resume).toBe("claude-1");
@@ -269,7 +280,7 @@ describe("a Claude turn with a pack agent whose hooks are enabled (S16)", () => 
     expect(calls[0]!.hooksAtCall).toEqual([OWN, false]);
     expect(existsSync(join(packPluginDir("acme/flows"), "hooks"))).toBe(false);
     // The view check is asynchronous: the warning reaches the screen a frame or two after the turn starts.
-    for (let waited = 0; !frameText().includes("no longer match what you approved") && waited < 2000; waited += 50) await settle(50);
+    await until(() => frameText().includes("no longer match what you approved"), "the hooks warning");
     expect(frameText()).toContain("no longer match what you approved");
   });
 
