@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 
 export const CommandKind = {
   DESTRUCTIVE: "destructive",
-  DELIVERY: "delivery",
+  /** A commit made in the checkout the session works in. */
+  COMMIT: "commit",
+  /** Reaches a remote: a push that is not destructive, `gh pr|issue` writes, `gh api` writes. */
+  REMOTE: "remote",
+  /** Leaves the branch the session works on: a switch or checkout, git run in another directory, a new worktree. */
+  LEAVING: "leaving",
   PUBLISH: "publish",
   PRIVILEGED: "privileged",
   /** Changes installed dependencies or the environment (npm install, pip install, brew upgrade). */
@@ -40,6 +45,9 @@ const SEPARATORS = new Set([";", "|", "&", "\n", "(", ")", "`"]);
 // Syntax words that can lead a segment (`then rm -rf x`, `{ git push; }`); the command follows them.
 const RESERVED_WORDS = new Set(["{", "}", "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done"]);
 const WRAPPERS = new Set(["sudo", "doas", "env", "command", "builtin", "nohup", "time", "nice", "exec", "xargs", "timeout", "caffeinate"]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// Variables that point git at another repository or working tree.
+const GIT_LOCATION_VARIABLE = /^GIT_(DIR|WORK_TREE)=/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh"]);
 // Commands whose arguments are data (search patterns, text), not actions.
 const TEXT_COMMANDS = new Set(["grep", "rg", "ag", "echo", "printf", "cat", "less", "head", "tail", "sed", "awk", "jq", "wc"]);
@@ -324,15 +332,17 @@ function envSplitString(rest: string[]): { script: string; consumed: number } | 
 
 /**
  * Strips leading reserved words, env assignments and wrapper commands (and their options, with the values they take); reports whether
- * sudo or doas was used. `env -S 'cmd args'` leaves the command line it splits as `script`.
+ * sudo or doas was used, and the assignments it stripped. `env -S 'cmd args'` leaves the command line it splits as `script`.
  */
-function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs: boolean; script?: string } {
+function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs: boolean; assignments: string[]; script?: string } {
   let rest = argv;
   let privileged = false;
   let viaXargs = false;
+  const assignments: string[] = [];
   while (rest.length > 0) {
     const head = rest[0]!;
-    if (RESERVED_WORDS.has(head) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
+    if (RESERVED_WORDS.has(head) || ASSIGNMENT.test(head)) {
+      if (ASSIGNMENT.test(head)) assignments.push(head);
       rest = rest.slice(1);
       continue;
     }
@@ -344,12 +354,12 @@ function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs
     // Skip the wrapper's options with their values, then the timeout duration.
     while (rest.length > 0 && rest[0]!.startsWith("-")) {
       const split = name === "env" ? envSplitString(rest) : undefined;
-      if (split) return { argv: [], privileged, viaXargs, script: [split.script, ...rest.slice(split.consumed)].join(" ") };
+      if (split) return { argv: [], privileged, viaXargs, assignments, script: [split.script, ...rest.slice(split.consumed)].join(" ") };
       rest = rest.slice(takesNextValue(name, rest[0]!) ? 2 : 1);
     }
     if (name === "timeout") rest = rest.slice(1);
   }
-  return { argv: rest, privileged, viaXargs };
+  return { argv: rest, privileged, viaXargs, assignments };
 }
 
 const hasShortFlag = (args: string[], letter: string) => args.some((a) => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
@@ -456,27 +466,51 @@ function classifyRm(args: string[], viaXargs: boolean): CommandMatch | undefined
   return { kind: CommandKind.DESTRUCTIVE, reason: `rm ${recursive ? "recursive" : "forced"} removal` };
 }
 
-/** Returns the git subcommand index, skipping global options such as -C <dir>. */
-function gitSubcommand(args: string[]): number {
+/**
+ * Reads git's global options: the subcommand index (-1 when there is none), and the first one that points git at another directory
+ * (`-C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`), as the text to show.
+ */
+function gitGlobals(args: string[]): { index: number; elsewhere?: string } {
+  let elsewhere: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "-C" || a === "-c" || a === "--git-dir" || a === "--work-tree" || a === "--namespace") {
+    if (a === "-C" || a === "--git-dir" || a === "--work-tree") {
+      elsewhere ??= `${a} ${args[i + 1] ?? ""}`.trim();
       i++;
-      continue;
+    } else if (a.startsWith("--git-dir=") || a.startsWith("--work-tree=")) {
+      elsewhere ??= a;
+    } else if (a === "-c" || a === "--config-env") {
+      if (/^core\.worktree=/i.test(args[i + 1] ?? "")) elsewhere ??= `${a} ${args[i + 1]}`;
+      i++;
+    } else if (/^--config-env=core\.worktree=/i.test(a)) {
+      elsewhere ??= a;
+    } else if (a === "--namespace" || a === "--super-prefix") {
+      i++;
+    } else if (!a.startsWith("-")) {
+      return { index: i, elsewhere };
     }
-    if (a.startsWith("-")) continue;
-    return i;
   }
-  return -1;
+  return { index: -1, elsewhere };
 }
 
-function classifyGit(args: string[]): CommandMatch | undefined {
-  const index = gitSubcommand(args);
-  if (index === -1) return undefined;
+/**
+ * What a git command does. Run in another directory (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`) it leaves the branch the session
+ * works on, whatever the subcommand: a commit there is that, not a local commit.
+ */
+function classifyGit(args: string[], assignments: string[]): CommandMatch[] {
+  const { index, elsewhere: viaOptions } = gitGlobals(args);
+  if (index === -1) return [];
   const sub = args[index]!;
-  const rest = args.slice(index + 1);
+  const found = classifyGitSubcommand(sub, args.slice(index + 1));
+  const elsewhere = viaOptions ?? assignments.find((a) => GIT_LOCATION_VARIABLE.test(a));
+  if (!elsewhere) return found ? [found] : [];
+  const away: CommandMatch = { kind: CommandKind.LEAVING, reason: `git ${sub} elsewhere (${elsewhere})` };
+  return found && found.kind !== CommandKind.COMMIT && found.kind !== CommandKind.LEAVING ? [found, away] : [away];
+}
+
+function classifyGitSubcommand(sub: string, rest: string[]): CommandMatch | undefined {
   const destructive = (reason: string): CommandMatch => ({ kind: CommandKind.DESTRUCTIVE, reason: `git ${reason}` });
-  const delivery = (reason: string): CommandMatch => ({ kind: CommandKind.DELIVERY, reason: `git ${reason}` });
+  const leaving = (reason: string): CommandMatch => ({ kind: CommandKind.LEAVING, reason: `git ${reason}` });
 
   switch (sub) {
     case "reset":
@@ -487,14 +521,14 @@ function classifyGit(args: string[]): CommandMatch | undefined {
         : undefined;
     case "checkout":
       if (hasAny(rest, "--", ".", "-f", "--force")) return destructive("checkout discards changes");
-      return rest.length > 0 ? delivery("checkout") : undefined;
+      return rest.length > 0 ? leaving("checkout") : undefined;
     case "restore": {
       const onlyStaged = hasAny(rest, "--staged", "-S") && !hasAny(rest, "--worktree", "-W");
       return onlyStaged ? undefined : destructive("restore discards working-tree changes");
     }
     case "switch":
       if (hasAny(rest, "--discard-changes", "-f", "--force")) return destructive("switch discards changes");
-      return rest.length > 0 ? delivery("switch") : undefined;
+      return rest.length > 0 ? leaving("switch") : undefined;
     case "branch": {
       if (hasAny(rest, "-D") || (hasAny(rest, "--delete", "-d") && hasAny(rest, "--force", "-f"))) return destructive("branch force-delete");
       // One name renames the current branch, which may be main or master.
@@ -523,14 +557,15 @@ function classifyGit(args: string[]): CommandMatch | undefined {
     case "update-ref":
       return destructive(hasAny(rest, "-d") ? "update-ref delete" : "update-ref rewrites a ref");
     case "worktree":
+      if (rest[0] === "add" || rest[0] === "move") return leaving(`worktree ${rest[0]}`);
       return rest[0] === "remove" && hasAny(rest, "-f", "--force") ? destructive("worktree force-remove") : undefined;
     case "push": {
       const forced = hasAny(rest, "--force", "-f", "--force-with-lease", "--mirror", "--delete", "-d", "--prune");
       const forcedRefspec = rest.some((a) => !a.startsWith("-") && (a.startsWith("+") || a.startsWith(":")));
-      return forced || forcedRefspec ? destructive("push rewrites or deletes remote refs") : delivery("push");
+      return forced || forcedRefspec ? destructive("push rewrites or deletes remote refs") : { kind: CommandKind.REMOTE, reason: "git push" };
     }
     case "commit":
-      return delivery(hasAny(rest, "--amend") ? "commit --amend" : "commit");
+      return { kind: CommandKind.COMMIT, reason: hasAny(rest, "--amend") ? "git commit --amend" : "git commit" };
     default:
       return undefined;
   }
@@ -569,7 +604,7 @@ function classifyGh(args: string[]): CommandMatch | undefined {
     return { kind: CommandKind.PUBLISH, reason: `gh ${group} ${action}` };
   }
   if ((group === "pr" || group === "issue") && ["create", "comment", "review", "edit", "close", "reopen"].includes(action ?? "")) {
-    return { kind: CommandKind.DELIVERY, reason: `gh ${group} ${action}` };
+    return { kind: CommandKind.REMOTE, reason: `gh ${group} ${action}` };
   }
   if (group === "api") {
     const all = args.slice(args.indexOf("api") + 1);
@@ -580,7 +615,7 @@ function classifyGh(args: string[]): CommandMatch | undefined {
     if (!writes) return undefined;
     const merge = GH_API_MERGES.find(([pattern]) => all.some((a) => pattern.test(a)));
     if (merge) return { kind: CommandKind.PUBLISH, reason: merge[1] };
-    return { kind: CommandKind.DELIVERY, reason: method && method !== "GET" ? `gh api ${method}` : "gh api write (POST)" };
+    return { kind: CommandKind.REMOTE, reason: method && method !== "GET" ? `gh api ${method}` : "gh api write (POST)" };
   }
   return undefined;
 }
@@ -594,7 +629,7 @@ const SQL_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 function classifySegment(rawArgv: string[], before: string, depth: number): CommandAnalysis {
-  const { argv, privileged, viaXargs, script: splitScript } = unwrap(rawArgv);
+  const { argv, privileged, viaXargs, assignments, script: splitScript } = unwrap(rawArgv);
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
   if (privileged) matches.push({ kind: CommandKind.PRIVILEGED, reason: "elevated privileges (sudo)" });
@@ -603,6 +638,10 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
     matches.push(...nested.matches);
     writes.push(...nested.writes);
   }
+  // `GIT_DIR=… ` on its own, or `export GIT_DIR=…`, points the git commands that follow at another repository.
+  const location = argv.length === 0 ? assignments : basename(argv[0] ?? "") === "export" ? argv.slice(1) : [];
+  const moved = location.find((a) => GIT_LOCATION_VARIABLE.test(a));
+  if (moved) matches.push({ kind: CommandKind.LEAVING, reason: `git pointed elsewhere (${moved})` });
   if (argv.length === 0) return { matches, writes };
 
   const name = basename(argv[0]!);
@@ -629,7 +668,7 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
       match = classifyRm(args, viaXargs);
       break;
     case "git":
-      match = classifyGit(args);
+      matches.push(...classifyGit(args, assignments));
       break;
     case "gh":
       match = classifyGh(args);

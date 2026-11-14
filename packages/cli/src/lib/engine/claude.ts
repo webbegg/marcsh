@@ -2,7 +2,8 @@ import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
-import { decideApproval, isFixedGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { type BranchSource, type BranchState, branchState } from "../git-branch";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
@@ -53,8 +54,8 @@ function policyCall(toolName: string, input: Record<string, unknown>): ToolCall 
  *
  * With an approval mode, the session's policy decides next, except for asks Claude forces itself (the user's ask rules, `defaultToNo`,
  * a blocked path): those always ask, though a catastrophic command is still denied. The mode never turns an ask into an always-allow rule: a
- * policy ask suppresses it, and so does a branch-guard ask the mode must not skip (merge, publish: only delivery asks are skipped).
- * The guard's ask arrives as the hook's `decisionReason`.
+ * policy ask suppresses it, and so does any branch-guard ask (push, PR, merge, publish): no mode skips one. The guard's ask arrives as the
+ * hook's `decisionReason`. The branch is read for every call: auto and yolo count only on a feature branch.
  *
  * With `pathRules`, a `Bash` call covered by a stored folder rule ("allow `rm` under /tmp/x") runs without asking, in every mode and also past a
  * floor ask, but never past the catastrophic block or for a forced ask; an ask for a path command offers to store one.
@@ -62,7 +63,7 @@ function policyCall(toolName: string, input: Record<string, unknown>): ToolCall 
 export function createCanUseTool(
   host: TurnHost,
   deniedTools: readonly Group[] | undefined,
-  policy?: { approvalMode: ApprovalMode; cwd: string; pathRules?: PathRuleStore },
+  policy?: { approvalMode: ApprovalMode; cwd: string; pathRules?: PathRuleStore; branchOf?: (cwd: string) => BranchState },
 ): CanUseTool {
   return async (toolName, input, options) => {
     if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
@@ -75,10 +76,10 @@ export function createCanUseTool(
 
     const forced = options.matchedAskRule || options.defaultToNo || options.blockedPath;
     // A forced ask is never auto-allowed, but the catastrophic block still applies to it (read as the policy of normal mode).
-    const verdict = policy ? decideApproval(forced ? "normal" : policy.approvalMode, policyCall(toolName, input), policy.cwd) : undefined;
+    const verdict = policy ? decideApproval(forced ? "normal" : policy.approvalMode, policyCall(toolName, input), policy.cwd, () => (policy.branchOf ?? branchState)(policy.cwd)) : undefined;
     if (verdict?.action === "block") return { behavior: "deny", message: verdict.reason };
-    // The guard's ask for a merge or publish is never skipped: the ask stays, and cannot be always-allowed.
-    const guardFloor = verdict?.action === "allow" && isFixedGuardAsk(options.decisionReason);
+    // The guard's ask is never skipped by a mode: the ask stays, and cannot be always-allowed.
+    const guardFloor = verdict?.action === "allow" && isGuardAsk(options.decisionReason);
     if (verdict?.action === "allow" && !guardFloor) return { behavior: "allow", updatedInput: input };
     const floor = !forced && verdict?.action === "ask" ? verdict : undefined;
     const noAlways = floor !== undefined || guardFloor;
@@ -120,19 +121,22 @@ export function claudeQueryOptions({
   model,
   systemPromptAppend,
   approvalMode,
+  branch,
   deniedTools,
   resumeRef,
   abortController,
   canUseTool,
   plugins,
 }: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "resumeRef"> & {
+  /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
+  branch?: BranchSource;
   abortController: AbortController;
   canUseTool: CanUseTool;
   plugins: readonly string[];
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
   // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
-  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode);
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, branch ?? (() => branchState(cwd)));
   return {
     cwd,
     model,

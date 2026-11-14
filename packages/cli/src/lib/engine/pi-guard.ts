@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { decide, type BranchInfo, type Decision } from "../../../plugin/hooks/guard-lib";
+import { git, gitSucceeds, originDefaultBranch } from "../git-branch";
 import type { ToolSource } from "./pi-permissions";
 
 export type { Decision };
@@ -7,33 +8,14 @@ export type { Decision };
 /** The branch/ship guard's verdict for a shell command run in `cwd`; null = no decision. */
 export type Guard = (command: string, cwd: string) => Decision | null;
 
-// plugin/hooks/guard.ts is the Claude hook: it reads stdin when loaded, so its git lookup cannot be imported and is repeated here.
-function git(cwd: string, ...args: string[]): string | null {
-  try {
-    const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 5000 });
-    if (result.exitCode !== 0) return null;
-    return result.stdout.toString().trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function gitSucceeds(cwd: string, ...args: string[]): boolean {
-  try {
-    return Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 5000 }).exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
+// plugin/hooks/guard.ts is the Claude hook: it reads stdin when loaded, so its branch lookup cannot be imported and is repeated here (on the shared git helpers).
 function lookupBranch(cwd: string, dir: string | null): BranchInfo | null {
   const where = dir ? resolve(cwd, dir) : cwd;
   const branch = git(where, "symbolic-ref", "--short", "HEAD");
   if (!branch) return null;
-  const origin = git(where, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
   return {
     branch,
-    defaultBranch: origin ? origin.replace(/^origin\//, "") : null,
+    defaultBranch: originDefaultBranch(where),
     isLocalBranch: (name) => gitSucceeds(where, "show-ref", "--verify", "--quiet", `refs/heads/${name}`),
   };
 }

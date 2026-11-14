@@ -15,6 +15,7 @@ import {
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
+import { branchState } from "../../lib/git-branch";
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { Command, CommandContext } from "./types";
 
@@ -173,7 +174,7 @@ export const COMMANDS: Command[] = [
       switch (command.kind) {
         case "set":
           ctx.setApprovalMode(command.mode);
-          ctx.toast.show({ variant: "success", message: sessionModeMessage(command.mode) });
+          ctx.toast.show({ variant: "success", message: sessionModeMessage(command.mode, branchState(ctx.cwd)) });
           return;
         case "default":
           ctx.setDefaultApprovalMode(command.mode);
@@ -189,6 +190,7 @@ export const COMMANDS: Command[] = [
               <PermissionsDialogContent
                 currentMode={ctx.approvalMode}
                 defaultMode={ctx.defaultApprovalMode}
+                cwd={ctx.cwd}
                 onSelectMode={ctx.setApprovalMode}
                 onSelectDefault={ctx.setDefaultApprovalMode}
               />

@@ -6,12 +6,13 @@ import { useToast } from "../../providers/toast";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { APPROVAL_MODES, type ApprovalMode } from "../../lib/approval-policy";
+import { branchState } from "../../lib/git-branch";
 import { defaultModeMessage, sessionModeMessage } from "../command-menu/permissions-command";
 
 export const MODE_DESCRIPTIONS: Record<ApprovalMode, string> = {
   normal: "asks before edits and commands, as before",
-  auto: "edits in the project and ordinary commands run; commits, pushes and PRs ask",
-  yolo: "commits, pushes and PRs run too; destructive, publish, sudo and installs still ask",
+  auto: "on a feature branch: edits and ordinary commands run; commits and remote actions ask",
+  yolo: "on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask",
 };
 
 type Row = { kind: "mode"; mode: ApprovalMode } | { kind: "default"; mode: ApprovalMode };
@@ -20,6 +21,8 @@ type PermissionsDialogContentProps = {
   currentMode: ApprovalMode;
   /** The mode saved for new sessions. */
   defaultMode: ApprovalMode;
+  /** The folder the session works in: auto and yolo are paused when it is not on a feature branch, and the toast says so. */
+  cwd: string;
   onSelectMode: (mode: ApprovalMode) => void;
   onSelectDefault: (mode: ApprovalMode) => void;
 };
@@ -27,6 +30,7 @@ type PermissionsDialogContentProps = {
 export const PermissionsDialogContent = ({
   currentMode,
   defaultMode,
+  cwd,
   onSelectMode,
   onSelectDefault,
 }: PermissionsDialogContentProps) => {
@@ -45,14 +49,14 @@ export const PermissionsDialogContent = ({
     (row: Row) => {
       if (row.kind === "mode") {
         onSelectMode(row.mode);
-        toast.show({ variant: "success", message: sessionModeMessage(row.mode) });
+        toast.show({ variant: "success", message: sessionModeMessage(row.mode, branchState(cwd)) });
       } else {
         onSelectDefault(row.mode);
         toast.show({ variant: "success", message: defaultModeMessage(row.mode) });
       }
       dialog.close();
     },
-    [dialog, toast, onSelectMode, onSelectDefault],
+    [dialog, toast, cwd, onSelectMode, onSelectDefault],
   );
 
   useKeyboard((key) => {

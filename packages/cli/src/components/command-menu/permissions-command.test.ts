@@ -1,6 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { APPROVAL_MODES } from "../../lib/approval-policy";
-import { PERMISSIONS_USAGE, parsePermissionsCommand } from "./permissions-command";
+import { PERMISSIONS_USAGE, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
+
+describe("sessionModeMessage", () => {
+  const feature = { kind: "feature", branch: "feat/x" } as const;
+
+  test("keeps the existing toast when the mode is normal or the folder is on a feature branch", () => {
+    expect(sessionModeMessage("normal")).toBe("Approval mode: normal for this session");
+    expect(sessionModeMessage("normal", { kind: "default", branch: "main" })).toBe("Approval mode: normal for this session");
+    expect(sessionModeMessage("auto", feature)).toBe("Approval mode: auto for this session");
+    expect(sessionModeMessage("yolo", feature)).toBe("Approval mode: yolo for this session");
+  });
+
+  test("says auto and yolo are paused off a feature branch, with the reason", () => {
+    expect(sessionModeMessage("yolo", { kind: "default", branch: "main" })).toBe(
+      "Approval mode: yolo for this session. yolo is paused here: on the default branch main. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree.",
+    );
+    expect(sessionModeMessage("auto", { kind: "none", reason: "detached HEAD" })).toContain("auto is paused here: detached HEAD.");
+    expect(sessionModeMessage("auto", { kind: "none", reason: "not a git repository" })).toContain("auto is paused here: not a git repository.");
+  });
+});
 
 describe("parsePermissionsCommand", () => {
   test("no argument opens the dialog", () => {

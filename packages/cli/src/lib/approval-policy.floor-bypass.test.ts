@@ -7,7 +7,9 @@ import { type ApprovalMode, decideApproval } from "./approval-policy";
 const cwd = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-floor-")));
 mkdirSync(join(cwd, ".git", "hooks"), { recursive: true });
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
-const shell = (mode: ApprovalMode, command: string) => decideApproval(mode, { kind: "shell", command }, cwd).action;
+// The modes are about a feature branch: auto and yolo are paused elsewhere.
+const feature = { kind: "feature", branch: "feat/x" } as const;
+const shell = (mode: ApprovalMode, command: string) => decideApproval(mode, { kind: "shell", command }, cwd, feature).action;
 
 describe("a merge through gh api is a merge", () => {
   test("merging a PR, a branch or moving a branch remotely asks in yolo", () => {
@@ -24,8 +26,8 @@ describe("a merge through gh api is a merge", () => {
     }
   });
 
-  test("other gh api writes stay delivery, reads stay ordinary", () => {
-    expect(shell("yolo", "gh api -X POST repos/o/r/issues/1/comments -f body=x")).toBe("allow");
+  test("other gh api writes are remote and ask, reads stay ordinary", () => {
+    expect(shell("yolo", "gh api -X POST repos/o/r/issues/1/comments -f body=x")).toBe("ask");
     expect(shell("yolo", "gh api repos/o/r/pulls/1")).toBe("allow");
   });
 
@@ -44,7 +46,7 @@ describe("the floor reads combined short options", () => {
   test("gh api --method=PUT and -X PUT ask in auto, -XDELETE in yolo", () => {
     for (const command of ["gh api --method=PUT repos/o/r/x", "gh api -X PUT repos/o/r/x", "gh api -XPOST repos/o/r/x"]) expect(shell("auto", command)).toBe("ask");
     expect(shell("yolo", "gh api -XDELETE repos/o/r/x")).toBe("ask");
-    expect(shell("yolo", "gh api -XPUT repos/o/r/x")).toBe("allow");
+    expect(shell("yolo", "gh api -XPUT repos/o/r/x")).toBe("ask");
   });
   test("grouped -d, -D, -f and -n in git branch, clean and push", () => {
     expect(shell("yolo", "git push -df origin feat")).toBe("ask");
@@ -53,8 +55,8 @@ describe("the floor reads combined short options", () => {
     expect(shell("yolo", "git clean -fdx")).toBe("ask");
     expect(shell("yolo", "git clean -fdn")).toBe("allow");
   });
-  test("a plain push is still delivery", () => {
-    expect(shell("yolo", "git push -u origin feat")).toBe("allow");
+  test("a plain push is remote: it asks in both modes", () => {
+    expect(shell("yolo", "git push -u origin feat")).toBe("ask");
     expect(shell("auto", "git push -u origin feat")).toBe("ask");
   });
 });
@@ -95,7 +97,7 @@ describe("wrapper options that take a value do not hide the command", () => {
     }
   });
   test("sudo -u bob is privileged and sees the wrapped command", () => {
-    const verdict = decideApproval("yolo", { kind: "shell", command: "sudo -u bob rm -rf dir" }, cwd);
+    const verdict = decideApproval("yolo", { kind: "shell", command: "sudo -u bob rm -rf dir" }, cwd, feature);
     expect(verdict.action).toBe("ask");
     const reason = verdict.action === "ask" ? verdict.reason : "";
     expect(reason).toContain("elevated privileges");

@@ -20,7 +20,7 @@ function setup(approvalMode: ApprovalMode, answer: PermissionDecision = "allow",
       return answer;
     },
   } as unknown as TurnHost;
-  const canUseTool = createCanUseTool(host, undefined, { approvalMode, cwd, ...(withStore ? { pathRules: storage } : {}) });
+  const canUseTool = createCanUseTool(host, undefined, { approvalMode, cwd, branchOf: () => ({ kind: "feature", branch: "feat/x" }), ...(withStore ? { pathRules: storage } : {}) });
   const call = (toolName: string, input: Record<string, unknown>, extra: CallOptions = {}) =>
     canUseTool(toolName, input, { signal: new AbortController().signal, toolUseID: "tool-1", requestId: "req-1", ...extra });
   const bash = (command: string, extra: CallOptions = {}) => call("Bash", { command }, extra);

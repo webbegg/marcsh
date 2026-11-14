@@ -1,4 +1,5 @@
 import { approvalModeLine, type ApprovalMode } from "../approval-policy";
+import { type BranchSource, resolveBranch } from "../git-branch";
 import type { AskQuestion } from "../ask-user-question";
 import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
@@ -82,9 +83,12 @@ export type TurnRequest = {
   signal: AbortSignal;
 };
 
-/** The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent. */
-export function systemPromptWithMode(agentPrompt: string | undefined, approvalMode: ApprovalMode | undefined): string | undefined {
-  const line = approvalMode ? approvalModeLine(approvalMode) : undefined;
+/**
+ * The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent.
+ * The line says whether auto and yolo are active or paused on `branch`; it is read only when there is a mode to describe.
+ */
+export function systemPromptWithMode(agentPrompt: string | undefined, approvalMode: ApprovalMode | undefined, branch: BranchSource): string | undefined {
+  const line = approvalMode && approvalMode !== "normal" ? approvalModeLine(approvalMode, resolveBranch(branch)) : undefined;
   return [agentPrompt, line].filter(Boolean).join("\n\n") || undefined;
 }
 

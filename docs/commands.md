@@ -144,16 +144,17 @@ Choose how much runs without asking.
 
 - `/permissions` opens "Permissions" with three rows. The current mode has a bullet.
   - `normal`: asks before edits and commands, as before.
-  - `auto`: edits in the project and ordinary commands run; commits, pushes and PRs ask.
-  - `yolo`: commits, pushes and PRs run too; destructive, publish, sudo and installs still ask.
+  - `auto`: on a feature branch: edits and ordinary commands run; commits and remote actions ask.
+  - `yolo`: on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask.
 - Choose one to set the mode of the current app session. marcsh shows "Approval mode: auto for this session". Every session starts in `normal` unless you saved a default.
+- `auto` and `yolo` work only when the folder is on a feature branch (not the default branch). Anywhere else, on the default branch, on a detached HEAD or outside a git repository, the mode is paused and marcsh asks as in `normal`. The toast then adds, for example, "yolo is paused here: on the default branch main. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree." The mode stays set and starts working when the folder is on a feature branch. marcsh checks the branch on every tool call.
 - When the current mode is not the saved default, the dialog has one more row, "Use auto for new sessions" (with the current mode's name). It saves the current mode.
 - `/permissions auto` sets the mode without the dialog. `/permissions default auto` saves the default for new sessions without changing this one. marcsh shows "New sessions will start in auto mode".
 - A word that is not a mode shows `Usage: /permissions [normal|auto|yolo | default <normal|auto|yolo>]`.
 - The status line shows `auto` or `yolo` after the engine name. It shows nothing in `normal`.
 - The mode is separate from the agent. `Tab` still switches agents, and Plan stays read-only in every mode.
 
-See [Security](security.md#permission-modes) for what each mode runs, what always asks and what is blocked.
+See [Security](security.md#permission-modes) for the feature branch rule, what each mode runs, what always asks and what is blocked.
 
 ### /sessions
 

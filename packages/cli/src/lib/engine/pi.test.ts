@@ -2227,8 +2227,15 @@ export default function (pi) {
   });
 });
 
-describe("pi engine approval modes (S5, S7, S9)", () => {
+describe("pi engine approval modes (S5, S7, S9, S13)", () => {
   const made = () => join(cwd, "made.txt");
+  const feature = { kind: "feature", branch: "feat/x" } as const;
+  // Auto and yolo relax only on a feature branch: the project is a real repository on one.
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  };
+  beforeEach(() => git("init", "-q", "-b", "feat/x"));
   const taskCall = (description: string, prompt: string) =>
     fauxAssistantMessage([fauxToolCall("Task", { description, prompt }, { id: "task-1" })], { stopReason: "toolUse" });
   const systemOf = (messages: Message[]) => {
@@ -2303,9 +2310,35 @@ describe("pi engine approval modes (S5, S7, S9)", () => {
 
       await runTurn(engine, model, { approvalMode, systemPromptAppend: "You are the FTD agent." });
 
-      const line = approvalModeLine(approvalMode)!;
+      const line = approvalModeLine(approvalMode, feature)!;
+      expect(line).toContain("on feature branch feat/x");
       expect(prompts[0]).toContain(`<addendum>\nYou are the FTD agent.\n\n${line}\n</addendum>`);
     }
+  });
+
+  test("off a feature branch the line says the mode is paused, and the call asks as in normal", async () => {
+    git("symbolic-ref", "HEAD", "refs/heads/main");
+    const { prompts, step } = promptOf();
+    const { engine, model } = await setup([step]);
+    await runTurn(engine, model, { approvalMode: "yolo" });
+    expect(prompts[0]).toContain(`<addendum>\n${approvalModeLine("yolo", { kind: "default", branch: "main" })}\n</addendum>`);
+    expect(prompts[0]).toContain("Approval mode YOLO is paused: this folder is not on a feature branch (on the default branch main)");
+
+    const second = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+    await runTurn(second.engine, second.model, { approvalMode: "yolo" }, host);
+    expect(asks).toEqual([{ toolName: "bash", input: { command: `echo hi > ${made()}` } }]);
+    expect(existsSync(made())).toBe(false);
+  });
+
+  test("yolo asks for a push, without always-allow", async () => {
+    const { engine, model } = await setup([bashCall("git push origin feat/x"), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, { approvalMode: "yolo" }, host);
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ toolName: "bash", suppressAlwaysAllowRule: true });
   });
 
   test("the mode line alone is appended when there is no agent prompt", async () => {
@@ -2314,7 +2347,7 @@ describe("pi engine approval modes (S5, S7, S9)", () => {
 
     await runTurn(engine, model, { approvalMode: "yolo" });
 
-    expect(prompts[0]).toContain(`<addendum>\n${approvalModeLine("yolo")}\n</addendum>`);
+    expect(prompts[0]).toContain(`<addendum>\n${approvalModeLine("yolo", feature)}\n</addendum>`);
   });
 
   test("normal mode adds no mode line", async () => {

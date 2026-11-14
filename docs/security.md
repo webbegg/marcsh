@@ -63,10 +63,24 @@ The permission mode sets how much runs without a prompt. It applies to both engi
 | Mode | Runs without asking | Still asks |
 | --- | --- | --- |
 | `normal` | Reads, as before | Everything else, as described above. Nothing changes. |
-| `auto` | File edits inside the project and ordinary shell commands | Commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, branch switches, and the list below |
-| `yolo` | Everything `auto` runs, plus commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, and branch switches | The list below |
+| `auto` | On a feature branch: file edits inside the project and ordinary shell commands | Commits, anything remote, leaving the branch, and the list below |
+| `yolo` | On a feature branch: everything `auto` runs, plus local commits | Anything remote, leaving the branch, and the list below |
 
 `normal` is the mode every session starts in, unless you saved another one as the default.
+
+#### The feature branch sandbox
+
+`auto` and `yolo` relax only while the folder marcsh works in is on a feature branch. That is any branch except the default one: the branch `origin` points at, or `main` or `master` when that is unknown. marcsh reads the branch again for every tool call.
+
+When the folder is on the default branch, on a detached HEAD, not a git repository, or marcsh cannot read the branch, the mode is paused. marcsh then asks exactly as in `normal`. Each prompt is your way to allow that one action. The agent is told the mode is paused and that it should start its work on a feature branch, preferably in a git worktree. A git lookup that fails never loosens anything.
+
+A worktree gives each feature its own folder and branch. Start one with `git worktree add ../<repo>-worktrees/<slug> -b <type>/<slug>` (marcsh asks first), then open marcsh in that folder. A session stays in the folder it was opened in.
+
+On a feature branch:
+
+- Local commits: `auto` asks, `yolo` runs them.
+- Anything remote always asks, in both modes: any `git push`, `gh pr` and `gh issue` writes (`create`, `comment`, `review`, `edit`, `close`, `reopen`), and `gh api` writes.
+- Anything that leaves the branch always asks, in both modes: `git switch` and `git checkout` of a branch (also with `-c` or `-b`), git run in another directory (`git -C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`, or `GIT_DIR=` and `GIT_WORK_TREE=` set on the command), and `git worktree add` or `move`. A commit made in another directory counts as leaving the branch, not as a local commit.
 
 In every mode, these always ask. In `normal` the prompt is the one you already know, with "always allow" where it is offered today. In `auto` and `yolo` the prompt never offers "always allow" for them:
 
@@ -83,13 +97,14 @@ The worst commands are blocked, not asked: `rm -rf ~`, `rm -rf /`, `mkfs` and `d
 Some rules do not change with the mode:
 
 - A commit on the default branch stays blocked in `auto` and `yolo`, as in [Git guard](#git-guard).
-- The git guard's questions about a merge (`gh pr merge`) or a publish (`npm`, `pnpm`, `yarn` or `bun` `publish`) are never skipped by a mode, and never offer "always allow". Only its questions for `git push` and `gh pr create` are skipped in `yolo`.
+- The git guard's questions (`git push`, `gh pr create`, `gh pr merge`, `npm`, `pnpm`, `yarn` or `bun` `publish`) are never skipped by a mode, and never offer "always allow".
+- Folder rules ("allow `rm` under …", below) do not depend on the mode or the branch.
 - In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..` and paths with variables still ask.
 - On Claude, a request that your Claude settings say to ask about, and a request Claude flags as risky or protected, keeps asking.
 
 The agent is told the mode, so it runs what the mode allows instead of asking you in chat first. The Plan agent is not told: it stays read-only in every mode.
 
-The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. Use `yolo` only in a project you can afford to lose work in.
+The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. The branch limits what the modes relax, but it does not contain what a command does inside your folder. Use `yolo` only in a project you can afford to lose work in.
 
 ### Allow similar commands under a folder
 
@@ -189,7 +204,7 @@ The `marcsh` command starts Bun so that it does **not** read a `.env` file or a 
 - **MCP servers you configure.** An MCP server is a program that runs with your permissions. Its tools ask like any other tool, but marcsh cannot tell you what the server does inside.
 - **A trusted project that you changed yourself.** Trust follows the files you reviewed. If you review carelessly, marcsh cannot help.
 - **The git guard on indirect commands.** It reads the command text. It cannot see what a script does.
-- **The permission modes.** In `auto` and `yolo`, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox.
+- **The permission modes.** In `auto` and `yolo`, on a feature branch, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox, and a branch is not a container: a command can still change files in your folder.
 - **Your data going to the model provider.** What you and the model read and write is sent to the provider of the model you use.
 - **Other software on your computer.** marcsh does not defend against a program that already runs as you.
 

@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ApprovalMode } from "../approval-policy";
+import { type BranchState } from "../git-branch";
 import { openStorage } from "../storage";
 import type { Guard } from "./pi-guard";
 import { createApprovalHandler, DENIED_REASON, PLAN_MODE_REASON, type ToolSource } from "./pi-permissions";
@@ -10,6 +11,12 @@ import type { PermissionAsk, PermissionDecision } from "./types";
 
 const cwd = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-pi-approval-")));
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
+
+// Auto and yolo relax only on a feature branch: these tests inject one, and the ones about the pause inject another state.
+const feature: BranchState = { kind: "feature", branch: "feat/x" };
+const onMain: BranchState = { kind: "default", branch: "main" };
+const detached: BranchState = { kind: "none", reason: "detached HEAD" };
+const noRepo: BranchState = { kind: "none", reason: "not a git repository" };
 
 const builtin = (name: string): ToolSource => ({ name, sourceInfo: { path: `builtin:${name}` } });
 const extension = (name: string): ToolSource => ({ name, sourceInfo: { path: `/agent/extensions/${name}.ts` } });
@@ -22,7 +29,14 @@ const guardDeniesCommit: Guard = (command) =>
 
 function setup(
   approvalMode: ApprovalMode | undefined,
-  { decision = "allow", guard = noGuard, tools = piTools, planMode }: { decision?: PermissionDecision; guard?: Guard; tools?: ToolSource[]; planMode?: boolean } = {},
+  {
+    decision = "allow",
+    guard = noGuard,
+    tools = piTools,
+    planMode,
+    branch = feature,
+    folder = cwd,
+  }: { decision?: PermissionDecision; guard?: Guard; tools?: ToolSource[]; planMode?: boolean; branch?: BranchState | null; folder?: string } = {},
 ) {
   const storage = openStorage(":memory:");
   const lookups: unknown[] = [];
@@ -32,13 +46,15 @@ function setup(
   };
   const asks: PermissionAsk[] = [];
   const handler = createApprovalHandler({
-    cwd,
+    cwd: folder,
     rules,
     signal: new AbortController().signal,
     tools: () => tools,
     guard,
     planMode,
     approvalMode,
+    // null = the engine's own lookup (a real git call in `folder`).
+    ...(branch ? { branchOf: () => branch } : {}),
     host: {
       askPermission: async (ask) => {
         asks.push(ask);
@@ -128,12 +144,46 @@ describe("auto mode", () => {
 });
 
 describe("yolo mode", () => {
-  test("git push runs without asking even when the guard says ask", async () => {
+  test("a local commit runs without asking or looking up rules; auto asks for it", async () => {
+    const yolo = setup("yolo");
+    expect(await yolo.bash("git commit -m x")).toBeUndefined();
+    expect(yolo.asks).toEqual([]);
+    expect(yolo.lookups).toEqual([]);
+
+    const auto = setup("auto");
+    await auto.bash("git commit -m x");
+    expect(auto.asks).toEqual([
+      { toolName: "bash", input: { command: "git commit -m x" }, decisionReason: expect.stringContaining("git commit"), suppressAlwaysAllowRule: true },
+    ]);
+  });
+
+  test("anything remote and leaving the branch asks, without always-allow", async () => {
+    const commands = [
+      "git push",
+      "git push -u origin feat/x",
+      "gh pr create --fill",
+      "gh api -X POST repos/o/r/issues/1/comments -f body=x",
+      "git switch main",
+      "git checkout -b other",
+      "git -C ../other commit -m x",
+      "GIT_DIR=../o/.git git commit -m x",
+      "git worktree add ../w -b x",
+    ];
+    const { bash, asks } = setup("yolo", { decision: "always" });
+
+    for (const command of commands) expect(await bash(command)).toBeUndefined();
+
+    expect(asks.map((ask) => (ask.input as { command: string }).command)).toEqual(commands);
+    expect(asks.every((ask) => ask.suppressAlwaysAllowRule === true && ask.decisionReason !== undefined)).toBe(true);
+  });
+
+  test("a guard ask for a push is never skipped: it asks with the guard's reason and no always-allow", async () => {
     const { bash, asks, lookups } = setup("yolo", { guard: guardAsks });
 
     expect(await bash("git push origin feat/x")).toBeUndefined();
 
-    expect(asks).toEqual([]);
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ toolName: "bash", suppressAlwaysAllowRule: true });
     expect(lookups).toEqual([]);
   });
 
@@ -167,6 +217,7 @@ describe("yolo mode", () => {
       signal: controller.signal,
       tools: () => piTools,
       approvalMode: "yolo",
+      branchOf: () => feature,
       host: {
         askPermission: async () => {
           controller.abort();
@@ -185,6 +236,7 @@ describe("yolo mode", () => {
       signal: new AbortController().signal,
       tools: () => piTools,
       approvalMode: "yolo",
+      branchOf: () => feature,
       host: {
         askPermission: async () => {
           throw new Error("closed");
@@ -281,9 +333,122 @@ describe("a publish the guard asks about is never loosened by the mode", () => {
     expect(asks[0]).toMatchObject({ decisionReason: "marcsh: gh pr merge needs your approval", suppressAlwaysAllowRule: true });
   });
 
-  test("a push the guard asks about still runs in yolo", async () => {
-    const { bash, asks } = setup("yolo", { guard: guardAsks });
+  test("a push the guard asks about asks in yolo too, with no always-allow", async () => {
+    const guardAsksPush: Guard = (command) => (/git push/.test(command) ? { decision: "ask", reason: "marcsh: git push needs your approval" } : null);
+    const { bash, asks } = setup("yolo", { guard: guardAsksPush });
     expect(await bash("git push origin feat")).toBeUndefined();
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ decisionReason: expect.stringContaining("git push"), suppressAlwaysAllowRule: true });
+  });
+
+  test("a guard ask on a command the policy would allow asks in auto and yolo", async () => {
+    const guardAsksAnything: Guard = () => ({ decision: "ask", reason: "marcsh: gh pr create needs your approval" });
+    for (const mode of ["auto", "yolo"] as const) {
+      const { bash, asks } = setup(mode, { guard: guardAsksAnything });
+      expect(await bash("ls")).toBeUndefined();
+      expect(asks).toEqual([{ toolName: "bash", input: { command: "ls" }, decisionReason: "marcsh: gh pr create needs your approval", suppressAlwaysAllowRule: true }]);
+    }
+  });
+});
+
+describe("auto and yolo are paused off a feature branch", () => {
+  test("on the default branch, a detached HEAD and outside a repository they ask exactly like normal", async () => {
+    for (const branch of [onMain, detached, noRepo]) {
+      for (const mode of ["auto", "yolo"] as const) {
+        const { handler, bash, asks } = setup(mode, { branch });
+        const file = join(cwd, "a.ts");
+
+        expect(await handler({ toolName: "edit", input: { path: file } })).toBeUndefined();
+        expect(await bash("bun test")).toBeUndefined();
+        expect(await bash("git commit -m x")).toBeUndefined();
+
+        // No policy reason, and always-allow stays offered: the prompt normal mode shows.
+        expect(asks).toEqual([
+          { toolName: "edit", input: { path: file } },
+          { toolName: "bash", input: { command: "bun test" } },
+          { toolName: "bash", input: { command: "git commit -m x" } },
+        ]);
+      }
+    }
+  });
+
+  test("an always rule is honoured there, as in normal", async () => {
+    const { bash, asks, storage } = setup("yolo", { branch: onMain });
+    storage.addPermissionRule({ cwd, toolName: "bash", command: "bun test" });
+
+    expect(await bash("bun test")).toBeUndefined();
+
     expect(asks).toEqual([]);
+  });
+
+  test("a catastrophic command is blocked there too", async () => {
+    for (const branch of [onMain, detached, noRepo]) {
+      const { bash, asks } = setup("yolo", { branch });
+      expect(await bash("rm -rf ~")).toEqual({ block: true, reason: expect.stringContaining("never allowed") });
+      expect(asks).toEqual([]);
+    }
+  });
+
+  test("the guard's deny still blocks a commit on the default branch", async () => {
+    const { bash, asks } = setup("yolo", { guard: guardDeniesCommit, branch: onMain });
+    expect(await bash("git commit -m x")).toMatchObject({ block: true });
+    expect(asks).toEqual([]);
+  });
+});
+
+describe("the branch is looked up for every call", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-pi-branch-")));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const git = (dir: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  };
+
+  test("a repository switched between two calls flips the decision", async () => {
+    const dir = join(root, "flip");
+    mkdirSync(dir);
+    git(dir, "init", "-q", "-b", "main");
+    const { bash, asks } = setup("yolo", { folder: dir, branch: null });
+
+    // On main: paused, the normal prompt.
+    await bash("bun test");
+    expect(asks).toEqual([{ toolName: "bash", input: { command: "bun test" } }]);
+
+    git(dir, "symbolic-ref", "HEAD", "refs/heads/feat/x");
+    await bash("bun test");
+    expect(asks).toHaveLength(1);
+
+    git(dir, "symbolic-ref", "HEAD", "refs/heads/main");
+    await bash("bun test");
+    expect(asks).toHaveLength(2);
+  });
+
+  test("a folder that is not a repository asks as normal", async () => {
+    const dir = join(root, "plain");
+    mkdirSync(dir);
+    const { bash, asks } = setup("yolo", { folder: dir, branch: null });
+
+    await bash("bun test");
+
+    expect(asks).toHaveLength(1);
+  });
+
+  test("a lookup that throws never loosens: the call asks", async () => {
+    const asks: PermissionAsk[] = [];
+    const handler = createApprovalHandler({
+      cwd,
+      rules: openStorage(":memory:"),
+      signal: new AbortController().signal,
+      tools: () => piTools,
+      approvalMode: "yolo",
+      branchOf: () => {
+        throw new Error("boom");
+      },
+      host: { askPermission: async (ask) => (asks.push(ask), "allow") },
+    });
+
+    await handler({ toolName: "bash", input: { command: "bun test" } });
+
+    expect(asks).toHaveLength(1);
   });
 });

@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { branchState } from "../git-branch";
 import { Mode } from "../modes";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
@@ -385,8 +386,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         guard: options.guard,
         approvalMode,
       };
-      // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
-      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode);
+      // Plan mode stays read-only whatever the approval mode, so it gets no mode line. The line says whether the mode is active or paused on the branch the turn starts on; each call reads the branch again.
+      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, () => branchState(cwd));
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");

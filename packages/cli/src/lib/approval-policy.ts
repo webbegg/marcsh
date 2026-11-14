@@ -2,9 +2,13 @@
 //
 // - normal: today's flow for everything (every tool except reads asks, the branch/ship guard asks or denies). Only
 //   catastrophic commands are decided here: they are blocked.
-// - auto: edits inside the project and ordinary shell commands run; delivery (commit, push, PR/issue writes, branch
-//   switches) and the floor ask.
-// - yolo: as auto, and delivery runs too; the floor still asks.
+// - auto: on a feature branch, edits inside the project and ordinary shell commands run; commits, anything remote (push,
+//   PR/issue writes, gh api writes), leaving the branch (switch, checkout, git run elsewhere, a new worktree) and the floor ask.
+// - yolo: as auto, and local commits run; remote, leaving the branch and the floor still ask.
+//
+// auto and yolo relax only while the folder's checkout is on a feature branch (see git-branch). On the default branch, a
+// detached HEAD, outside a repository or when the branch cannot be read they act exactly like normal: each prompt is the
+// user's bypass. A guard ask (push, PR, merge, publish) is never skipped by a mode.
 //
 // The floor, in every mode: destructive, publish, privileged and dependency commands, commands marcsh cannot read,
 // edits outside the project, to secret-looking files or to `.git/`. These asks never offer "always". Catastrophic
@@ -14,6 +18,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CommandKind, analyzeCommand, isScratchPath } from "./command-classifier";
+import { type BranchSource, type BranchState, branchState, resolveBranch } from "./git-branch";
 
 export const APPROVAL_MODES = ["normal", "auto", "yolo"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
@@ -23,15 +28,28 @@ export function isApprovalMode(value: unknown): value is ApprovalMode {
   return (APPROVAL_MODES as readonly unknown[]).includes(value);
 }
 
+/** Why auto and yolo are paused on `branch`, in a few words. */
+function pausedReason(branch: Exclude<BranchState, { kind: "feature" }>): string {
+  return branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
+}
+
 /** One line for the system prompt, so the agent knows what needs no confirmation in chat. None in normal mode. */
-export function approvalModeLine(mode: ApprovalMode): string | undefined {
+export function approvalModeLine(mode: ApprovalMode, branch: BranchState): string | undefined {
+  if (mode === "normal") return undefined;
+  const name = mode === "auto" ? "AUTO" : "YOLO";
+  if (branch.kind !== "feature") {
+    return `Approval mode ${name} is paused: this folder is not on a feature branch (${pausedReason(branch)}), so marcsh asks as in normal mode. Start the work on its own feature branch, preferably in a git worktree, before changing code.`;
+  }
   if (mode === "auto") {
-    return "Approval mode AUTO: file edits inside the project and ordinary shell commands run without asking; commits, pushes, PR/issue writes, branch switches, and destructive, publish, privileged, or dependency commands ask the user through marcsh. Run the command; don't ask in chat first.";
+    return `Approval mode AUTO on feature branch ${branch.branch}: file edits inside this folder and ordinary shell commands run without asking; commits, anything remote (push, PR/issue, gh api writes), leaving the branch, and destructive, publish, privileged, or dependency commands ask the user through marcsh. Run the command; don't ask in chat first.`;
   }
-  if (mode === "yolo") {
-    return "Approval mode YOLO: file edits inside the project, ordinary shell commands, commits, non-force pushes, branch switches, and PR/issue creation run without asking, so they need no confirmation in chat; destructive, publish or merge, privileged, and dependency (install) commands still ask the user through marcsh.";
-  }
-  return undefined;
+  return `Approval mode YOLO on feature branch ${branch.branch}: file edits inside this folder, ordinary shell commands and local commits run without asking, so they need no confirmation in chat; anything remote (push, PR/issue, gh api writes), leaving the branch, and destructive, publish or merge, privileged, and dependency commands still ask the user through marcsh.`;
+}
+
+/** The mode that applies to a call: auto and yolo only on a feature branch, normal anywhere else (a branch that cannot be read is not a feature branch). */
+function effectiveMode(mode: ApprovalMode, cwd: string, branch: BranchSource | undefined): ApprovalMode {
+  if (mode === "normal") return mode;
+  return resolveBranch(branch ?? (() => branchState(cwd))).kind === "feature" ? mode : "normal";
 }
 
 /** What the policy needs to know about a call: a shell command, a file edit, or anything else. */
@@ -102,24 +120,25 @@ function writeProblem(target: string, cwd: string): string | null {
   return editProblem(target, cwd, "a redirect");
 }
 
-// The branch guard's asks read `marcsh: <action> needs your approval`. A mode may skip the ask for delivery, never the others (merge, publish).
-const GUARD_ASK = /^marcsh: (.+) needs your approval$/;
-const GUARD_DELIVERY_ACTIONS = new Set(["git push", "gh pr create"]);
+// The branch guard's asks read `marcsh: <action> needs your approval`. No mode skips one.
+const GUARD_ASK = /^marcsh: .+ needs your approval$/;
 
-/** True when `reason` is a branch-guard ask for an action a mode must not skip: it keeps asking, with no always-allow. */
-export function isFixedGuardAsk(reason: string | undefined): boolean {
-  const action = reason === undefined ? undefined : GUARD_ASK.exec(reason)?.[1];
-  return action !== undefined && !GUARD_DELIVERY_ACTIONS.has(action);
+/** True when `reason` is a branch-guard ask (push, PR, merge, publish): it keeps asking in every mode, with no always-allow. */
+export function isGuardAsk(reason: string | undefined): boolean {
+  return reason !== undefined && GUARD_ASK.test(reason);
 }
 
 const askFor = (reasons: string[]): Verdict => ({ action: "ask", reason: `marcsh: ${[...new Set(reasons)].join("; ")} needs your approval` });
 
-/** Decides a call under `mode` for the project at `cwd`. */
-export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string): Verdict {
+/**
+ * Decides a call under `mode` for the project at `cwd`. Auto and yolo count only on a feature branch: `branch` is the checkout's state, or
+ * a function that reads it when needed; without it the branch of `cwd` is looked up. Anywhere else the mode is normal.
+ */
+export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, branch?: BranchSource): Verdict {
   if (call.kind === "other") return UNCHANGED;
 
   if (call.kind === "edit") {
-    if (mode === "normal") return UNCHANGED;
+    if (effectiveMode(mode, cwd, branch) === "normal") return UNCHANGED;
     const problem = editProblem(call.path, cwd);
     return problem ? askFor([problem]) : ALLOW;
   }
@@ -127,9 +146,11 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string):
   const { matches, writes } = analyzeCommand(call.command);
   const catastrophic = matches.find((match) => match.hardDeny);
   if (catastrophic) return { action: "block", reason: `marcsh: ${catastrophic.reason} is never allowed` };
-  if (mode === "normal") return UNCHANGED;
+  const effective = effectiveMode(mode, cwd, branch);
+  if (effective === "normal") return UNCHANGED;
 
-  const reasons = matches.filter((match) => mode === "auto" || match.kind !== CommandKind.DELIVERY).map((match) => match.reason);
+  // Only a local commit is relaxed, and only in yolo.
+  const reasons = matches.filter((match) => effective === "auto" || match.kind !== CommandKind.COMMIT).map((match) => match.reason);
   for (const target of writes) {
     const problem = writeProblem(target, cwd);
     if (problem) reasons.push(problem);
