@@ -39,6 +39,25 @@ describe("docs/security.md permission modes", () => {
   });
 });
 
+describe("docs/security.md branch sandbox", () => {
+  test("says auto and yolo act only on a feature branch, are paused elsewhere, and recommend a worktree", () => {
+    for (const text of ["feature branch", "paused", "worktree", "not a git repository", "detached HEAD", "the default branch"]) {
+      expect(section).toContain(text);
+    }
+  });
+
+  test("says commits are the only difference of yolo, that remote and leaving the branch always ask, and that guard asks are never skipped", () => {
+    for (const text of ["local commits", "remote", "leaving the branch", "never skipped by a mode", "`git push`", "`git worktree add`"]) {
+      expect(section).toContain(text);
+    }
+  });
+
+  test("no longer says yolo runs pushes or branch switches", () => {
+    expect(section).not.toContain("Only its questions for `git push` and `gh pr create` are skipped");
+    expect(section).not.toContain("plus commits, non-force pushes");
+  });
+});
+
 describe("docs/configuration.md", () => {
   test("lists the approvalMode preference and its values", () => {
     const row = configuration.split("\n").find((line) => line.startsWith("| `approvalMode` |")) ?? "";

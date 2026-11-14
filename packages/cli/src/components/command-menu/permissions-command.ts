@@ -1,9 +1,18 @@
 import { APPROVAL_MODES, isApprovalMode, type ApprovalMode } from "../../lib/approval-policy";
+import type { BranchState } from "../../lib/git-branch";
 
 export const PERMISSIONS_USAGE = `Usage: /permissions [${APPROVAL_MODES.join("|")} | default <${APPROVAL_MODES.join("|")}>]`;
 
-/** The toast after the session's mode is set. */
-export const sessionModeMessage = (mode: ApprovalMode) => `Approval mode: ${mode} for this session`;
+/**
+ * The toast after the session's mode is set. In auto and yolo, when the folder is not on a feature branch (`branch`), it adds that the
+ * mode is paused there: marcsh asks as in normal mode.
+ */
+export function sessionModeMessage(mode: ApprovalMode, branch?: BranchState): string {
+  const message = `Approval mode: ${mode} for this session`;
+  if (mode === "normal" || !branch || branch.kind === "feature") return message;
+  const reason = branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
+  return `${message}. ${mode} is paused here: ${reason}. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree.`;
+}
 
 /** The toast after the default for new sessions is saved. */
 export const defaultModeMessage = (mode: ApprovalMode) => `New sessions will start in ${mode} mode`;

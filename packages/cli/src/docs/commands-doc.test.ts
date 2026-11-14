@@ -68,6 +68,12 @@ describe("docs/commands.md", () => {
     expect(doc).toContain(PERMISSIONS_USAGE);
   });
 
+  test("says /permissions auto and yolo are paused off a feature branch", () => {
+    expect(doc).toContain("is paused here");
+    expect(doc).toContain("feature branch");
+    expect(doc).toContain("worktree");
+  });
+
   test("the list of /agents subcommands matches the parser", () => {
     for (const verb of PACK_VERBS) {
       expect(parsePackCommand(`${verb} acme/flows`).kind).not.toBe("usage");

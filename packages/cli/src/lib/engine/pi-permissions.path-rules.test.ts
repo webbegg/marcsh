@@ -38,6 +38,7 @@ function setup(
     guard,
     planMode,
     approvalMode,
+    branchOf: () => ({ kind: "feature", branch: "feat/x" }),
     host: {
       askPermission: async (ask) => {
         asks.push(ask);

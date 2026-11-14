@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act, useEffect } from "react";
@@ -7,6 +7,8 @@ import { act, useEffect } from "react";
 process.env.MARCSH_DB_PATH = ":memory:";
 const prefsDir = mkdtempSync(join(tmpdir(), "marcsh-permissions-"));
 const prefsPath = join(prefsDir, "preferences.json");
+// The folder the dialog reads the branch of: a plain folder (no repository) unless a test points it elsewhere.
+let dialogCwd = prefsDir;
 process.env.MARCSH_PREFERENCES_PATH = prefsPath;
 
 const { testRender } = await import("@opentui/react/test-utils");
@@ -33,6 +35,7 @@ function OpenDialog() {
           <PermissionsDialogContent
             currentMode={config.approvalMode}
             defaultMode={config.defaultApprovalMode}
+            cwd={dialogCwd}
             onSelectMode={config.setApprovalMode}
             onSelectDefault={config.setDefaultApprovalMode}
           />
@@ -74,6 +77,7 @@ async function openHome() {
 }
 
 afterEach(async () => {
+  dialogCwd = prefsDir;
   rmSync(prefsPath, { force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
@@ -86,8 +90,8 @@ describe("permissions dialog (S6)", () => {
     const text = frame();
     expect(text).toContain("Permissions");
     expect(text).toContain("• normal asks before edits and commands, as before");
-    expect(text).toContain("auto edits in the project and ordinary commands run; commits, pushes and PRs ask");
-    expect(text).toContain("yolo commits, pushes and PRs run too; destructive, publish, sudo and installs still ask");
+    expect(text).toContain("auto on a feature branch: edits and ordinary commands run; commits and remote actions ask");
+    expect(text).toContain("yolo on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask");
     // The session mode equals the saved default: no row to save it.
     expect(text).not.toContain("for new sessions");
   });
@@ -104,6 +108,35 @@ describe("permissions dialog (S6)", () => {
     expect(text).not.toContain("asks before edits");
     expect(text).toContain("Build › opus · claude · auto");
     expect(() => readFileSync(prefsPath, "utf8")).toThrow();
+  });
+
+  test("choosing auto or yolo in a folder that is not on a feature branch says the mode is paused", async () => {
+    await openDialog();
+
+    await pressDown();
+    await pressDown();
+    await press("RETURN");
+
+    expect(config.approvalMode).toBe("yolo");
+    // The toast wraps inside its border.
+    const text = frame().replace(/[┃\s]+/g, " ");
+    expect(text).toContain("Approval mode: yolo for this session.");
+    expect(text).toContain("yolo is paused here: not a git repository. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree.");
+  });
+
+  test("on a feature branch the toast does not mention a pause", async () => {
+    dialogCwd = join(prefsDir, "repo");
+    mkdirSync(dialogCwd);
+    const init = Bun.spawnSync(["git", "init", "-q", "-b", "feat/x"], { cwd: dialogCwd, stdout: "ignore", stderr: "pipe" });
+    expect(init.exitCode).toBe(0);
+    await openDialog();
+
+    await pressDown();
+    await pressDown();
+    await press("RETURN");
+
+    expect(frame()).toContain("Approval mode: yolo for this session");
+    expect(frame()).not.toContain("paused");
   });
 
   test("when the mode differs from the saved default a row saves it for new sessions", async () => {

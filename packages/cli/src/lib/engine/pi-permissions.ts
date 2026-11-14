@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { type ApprovalMode, decideApproval, type ToolCall } from "../approval-policy";
+import { type BranchState, branchState } from "../git-branch";
 import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
@@ -73,6 +74,8 @@ export type ApprovalOptions = {
   guard?: Guard;
   /** The session's approval mode (absent = normal). Decides after the plan-mode block and the guard's deny, so neither is ever loosened. */
   approvalMode?: ApprovalMode;
+  /** Reads the branch the project is on, for every call that needs it (auto and yolo count only on a feature branch). Default: `branchState`. */
+  branchOf?: (cwd: string) => BranchState;
 };
 
 /** The guard's verdict on a call, or null: only pi's own `bash` with a command string is guarded, and a guard that fails is no verdict (fail open, like the Claude hook). */
@@ -101,7 +104,7 @@ function policyCall(call: { toolName: string; input: Record<string, unknown> }, 
 }
 
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand, approvalMode = "normal" }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand, approvalMode = "normal", branchOf = branchState }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
     if (!needsApproval(call.toolName, tools())) return undefined;
     if (planMode) return { block: true, reason: PLAN_MODE_REASON };
@@ -111,13 +114,14 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
 
     // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
     const seen = policyCall(call, tools());
-    const policy = decideApproval(approvalMode, seen, cwd);
+    const policy = decideApproval(approvalMode, seen, cwd, () => branchOf(cwd));
     if (policy.action === "block") return { block: true, reason: policy.reason };
     // A stored path rule ("allow `rm` under /tmp/x") runs a covered shell command in every mode, also past a floor ask; sudo and catastrophic commands never match.
     const command = seen.kind === "shell" ? seen.command : undefined;
     const { pathRulesFor, addPathRule } = rules;
     if (command !== undefined && pathRulesFor && hasMatchingPathRule({ pathRulesFor }, command, cwd)) return undefined;
-    if (policy.action === "allow") return undefined;
+    // No mode skips the guard's ask (push, PR, merge, publish): it keeps asking, as a floor ask.
+    if (policy.action === "allow" && verdict?.decision !== "ask") return undefined;
     const floor = policy.action === "ask" ? { reason: policy.reason } : verdict?.decision === "ask" ? verdict : undefined;
     // A floor action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const rule = floor ? undefined : ruleFor(cwd, call.toolName, call.input);

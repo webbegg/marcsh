@@ -1,10 +1,12 @@
 // "Allow `rm` under /tmp/x": the folder rules behind the permission prompt's path choice. Pure and best effort, not a
 // sandbox: a command only counts when it is made of one path program (rm, mv, cp...) and every target is a literal path,
-// so what a rule covers can be told from the command text alone. Paths are compared as text; symlinks are not followed.
+// so what a rule covers can be told from the command text alone. A target must be inside the folder both as written and after
+// symlinks, and a glob only matches in a folder that holds no symlink, so a link inside the folder cannot carry a rule outside it.
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { analyzeCommand, simpleCommands } from "./command-classifier";
+import { holdsSymlink, reallyInside, stableDir } from "./real-path";
 import { type PermissionDecision, pathAnswerDir } from "./engine/types";
 import type { PathRule, Storage } from "./storage";
 
@@ -23,7 +25,8 @@ const VALUE_OPTIONS: Record<string, { short: string; long: string[] }> = {
   touch: { short: "dtr", long: ["--date", "--reference", "--time"] },
 };
 // `find` predicates that run other commands or write files.
-const FIND_UNSAFE = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
+// `find` predicates that run other commands or write files, and `-follow`, which follows symlinks out of the start folders.
+const FIND_UNSAFE = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-follow"]);
 
 export type PathRuleCandidate = { program: string; dirs: string[] };
 
@@ -97,6 +100,18 @@ function parse(command: string, cwd: string): ParsedCommand | null {
   return { program, targets };
 }
 
+/**
+ * True when `target` is strictly inside `dir` as written and after symlinks, and `dir` cannot be repointed without root (no symlink the
+ * user owns on its path). A glob in the last name also needs a folder with no symlink in it, since the names it expands to could be links.
+ */
+function coveredBy(target: string, dir: string): boolean {
+  if (!target.startsWith(`${dir}/`) || !stableDir(dir)) return false;
+  const last = target.slice(target.lastIndexOf("/") + 1);
+  if (!GLOB.test(last)) return reallyInside(target, dir);
+  const parent = dirname(target);
+  return (parent === dir || reallyInside(parent, dir)) && !holdsSymlink(parent);
+}
+
 /** `/`, the home directory and what contains it are too wide to be a rule folder. */
 function usableDir(dir: string): boolean {
   const home = homedir().replace(/\/+$/, "");
@@ -123,7 +138,8 @@ export function pathRuleCandidate(command: string, cwd: string): PathRuleCandida
   const parsed = parse(command, cwd);
   if (!parsed) return null;
   const dirs: string[] = [];
-  for (let dir = commonParent(parsed.targets); usableDir(dir); dir = dirname(dir)) dirs.push(dir);
+  // A folder is offered only when the rule would cover this very command (no target reaches out of it through a symlink).
+  for (let dir = commonParent(parsed.targets); usableDir(dir); dir = dirname(dir)) if (parsed.targets.every((target) => coveredBy(target, dir))) dirs.push(dir);
   return dirs.length > 0 ? { program: parsed.program, dirs } : null;
 }
 
@@ -149,5 +165,5 @@ export function matchesPathRule(command: string, cwd: string, rule: { program: s
   const dir = resolve(rule.dir);
   if (!usableDir(dir)) return false;
   const parsed = parse(command, cwd);
-  return parsed !== null && parsed.program === rule.program && parsed.targets.every((target) => target.startsWith(`${dir}/`));
+  return parsed !== null && parsed.program === rule.program && parsed.targets.every((target) => coveredBy(target, dir));
 }

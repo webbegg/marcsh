@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { CanUseTool, PermissionResult, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { approvalModeLine, type ApprovalMode } from "../approval-policy";
+import type { BranchState } from "../git-branch";
 import { Mode } from "../modes";
 import { claudeQueryOptions, createCanUseTool } from "./claude";
 import type { PermissionAsk, PermissionDecision, TurnHost } from "./types";
@@ -11,9 +12,15 @@ import type { PermissionAsk, PermissionDecision, TurnHost } from "./types";
 const cwd = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-claude-approval-")));
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 
+// Auto and yolo relax only on a feature branch: these tests inject one, and the ones about the pause inject another state.
+const feature: BranchState = { kind: "feature", branch: "feat/x" };
+const onMain: BranchState = { kind: "default", branch: "main" };
+const detached: BranchState = { kind: "none", reason: "detached HEAD" };
+const noRepo: BranchState = { kind: "none", reason: "not a git repository" };
+
 type CallOptions = Partial<Parameters<CanUseTool>[2]>;
 
-function setup(approvalMode: ApprovalMode | undefined, answer: PermissionDecision = "allow") {
+function setup(approvalMode: ApprovalMode | undefined, answer: PermissionDecision = "allow", branch: BranchState | null = feature, folder = cwd) {
   const asked: PermissionAsk[] = [];
   const host = {
     askPermission: async (ask: PermissionAsk) => {
@@ -21,7 +28,8 @@ function setup(approvalMode: ApprovalMode | undefined, answer: PermissionDecisio
       return answer;
     },
   } as unknown as TurnHost;
-  const canUseTool = createCanUseTool(host, undefined, approvalMode ? { approvalMode, cwd } : undefined);
+  // null = the engine's own lookup (a real git call in `folder`).
+  const canUseTool = createCanUseTool(host, undefined, approvalMode ? { approvalMode, cwd: folder, ...(branch ? { branchOf: () => branch } : {}) } : undefined);
   const call = (toolName: string, input: Record<string, unknown>, extra: CallOptions = {}) =>
     canUseTool(toolName, input, { signal: new AbortController().signal, toolUseID: "tool-1", requestId: "req-1", ...extra });
   return { asked, call };
@@ -113,11 +121,35 @@ describe("canUseTool in auto mode", () => {
 });
 
 describe("canUseTool in yolo mode", () => {
-  test("delivery runs without asking", async () => {
-    const { asked, call } = setup("yolo");
+  test("a local commit runs without asking; auto asks for it", async () => {
+    const yolo = setup("yolo");
+    expect(await yolo.call("Bash", { command: "git commit -m x" })).toEqual(allowed({ command: "git commit -m x" }));
+    expect(yolo.asked).toEqual([]);
 
-    expect(await call("Bash", { command: "git push origin feat/x" })).toEqual(allowed({ command: "git push origin feat/x" }));
-    expect(asked).toEqual([]);
+    const auto = setup("auto");
+    await auto.call("Bash", { command: "git commit -m x" });
+    expect(auto.asked).toHaveLength(1);
+    expect(auto.asked[0]?.suppressAlwaysAllowRule).toBe(true);
+  });
+
+  test("anything remote and leaving the branch asks, without always-allow", async () => {
+    const commands = [
+      "git push",
+      "git push -u origin feat/x",
+      "gh pr create --fill",
+      "gh api -X POST repos/o/r/issues/1/comments -f body=x",
+      "git switch main",
+      "git checkout -b other",
+      "git -C ../other commit -m x",
+      "GIT_DIR=../o/.git git commit -m x",
+      "git worktree add ../w -b x",
+    ];
+    const { asked, call } = setup("yolo", "always");
+
+    for (const command of commands) expect(await call("Bash", { command }, { suggestions: suggestionFor(command) })).toEqual(allowed({ command }));
+
+    expect(asked.map((ask) => (ask.input as { command: string }).command)).toEqual(commands);
+    expect(asked.every((ask) => ask.suppressAlwaysAllowRule === true && ask.decisionReason !== undefined)).toBe(true);
   });
 
   test("a dependency install asks, and an always answer stores no rule", async () => {
@@ -188,11 +220,24 @@ describe("canUseTool in yolo mode", () => {
 });
 
 describe("the mode line in the options of a Claude turn", () => {
-  const base = { cwd, mode: Mode.BUILD, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool };
+  const base = { cwd, mode: Mode.BUILD, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool, branch: feature };
+
+  test("off a feature branch the line says the mode is paused", () => {
+    for (const branch of [onMain, detached, noRepo]) {
+      const line = approvalModeLine("yolo", branch)!;
+      expect(line).toContain("is paused");
+      expect(claudeQueryOptions({ ...base, approvalMode: "yolo", branch }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: line });
+    }
+  });
+
+  test("the branch is read from the folder when none is given: this temp folder is no repository", () => {
+    const { branch: _branch, ...withoutBranch } = base;
+    expect(claudeQueryOptions({ ...withoutBranch, approvalMode: "auto" }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: approvalModeLine("auto", noRepo) });
+  });
 
   test("auto and yolo append their line after the agent prompt", () => {
     for (const approvalMode of ["auto", "yolo"] as const) {
-      const line = approvalModeLine(approvalMode)!;
+      const line = approvalModeLine(approvalMode, feature)!;
 
       expect(claudeQueryOptions({ ...base, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: line });
       expect(claudeQueryOptions({ ...base, approvalMode, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
@@ -220,6 +265,157 @@ describe("the mode line in the options of a Claude turn", () => {
       expect(sent.permissionMode).toBe("default");
       expect("allowedTools" in sent).toBe(false);
       expect(claudeQueryOptions({ ...base, approvalMode, mode: Mode.PLAN }).permissionMode).toBe("plan");
+    }
+  });
+});
+
+describe("a catastrophic command Claude forces to ask is still blocked", () => {
+  test("matchedAskRule, defaultToNo or blockedPath: denied and never asked, in every mode", async () => {
+    for (const mode of ["normal", "auto", "yolo"] as const) {
+      for (const extra of [{ matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "rm:*" } }, { defaultToNo: true }, { blockedPath: "/Users" }]) {
+        const { asked, call } = setup(mode);
+        expect(await call("Bash", { command: "rm -rf ~" }, extra)).toEqual({ behavior: "deny", message: "marcsh: rm on a root, home or wildcard target (~) is never allowed" });
+        expect(asked).toEqual([]);
+      }
+    }
+  });
+
+  test("a forced ask that is not catastrophic keeps asking, with Claude's own flags", async () => {
+    const { asked, call } = setup("yolo");
+    await call("Bash", { command: "ls" }, { defaultToNo: true });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.defaultToNo).toBe(true);
+    expect(asked[0]?.decisionReason).toBeUndefined();
+  });
+});
+
+describe("the branch guard's ask is never skipped by a mode", () => {
+  const guardReason = (name: string) => ({ decisionReason: `marcsh: ${name} needs your approval` });
+
+  test("a merge or publish the guard asked about still asks in yolo and auto, without always-allow", async () => {
+    for (const mode of ["auto", "yolo"] as const) {
+      for (const [command, name] of [["make release", "gh pr merge"], ["make ship", "npm publish"], ["./publish.sh", "pnpm publish"]] as const) {
+        const { asked, call } = setup(mode, "always");
+        const result = await call("Bash", { command }, { ...guardReason(name), suggestions: suggestionFor(command) });
+        expect(result).toEqual(allowed({ command }));
+        expect(asked).toHaveLength(1);
+        expect(asked[0]?.suppressAlwaysAllowRule).toBe(true);
+        expect(asked[0]?.decisionReason).toContain(name);
+      }
+    }
+  });
+
+  test("a push or PR creation the guard asked about asks in yolo and auto, without always-allow", async () => {
+    for (const [command, name] of [["git push origin feat", "git push"], ["gh pr create --fill", "gh pr create"]] as const) {
+      for (const mode of ["yolo", "auto"] as const) {
+        const { asked, call } = setup(mode, "always");
+        expect(await call("Bash", { command }, { ...guardReason(name), suggestions: suggestionFor(command) })).toEqual(allowed({ command }));
+        expect(asked).toHaveLength(1);
+        expect(asked[0]?.suppressAlwaysAllowRule).toBe(true);
+      }
+    }
+  });
+
+  test("any guard ask on a command the policy would allow asks, with the hook's reason", async () => {
+    const { asked, call } = setup("yolo");
+    await call("Bash", { command: "ls" }, guardReason("gh pr create"));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ decisionReason: "marcsh: gh pr create needs your approval", suppressAlwaysAllowRule: true });
+  });
+
+  test("normal mode keeps today's prompt for a guard ask", async () => {
+    const { asked, call } = setup("normal");
+    await call("Bash", { command: "npm publish" }, guardReason("npm publish"));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.decisionReason).toBe("marcsh: npm publish needs your approval");
+    expect(asked[0]?.suppressAlwaysAllowRule).toBeUndefined();
+  });
+});
+
+describe("auto and yolo are paused off a feature branch", () => {
+  test("on the default branch, a detached HEAD and outside a repository they ask exactly like normal", async () => {
+    for (const branch of [onMain, detached, noRepo]) {
+      for (const mode of ["auto", "yolo"] as const) {
+        const { asked, call } = setup(mode, "allow", branch);
+        const file = join(cwd, "a.ts");
+
+        expect(await call("Edit", { file_path: file })).toEqual(allowed({ file_path: file }));
+        expect(await call("Bash", { command: "bun test" })).toEqual(allowed({ command: "bun test" }));
+        expect(await call("Bash", { command: "git commit -m x" })).toEqual(allowed({ command: "git commit -m x" }));
+
+        // The prompt normal mode shows: no policy reason, always-allow still offered.
+        expect(asked.map((ask) => ask.toolName)).toEqual(["Edit", "Bash", "Bash"]);
+        for (const ask of asked) {
+          expect(ask.decisionReason).toBeUndefined();
+          expect(ask.suppressAlwaysAllowRule).toBeUndefined();
+        }
+      }
+    }
+  });
+
+  test("a catastrophic command is blocked there too", async () => {
+    for (const branch of [onMain, detached, noRepo]) {
+      const { asked, call } = setup("yolo", "allow", branch);
+      expect(await call("Bash", { command: "rm -rf ~" })).toMatchObject({ behavior: "deny" });
+      expect(asked).toEqual([]);
+    }
+  });
+
+  test("the branch is looked up for every call: a repository switched between two calls flips the decision", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-claude-branch-")));
+    try {
+      const dir = join(root, "flip");
+      mkdirSync(dir);
+      const git = (...args: string[]) => {
+        const result = Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "pipe" });
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      };
+      git("init", "-q", "-b", "main");
+      const { asked, call } = setup("yolo", "allow", null, dir);
+
+      await call("Bash", { command: "bun test" });
+      expect(asked).toHaveLength(1);
+
+      git("symbolic-ref", "HEAD", "refs/heads/feat/x");
+      await call("Bash", { command: "bun test" });
+      expect(asked).toHaveLength(1);
+
+      git("symbolic-ref", "HEAD", "refs/heads/main");
+      await call("Bash", { command: "bun test" });
+      expect(asked).toHaveLength(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a lookup that throws never loosens: the call asks", async () => {
+    const asked: PermissionAsk[] = [];
+    const host = { askPermission: async (ask: PermissionAsk) => (asked.push(ask), "allow" as const) } as unknown as TurnHost;
+    const canUseTool = createCanUseTool(host, undefined, {
+      approvalMode: "yolo",
+      cwd,
+      branchOf: () => {
+        throw new Error("boom");
+      },
+    });
+
+    await canUseTool("Bash", { command: "bun test" }, { signal: new AbortController().signal, toolUseID: "t", requestId: "r" });
+
+    expect(asked).toHaveLength(1);
+  });
+});
+
+describe("plan mode gets no approval mode line", () => {
+  const base = { cwd, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool };
+
+  test("the options of a plan turn leave the prompt as it was, even in yolo", () => {
+    for (const approvalMode of ["auto", "yolo"] as const) {
+      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
+        type: "preset",
+        preset: "claude_code",
+        append: "You are FTD.",
+      });
     }
   });
 });

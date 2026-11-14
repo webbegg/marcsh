@@ -62,33 +62,50 @@ The permission mode sets how much runs without a prompt. It applies to both engi
 
 | Mode | Runs without asking | Still asks |
 | --- | --- | --- |
-| `normal` | Reads, as before | Everything else, as described above. Nothing changes. |
-| `auto` | File edits inside the project and ordinary shell commands | Commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, branch switches, and the list below |
-| `yolo` | Everything `auto` runs, plus commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, and branch switches | The list below |
+| `normal` | Reads, as before | Everything else, as described above. Nothing changes, except that the worst commands are blocked (below). |
+| `auto` | On a feature branch: file edits inside the project and ordinary shell commands | Commits, anything remote, leaving the branch, and the list below |
+| `yolo` | On a feature branch: everything `auto` runs, plus local commits | Anything remote, leaving the branch, and the list below |
 
 `normal` is the mode every session starts in, unless you saved another one as the default.
 
-In every mode, these always ask, and the prompt never offers "always allow":
+#### The feature branch sandbox
+
+`auto` and `yolo` relax only while the folder marcsh works in is on a feature branch. That is any branch except the default one: the branch `origin` points at, or `main` or `master` when that is unknown. marcsh reads the branch again for every tool call.
+
+When the folder is on the default branch, on a detached HEAD, not a git repository, or marcsh cannot read the branch, the mode is paused. marcsh then asks exactly as in `normal`. Each prompt is your way to allow that one action. The agent is told the mode is paused and that it should start its work on a feature branch, preferably in a git worktree. A git lookup that fails never loosens anything.
+
+A worktree gives each feature its own folder and branch. Start one with `git worktree add ../<repo>-worktrees/<slug> -b <type>/<slug>` (marcsh asks first), then open marcsh in that folder. A session stays in the folder it was opened in.
+
+On a feature branch:
+
+- Local commits: `auto` asks, `yolo` runs them. `git merge`, `git cherry-pick`, `git revert`, `git am` and `git pull` make commits, so they count as local commits.
+- Anything remote always asks, in both modes: any `git push` (also `git send-pack`, `git subtree push`, `git svn dcommit` and `git p4 submit`), `gh pr` and `gh issue` writes (`create`, `comment`, `review`, `edit`, `close`, `reopen`), and `gh api` writes.
+- Anything that leaves the branch always asks, in both modes: `git switch` and `git checkout` of a branch (also with `-c` or `-b`), git run in another directory (`git -C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`, or `GIT_DIR=` and `GIT_WORK_TREE=` set on the command), `git worktree add` or `move`, and a `cd`, `pushd` or `popd` out of the checkout before a git command (into a nested repository or submodule too). Writing another branch counts as leaving it: a `git fetch` or `git pull` into a local branch (`git fetch origin main:main`), and `git branch -f` or `-C`. A commit made in another directory counts as leaving the branch, not as a local commit.
+- A git alias set on the command line (`git -c alias.p=push p`) asks, since it can stand for any command. Aliases from your git config are not read: `auto` and `yolo` judge such a command by its alias name.
+
+In every mode, these always ask. In `normal` the prompt is the one you already know, with "always allow" where it is offered today. In `auto` and `yolo` the prompt never offers "always allow" for them:
 
 - Destructive commands: `rm -rf` on a folder, `git reset --hard`, a force push, `DROP TABLE`, rewriting refs.
-- Publishing and merging: `npm publish`, `gh pr merge`, `gh release`.
+- Publishing and merging: `npm publish`, `gh pr merge`, `gh release`. A merge done through `gh api` counts too: merging a pull request or a branch, enabling auto-merge, moving a branch ref, or committing a file through the contents API.
 - Privileged commands: `sudo`, `curl … | sh`.
 - Dependency changes: `npm install`, `pip install` and the like.
-- Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`.
+- Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`. This covers the edit tools, redirects (`>`, `>>`), and the files given to `cp`, `mv`, `ln`, `install`, `tee`, `sed -i`, `curl -o`, `wget -O`, `touch`, `mkdir`, `rm`, `rmdir` and `unlink`. Paths are checked after symlinks. Other programs that write files, such as a script or `rsync`, are not read.
 - A command marcsh cannot read, such as one with an open quote.
-- Tools marcsh does not classify: MCP tools, web tools and tools from extensions.
+- Tools marcsh does not classify: MCP tools, web tools and tools from extensions. In every mode they keep the prompt they have today, including "always allow".
 
-The worst commands are blocked, not asked: `rm -rf ~`, `rm -rf /`, `mkfs` and `dd` onto a device.
+The worst commands are blocked, not asked, in every mode including `normal`: `rm -rf ~`, `rm -rf /`, and `rm -r` on `.`, `..`, `*` or a system folder (`/usr`, `/etc`, `/var`, `/Users`, `/home`, `/System`); `mkfs`; and `dd` onto a disk. `dd` to `/dev/null`, `/dev/zero` or the terminal is an ordinary command.
 
 Some rules do not change with the mode:
 
 - A commit on the default branch stays blocked in `auto` and `yolo`, as in [Git guard](#git-guard).
-- In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..` and paths with variables still ask.
+- The git guard's questions (`git push`, `gh pr create`, `gh pr merge`, `npm`, `pnpm`, `yarn` or `bun` `publish`) are never skipped by a mode, and never offer "always allow".
+- Folder rules ("allow `rm` under …", below) do not depend on the mode or the branch.
+- In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..`, paths with variables and paths that a symlink leads out of the temp folder still ask.
 - On Claude, a request that your Claude settings say to ask about, and a request Claude flags as risky or protected, keeps asking.
 
-The agent is told the mode, so it runs what the mode allows instead of asking you in chat first.
+The agent is told the mode, so it runs what the mode allows instead of asking you in chat first. The Plan agent is not told: it stays read-only in every mode.
 
-The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. Use `yolo` only in a project you can afford to lose work in.
+The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. The branch limits what the modes relax, but it does not contain what a command does inside your folder. Use `yolo` only in a project you can afford to lose work in.
 
 ### Allow similar commands under a folder
 
@@ -98,9 +115,10 @@ Later commands run without asking only when they match:
 
 - Every command in the line is the same program, with nothing else in it: no `cd`, `sudo`, redirects, substitutions or nested shells.
 - Every target is a literal path strictly inside the folder. Variables, `~`, `..` and `.git` do not match, and a glob (`*`, `?`) only in the last name.
+- Every target is inside the folder after symlinks too. A link inside the folder that points out of it does not match, a glob only matches in a folder that holds no symlink, and `find -follow` does not match. A rule folder reached through a symlink you own (one the agent could repoint) matches nothing. Root-owned links such as `/tmp` on macOS are fine.
 - The command is not one of the blocked ones (`rm -rf ~`, `rm -rf /`). A rule never overrides the git guard or Plan.
 
-The rule is stored per project folder in marcsh's database, next to the pi "always allow" rules. There is no screen to list or revoke these rules yet. Matching is on the command text: a symlink inside the folder that points elsewhere is followed by the command, not stopped by the rule.
+The rule is stored per project folder in marcsh's database, next to the pi "always allow" rules. There is no screen to list or revoke these rules yet. Symlinks are checked when marcsh decides, so a link changed by another process between that moment and the command running is not seen.
 
 ### Plan is read-only
 
@@ -188,7 +206,7 @@ The `marcsh` command starts Bun so that it does **not** read a `.env` file or a 
 - **MCP servers you configure.** An MCP server is a program that runs with your permissions. Its tools ask like any other tool, but marcsh cannot tell you what the server does inside.
 - **A trusted project that you changed yourself.** Trust follows the files you reviewed. If you review carelessly, marcsh cannot help.
 - **The git guard on indirect commands.** It reads the command text. It cannot see what a script does.
-- **The permission modes.** In `auto` and `yolo`, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox.
+- **The permission modes.** In `auto` and `yolo`, on a feature branch, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox, and a branch is not a container: a command can still change files in your folder.
 - **Your data going to the model provider.** What you and the model read and write is sent to the provider of the model you use.
 - **Other software on your computer.** marcsh does not defend against a program that already runs as you.
 
