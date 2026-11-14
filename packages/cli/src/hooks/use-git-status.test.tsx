@@ -6,7 +6,8 @@ import { act, useState } from "react";
 import type { GitStatus } from "../lib/git-status";
 
 const { testRender } = await import("@opentui/react/test-utils");
-const { useGitStatus } = await import("./use-git-status");
+const { useGitStatus, trustedForGit } = await import("./use-git-status");
+const { getStorage } = await import("../lib/storage");
 
 // S6: the git segment is refreshed every few seconds and after tool calls, with one git call at a time.
 
@@ -140,6 +141,40 @@ describe("useGitStatus", () => {
     expect(latest).toEqual({ branch: "main", changed: 0 });
   });
 
+  // R1-1b: the changed files are counted only in a project the user trusted; its trust is asked again at every read.
+  test("tells the reader whether the project is trusted, as it is at each read", async () => {
+    const asked: { cwd: string; trusted: boolean }[] = [];
+    let trusted = false;
+    const read = async (cwd: string, options: { trusted: boolean }) => (asked.push({ cwd, trusted: options.trusted }), { branch: "main", changed: null });
+    function TrustProbe() {
+      const [trigger, set] = useState(0);
+      setTrigger = set;
+      latest = useGitStatus("/repo", { read, trigger, isTrusted: () => trusted, intervalMs: 60_000 });
+      return <text>probe</text>;
+    }
+    await mount(<TrustProbe />);
+    trusted = true;
+    await act(async () => setTrigger(1));
+    await settle();
+
+    expect(asked).toEqual([
+      { cwd: "/repo", trusted: false },
+      { cwd: "/repo", trusted: true },
+    ]);
+  });
+
+  test("a trust check that throws counts as not trusted", async () => {
+    const asked: boolean[] = [];
+    const read = async (_cwd: string, options: { trusted: boolean }) => (asked.push(options.trusted), null);
+    function ThrowingProbe() {
+      latest = useGitStatus("/repo", { read, isTrusted: () => { throw new Error("no store"); }, intervalMs: 60_000 });
+      return <text>probe</text>;
+    }
+    await mount(<ThrowingProbe />);
+
+    expect(asked).toEqual([false]);
+  });
+
   test("the backoff stops at a minute", async () => {
     const fake = fakeRead();
     const timers: number[] = [];
@@ -210,11 +245,44 @@ describe("useGitStatus without a reader", () => {
     expect(latest).toBeNull();
   });
 
-  test("otherwise it reads the folder with git", async () => {
+  test("otherwise it reads the branch of a folder that is not trusted, and no count", async () => {
     delete process.env.MARCSH_GIT_STATUS;
     await mount(<DefaultProbe cwd={repo} />);
     const start = Date.now();
     while (latest === null && Date.now() - start < 3000) await settle(25);
-    expect(latest).toEqual({ branch: "trunk", changed: 0 });
+    expect(latest).toEqual({ branch: "trunk", changed: null });
+  });
+
+  test("and counts the changed files of a trusted one", async () => {
+    delete process.env.MARCSH_GIT_STATUS;
+    getStorage().setProjectTrust(repo, "trusted");
+    try {
+      await mount(<DefaultProbe cwd={repo} />);
+      const start = Date.now();
+      while (latest === null && Date.now() - start < 3000) await settle(25);
+      expect(latest).toEqual({ branch: "trunk", changed: 0 });
+    } finally {
+      getStorage().setProjectTrust(repo, null);
+    }
+  });
+});
+
+// R1-1b: marcsh's own per-project decision (`/trust`, the pi trust question): only a stored "trusted" counts.
+describe("trustedForGit", () => {
+  let folder: string;
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "marcsh-git-trust-"));
+  });
+  afterEach(() => {
+    getStorage().setProjectTrust(folder, null);
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  test("is false while undecided or untrusted, true once trusted", () => {
+    expect(trustedForGit(folder)).toBe(false);
+    getStorage().setProjectTrust(folder, "untrusted");
+    expect(trustedForGit(folder)).toBe(false);
+    getStorage().setProjectTrust(folder, "trusted");
+    expect(trustedForGit(folder)).toBe(true);
   });
 });

@@ -48,6 +48,14 @@ describe("StatusBar git", () => {
     expect(frame).toContain("42.1k/200k (21%) · $0.34 · main · 3 files changed · enter steers");
   });
 
+  // R1-1b: in a project that is not trusted the files are not counted; the branch still shows.
+  test("shows the branch alone when the files were not counted", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "main", changed: null })} messages={[usage]} hint="enter steers" />);
+
+    expect(frame).toContain("42.1k/200k (21%) · $0.34 · main · enter steers");
+    expect(frame).not.toContain("changed");
+  });
+
   test("shows nothing for git outside a repo or without a folder", async () => {
     const bare = await render(<StatusBar />);
     const outside = await render(<StatusBar cwd="/elsewhere" readGit={gitOf(null)} />);

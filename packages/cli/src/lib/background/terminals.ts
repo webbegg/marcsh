@@ -186,6 +186,18 @@ export function createTerminals({
   let counter = 0;
   let disposed = false;
 
+  // A bare `process.exit` (no quit, no dispose) must not leave what the terminals started running: SIGKILL to each group still
+  // running. Synchronous, as an exit handler must be; it never throws out of the process's exit. Registered with the first start.
+  let exitHandler = false;
+  const onExit = () => {
+    for (const entry of entries.values()) {
+      if (entry.snapshot.status !== "running" || !entry.child.pid) continue;
+      try {
+        process.kill(-entry.child.pid, "SIGKILL");
+      } catch {}
+    }
+  };
+
   const notify = () => {
     for (const listener of [...listeners]) {
       try {
@@ -372,6 +384,10 @@ export function createTerminals({
 
     // Kept while it spawns, so it counts towards the running cap; listed once it has spawned.
     entries.set(id, entry);
+    if (!exitHandler) {
+      exitHandler = true;
+      process.on("exit", onExit);
+    }
     entry.unregister = registerTurn({ stop: () => terminate(entry), done: settled });
     const failure = await new Promise<Error | undefined>((resolve) => {
       const timer = setTimeout(() => resolve(undefined), SPAWN_WAIT_MS);
@@ -443,6 +459,11 @@ export function createTerminals({
       for (const entry of all) {
         entry.unregister();
         releasePipes(entry.child);
+      }
+      // Whatever outlived the wait is still killed at the process's exit.
+      if (exitHandler && all.every((entry) => entry.snapshot.status !== "running")) {
+        exitHandler = false;
+        process.off("exit", onExit);
       }
       try {
         logDir.dispose();

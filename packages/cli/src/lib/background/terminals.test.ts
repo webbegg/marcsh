@@ -211,6 +211,38 @@ describe("background terminals (S1)", () => {
     expect(await rejection(terminals.start({ command: "true", title: "late", cwd }))).toMatch(/shutting down/);
   });
 
+  // R4-1 advisory: a bare process.exit (no quit, no dispose) leaves no background process behind.
+  test("the process's exit kills the process groups of terminals still running", async () => {
+    const script = `const { createTerminals } = await import(${JSON.stringify(join(import.meta.dir, "terminals.ts"))});
+      const terminals = createTerminals({ logBase: ${JSON.stringify(base)} });
+      const snap = await terminals.start({ command: "sleep 30 & sleep 30 & wait", title: "server", cwd: ${JSON.stringify(base)} });
+      console.log(snap.pid);
+      process.exit(0);`;
+    const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+    expect(result.stderr.toString()).toBe("");
+    const pid = Number(result.stdout.toString().trim());
+    expect(pid).toBeGreaterThan(0);
+    try {
+      await until(() => !groupAlive(pid));
+      expect(groupAlive(pid)).toBe(false);
+    } finally {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  test("registers one exit handler once a terminal starts, which dispose takes back", async () => {
+    const before = process.listenerCount("exit");
+    const { terminals } = setup();
+    await terminals.start({ command: "true", title: "a", cwd });
+    await terminals.start({ command: "true", title: "b", cwd });
+    // One for the terminals, one for the log directory.
+    expect(process.listenerCount("exit")).toBe(before + 2);
+    await terminals.dispose();
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+
   // R4-1: logs a marcsh that was killed left behind are removed when a later one starts, never those of a live one.
   test("creating them sweeps the log directories of processes that are gone", async () => {
     const stale = join(base, "marcsh-bg-stale");

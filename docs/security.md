@@ -180,6 +180,8 @@ Trust is tied to what you reviewed. If a file is added, changed or removed after
 
 A change applies from the next turn. If a project has no pi files, there is nothing to trust and `/trust` says so. If marcsh cannot read one of the files, **Trust** is not offered either, and the dialog lists the unreadable files. A trust you gave earlier stops applying when the files change after your review. Review them again.
 
+marcsh never runs `git status` in a folder you have not trusted, on either engine, because `git status` can run programs that a repo's own git settings name. There the status line only reads the branch.
+
 ### On Claude
 
 marcsh does not ask about project files on the Claude engine. Claude Code reads the project's settings (`.claude/settings.json` and `.claude/settings.local.json`) by its own rules, without the `/trust` prompt.
