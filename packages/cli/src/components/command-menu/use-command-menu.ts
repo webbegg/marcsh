@@ -13,7 +13,7 @@ import { COMMAND_NAMES } from "./commands";
 
 // Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
 // The plugin's own commands are read from disk, so they are listed even with an empty cache. So are the user's: a file added since start is listed.
-function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
+export function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
   const user = loadUserCommands({ cwd, builtinNames: COMMAND_NAMES });
   const pluginPath = marcshPluginPath();
   // Each engine has its own cache and its own names for the plugin's commands (on pi, `marcsh:feature` is a template).
