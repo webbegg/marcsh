@@ -36,12 +36,23 @@ export function updatePreferences(patch: Preferences, path = preferencesPath()) 
   }
 }
 
+// `marcsh --engine <engine>`: the engine for this launch only. It is never written to the preferences file.
+let launchEngine: EngineId | undefined;
+
+/** Overrides the default engine for this process (`undefined` clears it). */
+export function setLaunchEngine(engine: EngineId | undefined) {
+  launchEngine = engine;
+}
+
 export function getDefaultEngine(path = preferencesPath()): EngineId {
+  if (launchEngine) return launchEngine;
   const { defaultEngine } = readPreferences(path);
   return isEngineId(defaultEngine) ? defaultEngine : DEFAULT_ENGINE_ID;
 }
 
+/** Persists the choice; an engine the user picks while running replaces the launch override. */
 export function setDefaultEngine(engine: EngineId, path = preferencesPath()) {
+  launchEngine = undefined;
   updatePreferences({ defaultEngine: engine }, path);
 }
 

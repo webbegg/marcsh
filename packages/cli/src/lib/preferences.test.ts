@@ -10,6 +10,7 @@ import {
   readPreferences,
   setAgentId,
   setDefaultEngine,
+  setLaunchEngine,
   setPiModel,
   updatePreferences,
 } from "./preferences";
@@ -147,5 +148,34 @@ describe("preferencesPath", () => {
       if (previous === undefined) delete process.env.MARCSH_PREFERENCES_PATH;
       else process.env.MARCSH_PREFERENCES_PATH = previous;
     }
+  });
+});
+
+describe("launch engine override", () => {
+  afterEach(() => setLaunchEngine(undefined));
+
+  test("wins over the stored engine for this process and writes nothing", () => {
+    setDefaultEngine("pi", path);
+    const before = readFileSync(path, "utf8");
+
+    setLaunchEngine("claude");
+
+    expect(getDefaultEngine(path)).toBe("claude");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("clearing it brings the stored engine back", () => {
+    setDefaultEngine("claude", path);
+    setLaunchEngine("pi");
+    setLaunchEngine(undefined);
+
+    expect(getDefaultEngine(path)).toBe("claude");
+  });
+
+  test("choosing an engine afterwards replaces the override", () => {
+    setLaunchEngine("claude");
+    setDefaultEngine("pi", path);
+
+    expect(getDefaultEngine(path)).toBe("pi");
   });
 });
