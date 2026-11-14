@@ -8,7 +8,11 @@ import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine
 import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
+import { dropRedo, SNAPSHOT_TIMEOUT_MS, trackWithin, withSnapshot } from "../lib/session-snapshots";
+import { primeWithTranscript } from "./transcript-primer";
+import type { SnapshotStoreResult } from "../lib/snapshot";
 import { getStorage, type StoredSession } from "../lib/storage";
+import { mergeUsage, reported } from "../lib/usage";
 
 export type ChatStatus = "ready" | "submitted" | "streaming";
 
@@ -78,7 +82,31 @@ export type ChatOptions = {
    * nothing could take it, and the notice then carries the whole text.
    */
   restore?: (text: string) => boolean;
+  /** The project's snapshot store: each turn is bracketed by two snapshots of the files. Absent: nothing is snapshotted. */
+  snapshots?: SnapshotStoreResult;
+  /** How long a snapshot may take before the turn goes on without it. Default: `SNAPSHOT_TIMEOUT_MS`. */
+  snapshotTimeoutMs?: number;
 };
+
+/** How a compaction ended; `reason` is for the user. */
+export type CompactOutcome = { ok: true; tokensBefore?: number; tokensAfter?: number } | { ok: false; reason: string };
+
+// An aborted turn (the user left or quit) must not hold the exit up for a slow snapshot.
+const ABORTED_SNAPSHOT_TIMEOUT_MS = 3_000;
+
+/**
+ * What the session's conversation had cost in all after its last reply that says so, to subtract from a resumed turn's running total.
+ * A reply saved before the total was kept has it as its cost: it stored the engine's running total as it was.
+ */
+function priorCumulativeCost(messages: ChatMessage[]): number | undefined {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const usage = message.metadata?.usage;
+    const total = reported(usage?.cumulativeCostUsd) ?? reported(usage?.costUsd) ?? reported(message.metadata?.costUsd);
+    if (total !== undefined) return total;
+  }
+  return undefined;
+}
 
 /** Cancels a request the user never answered. */
 function decline(request: PendingRequest) {
@@ -114,10 +142,13 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   const [canSteer, setCanSteer] = useState(false);
   // The turn is still winding down but takes no more text: the engine has settled, or the turn was interrupted.
   const [inputClosed, setInputClosed] = useState(false);
+  // The engine is compacting the context: busy, but no turn runs, so the input takes nothing (a prompt sent now would be dropped).
+  const [compacting, setCompacting] = useState(false);
 
   const messagesRef = useRef(messages);
   const statusRef = useRef<ChatStatus>("ready");
   const resumeRefRef = useRef(session.engineSessionRef);
+  const needsPrimerRef = useRef(!session.engineSessionRef && session.messages.length > 0);
   const turnRef = useRef<EngineTurn | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
@@ -127,6 +158,15 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   notifyRef.current = options.notify;
   const restoreRef = useRef(options.restore);
   restoreRef.current = options.restore;
+  const snapshotsRef = useRef(options.snapshots);
+  snapshotsRef.current = options.snapshots;
+  const snapshotTimeoutRef = useRef(options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS);
+  snapshotTimeoutRef.current = options.snapshotTimeoutMs ?? SNAPSHOT_TIMEOUT_MS;
+  // Why the last turn has no snapshot (a failure or a timeout), for `/undo` to say.
+  const snapshotIssueRef = useRef<string | undefined>(undefined);
+  // A snapshot that was given up on keeps running in the background, so the next would only queue behind it: this session takes no more.
+  const snapshotsGaveUpRef = useRef(false);
+  const compactingRef = useRef<AbortController | null>(null);
 
   const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
     messagesRef.current = update(messagesRef.current);
@@ -146,12 +186,21 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       interruptedRef.current = false;
       inputClosedRef.current = false;
 
+      // A session opened with messages but no engine conversation (a fork) starts one primed with what was said, once; the chat shows only
+      // what was typed. An engine that never reports a conversation is not primed again on each turn.
+      let enginePrompt = userText;
+      if (needsPrimerRef.current && !resumeRefRef.current) {
+        enginePrompt = primeWithTranscript(userText, session, messagesRef.current);
+        if (enginePrompt !== userText) needsPrimerRef.current = false;
+      }
+
       // A message delivered to the turn closes this reply: what follows is a new one, so the ids are kept.
       let replyId = crypto.randomUUID();
       const replyIds = [replyId];
       const metadata = { mode, model, ...(turnAgent ? { agent: turnAgent.name } : {}) };
       updateMessages((prev) => [
-        ...prev,
+        // A new turn ends every redo: what an undo took back stays gone.
+        ...dropRedo(prev),
         { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
         { id: replyId, role: "assistant", parts: [], metadata },
       ]);
@@ -277,10 +326,24 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         notify: (message, level) => notifyRef.current?.(message, level),
       };
 
+      let before: string | undefined;
+      let started = false;
       try {
+        // The files as the turn finds them. Never blocks the turn for long, and a failure only means `/undo` has nothing for it.
+        const store = snapshotsRef.current?.available && !snapshotsGaveUpRef.current ? snapshotsRef.current.store : undefined;
+        if (store) {
+          const tracked = await trackWithin(store, snapshotTimeoutRef.current);
+          before = "tree" in tracked ? tracked.tree : undefined;
+          snapshotIssueRef.current = "reason" in tracked ? tracked.reason : undefined;
+          if ("timedOut" in tracked) snapshotsGaveUpRef.current = true;
+        }
+        // Esc or leaving the session while the files were being captured: the turn never starts.
+        if (interruptedRef.current || abortController.signal.aborted) return;
+
+        started = true;
         const turn = engine.startTurn(
           {
-            prompt: userText,
+            prompt: enginePrompt,
             cwd: session.cwd,
             mode,
             model,
@@ -288,6 +351,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
             ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
+            ...(resumeRefRef.current ? { priorCostUsd: priorCumulativeCost(messagesRef.current) } : {}),
             signal: abortController.signal,
           },
           host,
@@ -301,14 +365,23 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         }
       } finally {
         turnRef.current = null;
-        abortControllerRef.current = null;
-        setCanSteer(false);
-        setInputClosed(false);
-        setQueued(NOTHING_QUEUED);
         // Requests the engine is still waiting on (it can end the turn without aborting) are declined, not just dropped.
         for (const request of [...pendingRequestsRef.current]) decline(request);
         setPermissionQueue([]);
         for (const id of replyIds) applyToReply(finishReply, id);
+        // The files as the turn left them, kept on its last reply. The input stays as the turn left it until this is done.
+        if (before !== undefined && started && snapshotsRef.current?.available) {
+          const after = await trackWithin(snapshotsRef.current.store, abortController.signal.aborted ? ABORTED_SNAPSHOT_TIMEOUT_MS : snapshotTimeoutRef.current);
+          if ("tree" in after) updateMessages((prev) => withSnapshot(prev, replyId, { before: before!, after: after.tree }));
+          else {
+            snapshotIssueRef.current = after.reason;
+            if ("timedOut" in after) snapshotsGaveUpRef.current = true;
+          }
+        }
+        abortControllerRef.current = null;
+        setCanSteer(false);
+        setInputClosed(false);
+        setQueued(NOTHING_QUEUED);
         updateStatus("ready");
 
         try {
@@ -320,11 +393,12 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         finishTurn();
       }
     },
-    [session.id, session.cwd, session.engine, engine, updateMessages, updateStatus],
+    [session, engine, updateMessages, updateStatus],
   );
 
   const interrupt = useCallback(() => {
     interruptedRef.current = true;
+    compactingRef.current?.abort();
     // The engine discards what it has not sent; the turn takes no more input while it winds down.
     setCanSteer(false);
     if (turnRef.current) {
@@ -358,6 +432,66 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     abortControllerRef.current?.abort();
   }, []);
 
+  // Changes the messages outside a turn (an undo marks its reply) and saves them. Returns the reason when saving failed.
+  const editMessages = useCallback(
+    (update: (prev: ChatMessage[]) => ChatMessage[]): string | undefined => {
+      updateMessages(update);
+      try {
+        getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);
+        return undefined;
+      } catch (err) {
+        return `Could not save session: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    },
+    [session.id, updateMessages],
+  );
+
+  const getMessages = useCallback(() => messagesRef.current, []);
+  // Whether the engine has a conversation of this session to continue (its first turn reported one).
+  const hasConversation = useCallback(() => resumeRefRef.current != null, []);
+  const snapshotIssue = useCallback(() => snapshotIssueRef.current, []);
+
+  // Asks the engine to compact the conversation outside a turn. The session is busy meanwhile; Esc or leaving it cancels.
+  const compact = useCallback(
+    async (model: string): Promise<CompactOutcome> => {
+      if (!engine.compact) return { ok: false, reason: "This engine cannot compact its context." };
+      if (statusRef.current !== "ready") return { ok: false, reason: "Wait for the current turn to finish." };
+      const resumeRef = resumeRefRef.current;
+      if (!resumeRef) return { ok: false, reason: "Nothing to compact yet: this session has no conversation." };
+
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      compactingRef.current = controller;
+      interruptedRef.current = false;
+      setCompacting(true);
+      updateStatus("submitted");
+      try {
+        const result = await engine.compact({ cwd: session.cwd, model, resumeRef, signal: controller.signal });
+        if (controller.signal.aborted) return { ok: false, reason: "Compaction was cancelled." };
+        const { tokensAfter } = result;
+        // The status line shows the smaller context until the next reply reports its own.
+        if (tokensAfter !== undefined) {
+          const last = [...messagesRef.current].reverse().find((m) => m.role === "assistant" && m.metadata?.usage?.contextTokens !== undefined);
+          if (last) {
+            const failure = editMessages((prev) =>
+              prev.map((m) => (m.id === last.id ? { ...m, metadata: { ...m.metadata, usage: mergeUsage(m.metadata?.usage, { contextTokens: tokensAfter }) } } : m)),
+            );
+            if (failure) setError(failure);
+          }
+        }
+        return { ok: true, ...result };
+      } catch (err) {
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      } finally {
+        if (abortControllerRef.current === controller) abortControllerRef.current = null;
+        compactingRef.current = null;
+        setCompacting(false);
+        updateStatus("ready");
+      }
+    },
+    [engine, session.cwd, editMessages, updateStatus],
+  );
+
   return {
     messages,
     status,
@@ -365,6 +499,12 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
     submit,
     interrupt,
     abort,
+    editMessages,
+    compacting,
+    getMessages,
+    hasConversation,
+    snapshotIssue,
+    compact,
     steer,
     followUp,
     queued,

@@ -14,6 +14,7 @@ import {
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
+import type { SessionCommands } from "./session-commands";
 import type { Command, CommandContext } from "./types";
 
 const failureText = (error: unknown) => redactSecrets(error instanceof Error ? error.message : String(error));
@@ -80,6 +81,12 @@ async function openLogout(ctx: CommandContext) {
     ctx.toast.show({ variant: "error", message: `Could not read pi logins: ${failureText(error)}` });
   }
 }
+
+/** The action of a command on the open session; with none open (the home screen) it says so. */
+const onSession =
+  (name: string, run: (session: SessionCommands, ctx: CommandContext) => void | Promise<void>) =>
+  (ctx: CommandContext) =>
+    ctx.session ? run(ctx.session, ctx) : ctx.toast.show({ variant: "info", message: `/${name} works inside a session. Open one first.` });
 
 export const COMMANDS: Command[] = [
   {
@@ -171,6 +178,64 @@ export const COMMANDS: Command[] = [
         children: <SessionsDialogContent />,
       })
     },
+  },
+  {
+    name: "rename",
+    description: "Rename this session",
+    value: "/rename",
+    argumentHint: "<title>",
+    scope: "session",
+    action: onSession("rename", (session, ctx) => session.rename(ctx.args)),
+  },
+  {
+    name: "fork",
+    description: "Continue in a copy of this session",
+    value: "/fork",
+    scope: "session",
+    action: onSession("fork", (session) => session.fork()),
+  },
+  {
+    name: "export",
+    description: "Save this session as markdown or JSON",
+    value: "/export",
+    argumentHint: "[md|json] [path]",
+    scope: "session",
+    action: onSession("export", (session, ctx) => session.exportTranscript(ctx.args)),
+  },
+  {
+    name: "undo",
+    description: "Put back the files the last turn changed",
+    value: "/undo",
+    scope: "session",
+    action: onSession("undo", (session) => session.undo()),
+  },
+  {
+    name: "redo",
+    description: "Re-apply the file changes /undo took back",
+    value: "/redo",
+    scope: "session",
+    action: onSession("redo", (session) => session.redo()),
+  },
+  {
+    name: "diff",
+    description: "Show the files changed in this session",
+    value: "/diff",
+    scope: "session",
+    action: onSession("diff", (session) => session.diff()),
+  },
+  {
+    name: "compact",
+    description: "Compact this session's context",
+    value: "/compact",
+    scope: "session",
+    action: onSession("compact", (session) => session.compact()),
+  },
+  {
+    name: "copy",
+    description: "Copy the last reply to the clipboard",
+    value: "/copy",
+    scope: "session",
+    action: onSession("copy", (session) => session.copy()),
   },
   {
     name: "theme",

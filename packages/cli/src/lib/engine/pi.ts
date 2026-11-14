@@ -587,6 +587,55 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // Best effort: the menu keeps the last list it had.
       }
     },
+    // pi's own manual compaction (what its `/compact` runs) on the conversation file the turns saved. No extension, skill or MCP server
+    // is loaded and the project is never asked about: a compaction only needs the model, and an untrusted project keeps its files unloaded.
+    compact: async ({ cwd, model, resumeRef, signal }) => {
+      const cancelled = () => new Error("Compaction was cancelled.");
+      if (signal.aborted) throw cancelled();
+      process.env[AGENT_DIR_ENV] = agentDir;
+      prepareAgentDir();
+      const pi = await loadPi();
+      const models = await runtimeFor(pi);
+      const wanted = parseModel(model);
+      const resolved = wanted && models.getModel(wanted.provider, wanted.id);
+      if (!resolved) throw new Error(`Unknown pi model "${model}". Use provider/model-id.`);
+
+      const settingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: isProjectTrusted(cwd, trustRecords) });
+      const resourceLoader = new pi.DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      });
+      await resourceLoader.reload();
+      const { session } = await pi.createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime: models,
+        model: resolved,
+        sessionManager: pi.SessionManager.open(resumeRef, options.sessionDir, cwd),
+        settingsManager,
+        resourceLoader,
+      });
+      const stop = () => session.abortCompaction();
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        if (signal.aborted) throw cancelled();
+        const result = await session.compact();
+        if (signal.aborted) throw cancelled();
+        return { tokensBefore: result.tokensBefore, ...(result.estimatedTokensAfter !== undefined ? { tokensAfter: result.estimatedTokensAfter } : {}) };
+      } catch (error) {
+        // Provider errors can echo the key or token that was sent.
+        throw signal.aborted ? cancelled() : new Error(redactSecrets(friendlyPiError(error instanceof Error ? error.message : String(error))));
+      } finally {
+        signal.removeEventListener("abort", stop);
+        await disposePiSession(session);
+      }
+    },
     getRuntime: async () => {
       process.env[AGENT_DIR_ENV] = agentDir;
       prepareAgentDir();

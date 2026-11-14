@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { Mode } from "../modes";
-import { claudeQueryOptions, createCanUseTool } from "./claude";
+import { applyClaudeMessage, claudeQueryOptions, createCanUseTool } from "./claude";
 import type { PermissionAsk, TurnHost, TurnRequest } from "./types";
 
 // The names are spelled out on purpose: this pins what the SDK is sent, so a renamed or dropped entry in the tool table fails here.
@@ -97,5 +97,34 @@ describe("the canUseTool backstop for an agent's tools", () => {
 
     await call("Bash", { command: "ls" }, "task-child-1");
     expect(asked.map((ask) => ask.toolName)).toEqual(["Bash"]);
+  });
+});
+
+describe("the cost of a resumed turn", () => {
+  const result = (total: number) => ({ type: "result", subtype: "success", is_error: false, result: "ok", duration_ms: 1, total_cost_usd: total }) as never;
+  const empty = { id: "r", role: "assistant" as const, parts: [], metadata: { model: "sonnet" } };
+
+  test("a first turn keeps the reported cost, and the running total is stored next to it", () => {
+    const reply = applyClaudeMessage(empty, result(0.25), undefined);
+    expect(reply.metadata?.costUsd).toBe(0.25);
+    expect(reply.metadata?.usage).toMatchObject({ costUsd: 0.25, cumulativeCostUsd: 0.25 });
+  });
+
+  test("a resumed turn's total includes the earlier turns: the reply holds only the difference", () => {
+    const reply = applyClaudeMessage(empty, result(0.75), 0.5);
+    expect(reply.metadata?.costUsd).toBeCloseTo(0.25, 10);
+    expect(reply.metadata?.usage?.costUsd).toBeCloseTo(0.25, 10);
+    expect(reply.metadata?.usage?.cumulativeCostUsd).toBe(0.75);
+  });
+
+  test("a total below what the session had cost means the transcript carried nothing over: it is the turn's own cost", () => {
+    const reply = applyClaudeMessage(empty, result(0.125), 0.5);
+    expect(reply.metadata?.costUsd).toBe(0.125);
+    expect(reply.metadata?.usage?.cumulativeCostUsd).toBe(0.5 + 0.125);
+  });
+
+  test("messages that are not the result pass through untouched", () => {
+    const message = { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, parent_tool_use_id: null } as never;
+    expect(applyClaudeMessage(empty, message, 0.5).parts).toEqual([{ type: "text", text: "hi" }]);
   });
 });

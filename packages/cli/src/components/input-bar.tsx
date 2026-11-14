@@ -15,6 +15,7 @@ import { CommandMenu } from "./command-menu";
 import type { Command } from "./command-menu/types";
 import { COMMANDS } from "./command-menu/commands";
 import { useCommandMenu } from "./command-menu/use-command-menu";
+import { SessionCommandsContext } from "./command-menu/session-commands";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
@@ -340,6 +341,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const navigate = useNavigate();
   const dialog = useDialog();
   const toast = useToast();
+  // What the commands on the open session act on; none on the home screen.
+  const session = useContext(SessionCommandsContext);
   // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
   const agentIdRef = useRef(agent.id);
   agentIdRef.current = agent.id;
@@ -373,7 +376,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     handleContentChange,
     resolveCommand,
     setSelectedIndex,
-  } = useCommandMenu(engineId, cwd);
+  } = useCommandMenu(engineId, cwd, session !== null);
 
   const showMentionMenu = activeMention !== null;
 
@@ -570,11 +573,12 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         reloadAgents,
         selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
         setModel,
+        session,
       });
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, session]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {
