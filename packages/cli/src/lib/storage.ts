@@ -28,6 +28,13 @@ export type PermissionRule = {
   command?: string;
 };
 
+/** An "allow similar commands under a folder" decision: the path program (`rm`, `mv`...) may run without asking when every target is inside `dir`. */
+export type PathRule = {
+  cwd: string;
+  program: string;
+  dir: string;
+};
+
 /** Whether pi may load a project's own pi files (extensions, MCP servers, settings...). A project nobody decided about has no decision. */
 export type ProjectTrust = "trusted" | "untrusted";
 
@@ -60,6 +67,9 @@ export type Storage = {
   saveCommands(engine: string, commands: ClaudeCommand[]): void;
   addPermissionRule(rule: PermissionRule): void;
   hasPermissionRule(rule: PermissionRule): boolean;
+  addPathRule(rule: PathRule): void;
+  /** The path rules of the project at `cwd`. */
+  pathRulesFor(cwd: string): PathRule[];
   /** The stored decision for the project at `cwd` (its resolved real path), or null when undecided. */
   getProjectTrust(cwd: string): ProjectTrust | null;
   /** Stores the decision for the project at `cwd`; null forgets it. A "trusted" keeps the `review` it was given; any other decision keeps none. */
@@ -172,6 +182,17 @@ export function openStorage(path = defaultDbPath()): Storage {
       command TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL,
       PRIMARY KEY (cwd, tool_name, command)
+    )
+  `);
+
+  // Folder rules ("allow `rm` under /tmp/x"): one row per project, program and folder.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS path_rules (
+      cwd TEXT NOT NULL,
+      program TEXT NOT NULL,
+      dir TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (cwd, program, dir)
     )
   `);
 
@@ -341,6 +362,17 @@ export function openStorage(path = defaultDbPath()): Storage {
           .query("SELECT 1 FROM permission_rules WHERE cwd = $cwd AND tool_name = $toolName AND command = $command")
           .get({ cwd, toolName, command }) !== null
       );
+    },
+
+    addPathRule({ cwd, program, dir }) {
+      db.query(
+        `INSERT OR IGNORE INTO path_rules (cwd, program, dir, created_at)
+         VALUES ($cwd, $program, $dir, $now)`,
+      ).run({ cwd, program, dir, now: Date.now() });
+    },
+
+    pathRulesFor(cwd) {
+      return db.query<PathRule, { cwd: string }>("SELECT cwd, program, dir FROM path_rules WHERE cwd = $cwd ORDER BY created_at, program, dir").all({ cwd });
     },
 
     getProjectTrust(cwd) {

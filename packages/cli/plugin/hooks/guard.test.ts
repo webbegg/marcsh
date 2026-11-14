@@ -54,6 +54,15 @@ describe("guard.ts (hook script)", () => {
     });
   });
 
+  test("still denies on main when a tag is also named main", () => {
+    git(repo, "tag", "main");
+    try {
+      expect(JSON.parse(runGuard(hook('git commit -m "x"', repo)).out).hookSpecificOutput.permissionDecision).toBe("deny");
+    } finally {
+      git(repo, "tag", "-d", "main");
+    }
+  });
+
   test("allows git commit on a feature branch (prints nothing)", () => {
     git(repo, "switch", "-q", "-c", "feat/x");
     const { code, out } = runGuard(hook('git commit -m "x"', repo));

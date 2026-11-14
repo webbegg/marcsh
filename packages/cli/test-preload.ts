@@ -24,3 +24,10 @@ process.env.MARCSH_SNAPSHOTS = "off";
 process.env.MARCSH_GIT_STATUS = "off";
 // Packs come from https://github.com unless a test sets a file:// base itself.
 delete process.env.MARCSH_PACK_URL_BASE;
+
+// The turn-done bell (notify preference, default `bell`) goes to process.stdout; any test that finishes a turn would ring the terminal
+// running the suite and put a stray BEL byte in its log. The bell alone is dropped; everything else passes through. A test that checks
+// the bell injects its own writer (setNotifyDeps), and one that captures stdout wraps this function and still sees every other chunk.
+const writeStdout = process.stdout.write.bind(process.stdout);
+process.stdout.write = ((chunk: unknown, ...rest: unknown[]) =>
+  chunk === "\x07" ? true : (writeStdout as (...args: unknown[]) => boolean)(chunk, ...rest)) as typeof process.stdout.write;

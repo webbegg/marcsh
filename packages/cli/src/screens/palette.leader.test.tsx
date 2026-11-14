@@ -92,6 +92,14 @@ describe("the leader key (S8)", () => {
     expect(frame()).toContain("Select Model");
   });
 
+  test("ctrl+x then p opens /permissions", async () => {
+    await render();
+    await leader();
+    await press("p");
+    expect(frame()).toContain("Permissions");
+    expect(frame()).toContain("normal");
+  });
+
   test("ctrl+x then t runs /theme, and the prompt stays empty", async () => {
     await render();
     await leader();

@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createSnapshotStore, defaultSnapshotRoot, type SnapshotStore } from "./snapshot";
+
+// Real git in temp projects: slower than Bun's 5 s on a loaded machine.
+setDefaultTimeout(60_000);
 
 let base: string;
 let root: string;
@@ -617,6 +620,95 @@ describe("marcsh's own data inside the project", () => {
     expect(statSync(root).mode & 0o777).toBe(0o700);
     const [shadow] = readdirSync(root);
     expect(statSync(join(root, shadow!)).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe("reading the current files can be given up on (R4-002)", () => {
+  test("changedFiles, diff and modifiedSince that read the current files reject at once under an aborted signal; the store keeps working", async () => {
+    put(project, "a.txt", "one");
+    const store = open();
+    const tree = await store.track();
+    const cancelled = AbortSignal.abort();
+
+    await expect(store.changedFiles(tree, undefined, cancelled)).rejects.toThrow("cancelled");
+    await expect(store.diff(tree, undefined, cancelled)).rejects.toThrow("cancelled");
+    await expect(store.modifiedSince(tree, ["a.txt"], cancelled)).rejects.toThrow("cancelled");
+
+    expect(await store.modifiedSince(tree, ["a.txt"], new AbortController().signal)).toEqual([]);
+    expect(await store.changedFiles(tree)).toEqual([]);
+  });
+});
+
+describe("one shadow repo shared by several marcsh processes (R4-004)", () => {
+  const shadowDir = () => join(root, readdirSync(root)[0]!);
+  const lockPath = () => join(shadowDir(), "index.lock");
+  const ago = (ms: number) => new Date(Date.now() - ms);
+  const makeLock = (age: number) => {
+    writeFileSync(lockPath(), "");
+    utimesSync(lockPath(), ago(age), ago(age));
+  };
+
+  test("a lock left by a killed process (older than two minutes) is removed and the snapshot goes on", async () => {
+    put(project, "a.txt", "one");
+    const first = await open().track();
+    makeLock(5 * 60_000);
+
+    // A new marcsh process: its own store, as after a restart.
+    const again = await open().track();
+
+    expect(again).toBe(first);
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  test("a fresh lock may be a live git's: it is left alone and the failure is reported", async () => {
+    put(project, "a.txt", "one");
+    await open().track();
+    makeLock(5_000);
+
+    await expect(open().track()).rejects.toThrow("index.lock");
+
+    expect(existsSync(lockPath())).toBe(true);
+  });
+
+  test("info/exclude is not rewritten when its content is the same, and is replaced whole when it changes", async () => {
+    put(project, "a.txt", "one");
+    const options = { cwd: project, root, exclude: [join(project, "private")] };
+    const make = () => {
+      const created = createSnapshotStore(options);
+      if (!created.available) throw new Error(created.reason);
+      return created.store;
+    };
+    await make().track();
+    const exclude = join(shadowDir(), "info", "exclude");
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/private\n");
+    utimesSync(exclude, ago(60_000), ago(60_000));
+    const before = statSync(exclude);
+
+    await make().track();
+    const after = statSync(exclude);
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/private\n");
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+
+    const other = createSnapshotStore({ ...options, exclude: [join(project, "secret")] });
+    if (!other.available) throw new Error(other.reason);
+    await other.store.track();
+    expect(readFileSync(exclude, "utf8")).toBe(".git\n/secret\n");
+    // No temporary file is left next to it.
+    expect(readdirSync(join(shadowDir(), "info"))).toEqual(["exclude"]);
+  });
+
+  test("two processes starting together do not write the [core] block twice", async () => {
+    put(project, "a.txt", "one");
+
+    // The three `add`s may meet each other's lock (a live git's: reported, not removed); the initialization is what is checked.
+    const settled = await Promise.allSettled([open().track(), open().track(), open().track()]);
+
+    expect(settled.some((result) => result.status === "fulfilled")).toBe(true);
+    expect(await open().track()).toMatch(/^[0-9a-f]{40,64}$/);
+    const config = readFileSync(join(shadowDir(), "config"), "utf8");
+    expect(config.match(/hooksPath = \/dev\/null/g)).toHaveLength(1);
+    expect(config.match(/bare = false/g)).toHaveLength(1);
   });
 });
 

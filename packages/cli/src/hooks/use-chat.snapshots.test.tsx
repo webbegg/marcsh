@@ -1,8 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
+
+// Real git snapshots inside act(): see session-commands.undo.test.tsx for why a 5 s timeout here breaks the files after it.
+setDefaultTimeout(60_000);
 
 process.env.MARCSH_DB_PATH = ":memory:";
 
@@ -148,6 +151,70 @@ describe("a turn's snapshot (S4)", () => {
     expect(requests).toHaveLength(2);
     expect(tracked).toBe(1);
     expect(latest.snapshotIssue()).toContain("took longer than");
+  });
+
+  test("an aborted turn saves its messages before the slow after-turn snapshot settles, is ready at once, and saves again with the snapshot", async () => {
+    const before = "a".repeat(40);
+    const after = "b".repeat(40);
+    let release: (tree: string) => void = () => {};
+    let calls = 0;
+    const slowAfter = {
+      available: true,
+      store: { track: () => (++calls === 1 ? Promise.resolve(before) : new Promise<string>((resolve) => (release = resolve))) } as unknown as SnapshotStore,
+    } as const;
+    const { engine, requests } = scriptedEngine(
+      (request, host) =>
+        new Promise<void>((resolve) => {
+          host.emit({ type: "reply", update: (reply) => ({ ...reply, parts: [{ type: "text", text: "half" }] }) });
+          request.signal.addEventListener("abort", () => resolve());
+        }),
+    );
+    const id = await open(engine, { snapshots: slowAfter });
+
+    void latest.submit({ userText: "go", mode: "BUILD", model: "opus" });
+    for (let i = 0; i < 100 && requests.length === 0; i++) await settle(10);
+    expect(requests).toHaveLength(1);
+    latest.abort();
+    await settle(100);
+
+    // The snapshot is still pending: the turn's messages are already stored and the session is ready.
+    expect(calls).toBe(2);
+    expect(latest.status).toBe("ready");
+    const saved = getStorage().getSession(id)!.messages;
+    expect(saved.map((m) => [m.role, m.parts[0]])).toEqual([
+      ["user", { type: "text", text: "go" }],
+      ["assistant", { type: "text", text: "half" }],
+    ]);
+    expect(saved[1]!.metadata?.snapshot).toBeUndefined();
+
+    release(after);
+    await settle(100);
+    expect(getStorage().getSession(id)!.messages[1]!.metadata?.snapshot).toEqual({ before, after });
+  });
+
+  test("a turn that ends normally keeps its input closed until the snapshot is taken, so undo has its pair", async () => {
+    const before = "a".repeat(40);
+    const after = "b".repeat(40);
+    let release: (tree: string) => void = () => {};
+    let calls = 0;
+    const slowAfter = {
+      available: true,
+      store: { track: () => (++calls === 1 ? Promise.resolve(before) : new Promise<string>((resolve) => (release = resolve))) } as unknown as SnapshotStore,
+    } as const;
+    const { engine } = scriptedEngine(() => {});
+    const id = await open(engine, { snapshots: slowAfter });
+
+    void latest.submit({ userText: "go", mode: "BUILD", model: "opus" });
+    await settle(100);
+    expect(calls).toBe(2);
+    expect(latest.status).not.toBe("ready");
+    // The messages are stored even so.
+    expect(getStorage().getSession(id)!.messages).toHaveLength(2);
+
+    release(after);
+    await settle(100);
+    expect(latest.status).toBe("ready");
+    expect(getStorage().getSession(id)!.messages[1]!.metadata?.snapshot).toEqual({ before, after });
   });
 
   test("a new turn after an undo makes the undone replies final", async () => {

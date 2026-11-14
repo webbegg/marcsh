@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 
@@ -14,17 +14,20 @@ export type SnapshotStore = {
    * the resulting tree hash. Aborting `signal` kills the git process that is running, so a snapshot given up on stops copying files.
    */
   track(signal?: AbortSignal): Promise<string>;
-  /** Paths (relative to the project, `/`-separated) that differ between two trees; `to` defaults to the current files. A rename shows as one deleted and one added path. */
-  changedFiles(from: string, to?: string): Promise<string[]>;
-  /** Unified diff text between two trees; `to` defaults to the current files. Empty when nothing changed. */
-  diff(from: string, to?: string): Promise<string>;
+  /**
+   * Paths (relative to the project, `/`-separated) that differ between two trees; `to` defaults to the current files. A rename shows as one deleted and one added path.
+   * Reading the current files stages them, so `signal` can stop that as it does for `track`.
+   */
+  changedFiles(from: string, to?: string, signal?: AbortSignal): Promise<string[]>;
+  /** Unified diff text between two trees; `to` defaults to the current files (staged under `signal`, as for `track`). Empty when nothing changed. */
+  diff(from: string, to?: string, signal?: AbortSignal): Promise<string>;
   /**
    * Writes exactly `files` to their content in `tree`; a file that is absent from `tree` is deleted. Throws before writing anything
    * when a path is absolute, contains `..`, goes through `.git` or through a symlinked directory.
    */
   restore(tree: string, files: string[]): Promise<{ written: string[]; deleted: string[] }>;
-  /** The subset of `files` whose current content differs from `tree` (a missing file counts when `tree` has it, a present one when `tree` lacks it). Ignored files never count. */
-  modifiedSince(tree: string, files: string[]): Promise<string[]>;
+  /** The subset of `files` whose current content differs from `tree` (a missing file counts when `tree` has it, a present one when `tree` lacks it). Ignored files never count. Staging the current files stops under `signal`, as for `track`. */
+  modifiedSince(tree: string, files: string[], signal?: AbortSignal): Promise<string[]>;
 };
 
 export type SnapshotStoreResult = { available: true; store: SnapshotStore } | { available: false; reason: string };
@@ -40,7 +43,15 @@ export type SnapshotStoreOptions = {
 
 export const defaultSnapshotRoot = () => join(homedir(), ".marcsh", "snapshots");
 
+/**
+ * How old an `index.lock` must be to be taken for one a killed process left behind. A git that is alive is stopped after 10 s
+ * (see `SNAPSHOT_TIMEOUT_MS`), so none holds a lock this long.
+ */
+const STALE_LOCK_MS = 2 * 60_000;
+
 const TREE_HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A line of the block `configure` appends (the first of `SAFE_CONFIG`): what says the repo's config has it. */
+const CONFIGURED = "hooksPath = /dev/null";
 const decoder = new TextDecoder();
 
 /** Per-call options that switch off everything a user's or a project's git configuration could add. */
@@ -140,7 +151,7 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
     .filter((rel) => rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel) && !rel.includes("\n"));
   const isExcluded = (file: string) => excluded.some((rel) => file === rel || file.startsWith(`${rel}/`));
 
-  const run = async (args: string[], mode: "shadow" | "init" | "pathspec-magic" = "shadow", signal?: AbortSignal): Promise<Uint8Array> => {
+  const runOnce = async (args: string[], mode: "shadow" | "init" | "pathspec-magic", signal?: AbortSignal): Promise<Uint8Array> => {
     const config = SAFE_CONFIG.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
     const target = mode === "init" ? ["--git-dir", gitDir] : ["--git-dir", gitDir, "--work-tree", workTree];
     // Paths are file names, never patterns; only the `add` that excludes nested repos needs pathspec magic.
@@ -166,7 +177,31 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
     if (code !== 0) throw new Error(`snapshot: git ${args[0]} failed (${code}): ${err.trim()}`);
     return new Uint8Array(out);
   };
-  const text = async (args: string[]) => decoder.decode(await run(args));
+  /** Removes the shadow index's lock when it is old enough to be a dead process's; whether it was removed. */
+  const removeStaleLock = (): boolean => {
+    const lock = join(gitDir, "index.lock");
+    try {
+      if (Date.now() - statSync(lock).mtimeMs < STALE_LOCK_MS) return false;
+      rmSync(lock, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Runs git on the shadow repo. Several marcsh processes in one project share it, and one killed during `add` leaves `index.lock`
+   * behind, which would fail every later snapshot: a lock that old is removed and the command is tried once more. A recent one may be
+   * a live git's, so that failure is reported.
+   */
+  const run = async (args: string[], mode: "shadow" | "init" | "pathspec-magic" = "shadow", signal?: AbortSignal): Promise<Uint8Array> => {
+    try {
+      return await runOnce(args, mode, signal);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("index.lock") || !removeStaleLock()) throw error;
+      return runOnce(args, mode, signal);
+    }
+  };
 
   // Everything touches the one shadow index, so calls run one at a time.
   let queue: Promise<unknown> = Promise.resolve();
@@ -176,6 +211,20 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
     return result;
   };
 
+  /**
+   * The repo's own configuration, written straight to the config file (a `git config` spawn per key made the first use slow). Checked
+   * before it is appended, with no await in between, so a repo that two processes initialized together gets the block once.
+   */
+  const configure = () => {
+    const file = join(gitDir, "config");
+    if (readFileSync(file, "utf8").includes(CONFIGURED)) return;
+    const config = SAFE_CONFIG.map(([key, value]) => {
+      const dot = key.indexOf(".");
+      return `[${key.slice(0, dot)}]\n\t${key.slice(dot + 1)} = ${value}\n`;
+    });
+    appendFileSync(file, `[core]\n\tbare = false\n${config.join("")}`);
+  };
+
   let ready: Promise<void> | undefined;
   const ensureInit = () => {
     ready ??= (async () => {
@@ -183,19 +232,30 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
         // Private: the shadow repos hold copies of project files, so only the user may enter them.
         mkdirSync(root, { recursive: true, mode: 0o700 });
         mkdirSync(gitDir, { recursive: true, mode: 0o700 });
-        // An empty template: no sample hooks are copied in.
-        await run(["init", "--quiet", "--template="], "init");
-        // Written straight to the config file: a `git config` spawn per key made the first use slow.
-        const config = SAFE_CONFIG.map(([key, value]) => {
-          const dot = key.indexOf(".");
-          return `[${key.slice(0, dot)}]\n\t${key.slice(dot + 1)} = ${value}\n`;
-        });
-        appendFileSync(join(gitDir, "config"), `[core]\n\tbare = false\n${config.join("")}`);
+        try {
+          // An empty template: no sample hooks are copied in.
+          await run(["init", "--quiet", "--template="], "init");
+        } catch (error) {
+          // Another marcsh process in this project made the repo first (git refuses to init over its finished config).
+          if (!existsSync(join(gitDir, "HEAD"))) throw error;
+        }
       }
+      configure();
       mkdirSync(join(gitDir, "info"), { recursive: true });
       // `.git` (a folder or a worktree's file, at any depth) is never snapshotted, so nested repos are not recorded as submodules either.
-      // Rewritten on every start: a shadow repo made before marcsh's data was left out gets the new lines too.
-      writeFileSync(join(gitDir, "info", "exclude"), [".git", ...excluded.map(excludeLine)].join("\n") + "\n");
+      // Brought up to date on every start (a shadow repo made before marcsh's data was left out gets the new lines too), but only written
+      // when it differs, and by renaming a finished file over it: another process's `add` must never read it half written, or empty.
+      const exclude = [".git", ...excluded.map(excludeLine)].join("\n") + "\n";
+      const excludeFile = join(gitDir, "info", "exclude");
+      let present: string | undefined;
+      try {
+        present = readFileSync(excludeFile, "utf8");
+      } catch {}
+      if (present !== exclude) {
+        const temporary = `${excludeFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+        writeFileSync(temporary, exclude);
+        renameSync(temporary, excludeFile);
+      }
       await unstageExcluded();
     })().catch((error) => {
       ready = undefined;
@@ -248,11 +308,11 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
     }
   };
 
-  const treeOrCurrent = async (to: string | undefined) => (to === undefined ? trackNow() : requireTree(to));
+  const treeOrCurrent = async (to: string | undefined, signal?: AbortSignal) => (to === undefined ? trackNow(signal) : requireTree(to));
 
-  const changedNow = async (from: string, to?: string): Promise<string[]> => {
+  const changedNow = async (from: string, to?: string, signal?: AbortSignal): Promise<string[]> => {
     const fromTree = requireTree(from);
-    const toTree = await treeOrCurrent(to);
+    const toTree = await treeOrCurrent(to, signal);
     const out = decoder.decode(await run(["diff-tree", "-r", "-z", "--name-only", "--no-renames", fromTree, toTree]));
     // A tree taken before marcsh's data was left out may still hold it.
     return out.split("\0").filter((path) => path !== "" && !isExcluded(path));
@@ -349,20 +409,26 @@ export function createSnapshotStore(options: SnapshotStoreOptions): SnapshotStor
         if (signal?.aborted) throw new Error("snapshot: cancelled");
         return trackNow(signal);
       }),
-    changedFiles: (from, to) => exclusive(() => changedNow(from, to)),
-    diff: (from, to) =>
+    changedFiles: (from, to, signal) =>
       exclusive(async () => {
+        if (signal?.aborted) throw new Error("snapshot: cancelled");
+        return changedNow(from, to, signal);
+      }),
+    diff: (from, to, signal) =>
+      exclusive(async () => {
+        if (signal?.aborted) throw new Error("snapshot: cancelled");
         const fromTree = requireTree(from);
-        const toTree = await treeOrCurrent(to);
+        const toTree = await treeOrCurrent(to, signal);
         const left = excluded.map((rel) => `:(exclude,literal)${rel}`);
         const args = ["diff-tree", "-p", "-r", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", fromTree, toTree];
         return decoder.decode(await run(left.length > 0 ? [...args, "--", ".", ...left] : args, left.length > 0 ? "pathspec-magic" : "shadow"));
       }),
     restore: (tree, files) => exclusive(() => restoreNow(tree, files)),
-    modifiedSince: (tree, files) =>
+    modifiedSince: (tree, files, signal) =>
       exclusive(async () => {
+        if (signal?.aborted) throw new Error("snapshot: cancelled");
         const wanted = [...new Set(files.map(normalizeRelative))];
-        const changed = new Set(await changedNow(tree));
+        const changed = new Set(await changedNow(tree, undefined, signal));
         return wanted.filter((file) => changed.has(file));
       }),
   };

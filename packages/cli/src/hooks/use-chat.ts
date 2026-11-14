@@ -8,6 +8,7 @@ import type { BackgroundBatch, BackgroundHost, BackgroundHub } from "../lib/back
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
 import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
+import { useApprovalMode } from "../providers/prompt-config";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
 import { dropRedo, SNAPSHOT_TIMEOUT_MS, trackWithin, withSnapshot } from "../lib/session-snapshots";
@@ -105,7 +106,7 @@ const ABORTED_SNAPSHOT_TIMEOUT_MS = 3_000;
  * What the session's conversation had cost in all after its last reply that says so, to subtract from a resumed turn's running total.
  * A reply saved before the total was kept has it as its cost: it stored the engine's running total as it was.
  */
-function priorCumulativeCost(messages: ChatMessage[]): number | undefined {
+export function priorCumulativeCost(messages: ChatMessage[]): number | undefined {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
     const usage = message.metadata?.usage;
@@ -146,6 +147,11 @@ export type QueuedInput = { steering: string[]; followUp: string[] };
 const NOTHING_QUEUED: QueuedInput = { steering: [], followUp: [] };
 
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
+  // The mode in force when a turn starts; outside a provider (tests) it is normal.
+  const approvalMode = useApprovalMode();
+  // Read by the engine when each tool call is decided, so a /permissions switch during a turn applies to the next call.
+  const approvalModeRef = useRef(approvalMode);
+  approvalModeRef.current = approvalMode;
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
@@ -402,6 +408,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             ...(loaded ? { attachments: loaded } : {}),
             cwd: session.cwd,
             mode,
+            approvalMode: approvalModeRef.current,
+            currentApprovalMode: () => approvalModeRef.current,
             model,
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
@@ -427,29 +435,42 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         // Only this turn's: what background work asked through the session stays until it is answered.
         for (const request of [...turnRequests]) decline(request);
         for (const id of replyIds) applyToReply(finishReply, id);
-        // The files as the turn left them, kept on its last reply. The input stays as the turn left it until this is done.
+        const save = () => {
+          try {
+            getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);
+          } catch (err) {
+            setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
+        const settle = () => {
+          abortControllerRef.current = null;
+          setCanSteer(false);
+          setInputClosed(false);
+          setQueued(NOTHING_QUEUED);
+          updateStatus("ready");
+          unregisterTurn();
+          finishTurn();
+        };
+
+        // The turn's messages are stored before anything slow: quitting waits only so long for the turn, and then ends the process.
+        save();
+        const aborted = abortController.signal.aborted;
+        // An aborted turn (the user left or quit) is done now and does not wait for the snapshot; a finished one does, so that
+        // the input stays as the turn left it until the reply has the pair `/undo` needs.
+        if (aborted) settle();
+        // The files as the turn left them, kept on its last reply: stored again once they are known.
         if (before !== undefined && started && snapshotsRef.current?.available) {
-          const after = await trackWithin(snapshotsRef.current.store, abortController.signal.aborted ? ABORTED_SNAPSHOT_TIMEOUT_MS : snapshotTimeoutRef.current);
-          if ("tree" in after) updateMessages((prev) => withSnapshot(prev, replyId, { before: before!, after: after.tree }));
-          else {
+          const after = await trackWithin(snapshotsRef.current.store, aborted ? ABORTED_SNAPSHOT_TIMEOUT_MS : snapshotTimeoutRef.current);
+          if ("tree" in after) {
+            updateMessages((prev) => withSnapshot(prev, replyId, { before: before!, after: after.tree }));
+            save();
+          } else {
             snapshotIssueRef.current = after.reason;
             if ("timedOut" in after) snapshotsGaveUpRef.current = true;
           }
         }
-        abortControllerRef.current = null;
-        setCanSteer(false);
-        setInputClosed(false);
-        setQueued(NOTHING_QUEUED);
-        updateStatus("ready");
-
-        try {
-          getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);
-        } catch (err) {
-          setError(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        unregisterTurn();
-        finishTurn();
-        // Idle again: results that finished meanwhile go now. Not after Esc: the user stopped the agent, so nothing restarts it by itself.
+        if (!aborted) settle();
+        // Idle again, after the snapshot: results that finished meanwhile go now. Not after Esc: the user stopped the agent, so nothing restarts it by itself.
         if (!interruptedRef.current) backgroundRef.current?.retry();
       }
     },

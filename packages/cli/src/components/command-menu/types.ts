@@ -2,6 +2,7 @@ import type { DialogContextValue } from "../../providers/dialog";
 import type { Agent } from "../../lib/agents";
 import type { SupportedChatModelId } from "../../lib/models";
 import type { EngineId } from "../../lib/engine";
+import type { ApprovalMode } from "../../lib/approval-policy";
 import type { ToastContextValue } from "../../providers/toast";
 import type { SessionCommands } from "./session-commands";
 
@@ -17,6 +18,11 @@ export type CommandContext = {
   cwd: string;
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
+  /** The approval mode of this app session, and the one saved for new sessions. */
+  approvalMode: ApprovalMode;
+  setApprovalMode: (mode: ApprovalMode) => void;
+  defaultApprovalMode: ApprovalMode;
+  setDefaultApprovalMode: (mode: ApprovalMode) => void;
   /** The model pi turns use ("provider/id"). */
   piModel: string;
   setPiModel: (model: string) => void;

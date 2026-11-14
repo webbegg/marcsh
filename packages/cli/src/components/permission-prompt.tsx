@@ -7,6 +7,7 @@ import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
 import { useTheme } from "../providers/theme";
 import type { PermissionRequest } from "../hooks/use-chat";
+import { pathAnswer } from "../lib/engine/types";
 import { escapeProjectText } from "../lib/engine/pi-trust";
 import { wrapByWidth, wrappedRows } from "../lib/display-text";
 
@@ -99,12 +100,18 @@ export function PermissionPrompt({ request }: Props) {
   }, [renderer]);
   const { isTopLayer } = useKeyboardLayer();
   const [armedRequest, setArmedRequest] = useState<PermissionRequest | null>(null);
+  const [pickedFolder, setPickedFolder] = useState<{ request: PermissionRequest; index: number }>({ request, index: 0 });
   const { quiet, isQuiet, restart: restartQuiet } = useQuietWindow(request);
   const lock = usePromptLock(request);
 
   const confirmFirst = request.defaultToNo === true;
   const offerAlways = !confirmFirst && !request.suppressAlwaysAllowRule;
   const armed = armedRequest === request;
+  // The folders a path command can be allowed under, narrowest first. Offered on floor asks too (they only hide "always"), never on a confirm-first ask.
+  const folders = !confirmFirst && request.pathRule ? request.pathRule.dirs : [];
+  const offerFolder = folders.length > 0;
+  const folderIndex = pickedFolder.request === request ? Math.min(pickedFolder.index, folders.length - 1) : 0;
+  const folderRows = offerFolder ? labelledRows(`p  allow \`${request.pathRule!.program}\` under `, folders[folderIndex]!, textWidth) : [];
   const { primary, detail, omitted } = describeInput(request.input, textWidth);
   const titleRows = request.title !== undefined ? wrapByWidth(escapeProjectText(request.title), textWidth) : labelledRows("Allow ", `${request.toolName}?`, textWidth);
 
@@ -136,6 +143,14 @@ export function PermissionPrompt({ request }: Props) {
     } else if (key.name === "a" && offerAlways) {
       key.preventDefault();
       request.respond("always");
+    } else if (key.name === "p" && offerFolder) {
+      key.preventDefault();
+      request.respond(pathAnswer(folders[folderIndex]!));
+    } else if ((key.name === "left" || key.name === "right") && offerFolder) {
+      // ← widens to the parent folder, → narrows back.
+      key.preventDefault();
+      const index = key.name === "left" ? Math.min(folderIndex + 1, folders.length - 1) : Math.max(folderIndex - 1, 0);
+      setPickedFolder({ request, index });
     } else if ((key.name === "return" || key.name === "enter") && armed) {
       key.preventDefault();
       request.respond("allow");
@@ -194,6 +209,12 @@ export function PermissionPrompt({ request }: Props) {
           </>
         )}
       </box>
+      {offerFolder && (lock.locked || quiet) ? (
+        <>
+          <Rows rows={folderRows} dim={lock.locked} labelled />
+          {folders.length > 1 ? <text attributes={TextAttributes.DIM}>←/→ change folder</text> : null}
+        </>
+      ) : null}
       {lock.locked ? <text>{LOCKED_LINE}</text> : null}
     </box>
   );
