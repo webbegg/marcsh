@@ -15,11 +15,11 @@
 // commands are blocked. Tools the policy does not know (MCP, web, extension tools) keep the existing flow, and the
 // branch guard runs before this policy: a commit on the default branch stays denied in every mode.
 
-import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { CommandKind, analyzeCommand, isScratchPath } from "./command-classifier";
 import { type BranchSource, type BranchState, branchState, resolveBranch } from "./git-branch";
-import { realTarget } from "./real-path";
+import { holdsSymlink, realTarget } from "./real-path";
 
 export const APPROVAL_MODES = ["normal", "auto", "yolo"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
@@ -62,17 +62,18 @@ export type Verdict = { action: "unchanged" } | { action: "allow" } | { action: 
 const UNCHANGED: Verdict = { action: "unchanged" };
 const ALLOW: Verdict = { action: "allow" };
 
+// Case-insensitive: macOS volumes usually are, so `.GIT` and `.Env` are the same files as `.git` and `.env`.
 const SENSITIVE_PATTERNS = [
-  /(^|\/)\.env(\.[^/]*)?$/,
-  /(^|\/)\.ssh\//,
-  /(^|\/)\.aws\/credentials$/,
-  /(^|\/)\.npmrc$/,
-  /(^|\/)\.netrc$/,
-  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/,
-  /\.(pem|key|p12|pfx)$/,
-  /(^|\/)credentials\.json$/,
+  /(^|\/)\.env(\.[^/]*)?$/i,
+  /(^|\/)\.ssh\//i,
+  /(^|\/)\.aws\/credentials$/i,
+  /(^|\/)\.npmrc$/i,
+  /(^|\/)\.netrc$/i,
+  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/i,
+  /\.(pem|key|p12|pfx)$/i,
+  /(^|\/)credentials\.json$/i,
 ];
-const EXAMPLE_ENV = /(^|\/)\.env\.(example|sample|template)$/;
+const EXAMPLE_ENV = /(^|\/)\.env\.(example|sample|template)$/i;
 const DEVICE_WRITES = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]);
 
 /** The path relative to the project, or null when it is outside it (after symlinks) or cannot be resolved literally. */
@@ -91,18 +92,24 @@ function insideProject(path: string, cwd: string): string | null {
 }
 
 /**
- * Whether a `cd` to `dir` stays in the checkout at `cwd`: a folder inside the project with no other checkout (a nested repository,
- * submodule or worktree, which has its own `.git`) on the way down.
+ * The first folder on the way down to `rel` (a path inside the project, relative to it) that holds its own `.git` file or folder: a
+ * nested repository, submodule or worktree. The project root's own `.git` does not count. Null when there is none.
  */
-function staysInCheckout(dir: string, cwd: string): boolean {
-  const rel = insideProject(dir, cwd);
-  if (rel === null) return false;
+function nestedCheckout(rel: string, cwd: string): string | null {
   let current = realpathSync(cwd);
   for (const segment of rel.split("/").filter(Boolean)) {
     current = join(current, segment);
-    if (existsSync(join(current, ".git"))) return false;
+    if (existsSync(join(current, ".git"))) return current;
   }
-  return true;
+  return null;
+}
+
+/**
+ * Whether a `cd` to `dir` stays in the checkout at `cwd`: a folder inside the project with no other checkout on the way down.
+ */
+function staysInCheckout(dir: string, cwd: string): boolean {
+  const rel = insideProject(dir, cwd);
+  return rel !== null && nestedCheckout(rel, cwd) === null;
 }
 
 /** Why a write to `path` (`what`: "an edit", "a redirect" or "a write by <program>") must ask, or null when it may run. */
@@ -110,8 +117,9 @@ function editProblem(path: string, cwd: string, what = "an edit"): string | null
   const rel = insideProject(path, cwd);
   if (rel === null) return `${what} outside the project (${path})`;
   const normalized = rel.replace(/\\/g, "/");
-  if (/(^|\/)\.git(\/|$)/.test(normalized)) return `${what} inside .git (${path})`;
+  if (/(^|\/)\.git(\/|$)/i.test(normalized)) return `${what} inside .git (${path})`;
   if (!EXAMPLE_ENV.test(normalized) && SENSITIVE_PATTERNS.some((pattern) => pattern.test(normalized))) return `${what} to a secret-looking file (${path})`;
+  if (nestedCheckout(rel, cwd) !== null) return `${what} inside another checkout (${path})`;
   return null;
 }
 
@@ -119,6 +127,25 @@ function editProblem(path: string, cwd: string, what = "an edit"): string | null
 function writeProblem(target: string, cwd: string, what: string): string | null {
   if (DEVICE_WRITES.has(target) || isScratchPath(target)) return null;
   return editProblem(target, cwd, what);
+}
+
+/**
+ * Why the name a copy or move lands on in the folder `into` must ask, or null. Only checked when `into` is a folder (a file or device
+ * destination is the write itself), and not again when `into` already asks. A name the shell expands (`"$f"`, `*.ts`) cannot be checked:
+ * it asks only when the folder holds a symlink it could land on.
+ */
+function landingProblem(path: string, into: string, cwd: string, what: string): string | null {
+  if (writeProblem(into, cwd, what) !== null) return null;
+  if (DEVICE_WRITES.has(into) || isScratchPath(path)) return null;
+  const dir = /^~|\$|`/.test(into) ? null : realTarget(resolve(cwd, into));
+  if (dir === null) return null;
+  try {
+    if (!statSync(dir).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  if (/[*?[\]$`~]/.test(basename(path))) return holdsSymlink(dir) ? `${what} into a folder holding a symlink (${into})` : null;
+  return writeProblem(path, cwd, what);
 }
 
 // The branch guard's asks read `marcsh: <action> needs your approval`. No mode skips one.
@@ -156,8 +183,9 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
     const problem = writeProblem(target, cwd, "a redirect");
     if (problem) reasons.push(problem);
   }
-  for (const { program, path } of files) {
-    const problem = writeProblem(path, cwd, `a write by ${program}`);
+  for (const { program, path, into } of files) {
+    const what = `a write by ${program}`;
+    const problem = into === undefined ? writeProblem(path, cwd, what) : landingProblem(path, into, cwd, what);
     if (problem) reasons.push(problem);
   }
   return reasons.length > 0 ? askFor(reasons) : ALLOW;

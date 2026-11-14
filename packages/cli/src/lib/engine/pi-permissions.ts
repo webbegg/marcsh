@@ -74,6 +74,8 @@ export type ApprovalOptions = {
   guard?: Guard;
   /** The session's approval mode (absent = normal). Decides after the plan-mode block and the guard's deny, so neither is ever loosened. */
   approvalMode?: ApprovalMode;
+  /** Reads the mode when each call is decided (a mid-turn switch applies to the next call). Absent: `approvalMode`. */
+  currentApprovalMode?: () => ApprovalMode;
   /** Reads the branch the project is on, for every call that needs it (auto and yolo count only on a feature branch). Default: `branchState`. */
   branchOf?: (cwd: string) => BranchState;
 };
@@ -104,7 +106,7 @@ function policyCall(call: { toolName: string; input: Record<string, unknown> }, 
 }
 
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand, approvalMode = "normal", branchOf = branchState }: ApprovalOptions) {
+export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand, approvalMode = "normal", currentApprovalMode, branchOf = branchState }: ApprovalOptions) {
   return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
     if (!needsApproval(call.toolName, tools())) return undefined;
     if (planMode) return { block: true, reason: PLAN_MODE_REASON };
@@ -114,7 +116,7 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
 
     // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
     const seen = policyCall(call, tools());
-    const policy = decideApproval(approvalMode, seen, cwd, () => branchOf(cwd));
+    const policy = decideApproval(currentApprovalMode ? currentApprovalMode() : approvalMode, seen, cwd, () => branchOf(cwd));
     if (policy.action === "block") return { block: true, reason: policy.reason };
     // A stored path rule ("allow `rm` under /tmp/x") runs a covered shell command in every mode, also past a floor ask; sudo and catastrophic commands never match.
     const command = seen.kind === "shell" ? seen.command : undefined;

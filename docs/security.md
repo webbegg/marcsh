@@ -58,7 +58,7 @@ This is a safety net, not a wall:
 
 ### Permission modes
 
-The permission mode sets how much runs without a prompt. It applies to both engines, and to the subagents that `Task` starts. Change it with [/permissions](commands.md#permissions). It is separate from the agent: Plan and Build still decide what an agent may do at all.
+The permission mode sets how much runs without a prompt. It applies to both engines, and to the subagents that `Task` starts. Change it with [/permissions](commands.md#permissions). A change during a turn applies to the next tool call, in that turn too; what the agent was told about the mode is updated at the next turn. It is separate from the agent: Plan and Build still decide what an agent may do at all.
 
 | Mode | Runs without asking | Still asks |
 | --- | --- | --- |
@@ -89,7 +89,7 @@ In every mode, these always ask. In `normal` the prompt is the one you already k
 - Publishing and merging: `npm publish`, `gh pr merge`, `gh release`. A merge done through `gh api` counts too: merging a pull request or a branch, enabling auto-merge, moving a branch ref, or committing a file through the contents API.
 - Privileged commands: `sudo`, `curl … | sh`.
 - Dependency changes: `npm install`, `pip install` and the like.
-- Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`. This covers the edit tools, redirects (`>`, `>>`), and the files given to `cp`, `mv`, `ln`, `install`, `tee`, `sed -i`, `curl -o`, `wget -O`, `touch`, `mkdir`, `rm`, `rmdir` and `unlink`. Paths are checked after symlinks. Other programs that write files, such as a script or `rsync`, are not read.
+- Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`, in any letter case (`.GIT`, `.Env`). Writes inside another checkout below the project (a folder with its own `.git`: a nested repository, submodule or worktree) ask too. This covers the edit tools, redirects (`>`, `>>`), and the files given to `cp`, `mv`, `ln`, `install`, `tee`, `sed -i`, `curl -o`, `wget -O`, `touch`, `mkdir`, `rm`, `rmdir` and `unlink`; for `cp`, `mv`, `ln` and `install` into a folder, also the name each file lands on there (when the name comes from a variable or a glob, the copy asks only if that folder holds a symlink). Paths are checked after symlinks. Links deeper inside a copied folder are not checked. Other programs that write files, such as a script or `rsync`, are not read.
 - A command marcsh cannot read, such as one with an open quote.
 - Tools marcsh does not classify: MCP tools, web tools and tools from extensions. In every mode they keep the prompt they have today, including "always allow".
 

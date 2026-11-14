@@ -4,7 +4,7 @@
 // symlinks, and a glob only matches in a folder that holds no symlink, so a link inside the folder cannot carry a rule outside it.
 
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { analyzeCommand, simpleCommands } from "./command-classifier";
 import { holdsSymlink, reallyInside, stableDir } from "./real-path";
 import { type PermissionDecision, pathAnswerDir } from "./engine/types";
@@ -72,7 +72,9 @@ function resolveTarget(word: string, cwd: string): string | null {
   if (absolute === "/") return null;
   const segments = absolute.split("/");
   const last = segments.pop()!;
-  if (segments.some((segment) => GLOB.test(segment) || segment === ".git") || last === ".git") return null;
+  // `.git` in any case: macOS volumes are usually case-insensitive.
+  const isGit = (segment: string) => segment.toLowerCase() === ".git";
+  if (segments.some((segment) => GLOB.test(segment) || isGit(segment)) || isGit(last)) return null;
   // `.*` can match `.` and `..`.
   if (GLOB.test(last) && last.startsWith(".")) return null;
   return absolute;
@@ -94,6 +96,15 @@ function parse(command: string, cwd: string): ParsedCommand | null {
       const target = resolveTarget(word, cwd);
       if (!target) return null;
       targets.push(target);
+    }
+    // `cp a b` and `mv a b` write `b/a` when `b` is a folder, and `b/a` may be a link: it is a target too.
+    if ((program === "cp" || program === "mv") && words.length >= 2) {
+      const dest = words.at(-1)!.replace(/\/+$/, "");
+      for (const source of words.slice(0, -1)) {
+        const target = resolveTarget(`${dest}/${basename(source)}`, cwd);
+        if (!target) return null;
+        targets.push(target);
+      }
     }
   }
   if (analyzeCommand(command).matches.some((match) => match.hardDeny)) return null;
