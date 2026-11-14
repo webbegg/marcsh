@@ -68,7 +68,7 @@ The permission mode sets how much runs without a prompt. It applies to both engi
 
 `normal` is the mode every session starts in, unless you saved another one as the default.
 
-In every mode, these always ask, and the prompt never offers "always allow":
+In every mode, these always ask. In `normal` the prompt is the one you already know, with "always allow" where it is offered today. In `auto` and `yolo` the prompt never offers "always allow" for them:
 
 - Destructive commands: `rm -rf` on a folder, `git reset --hard`, a force push, `DROP TABLE`, rewriting refs.
 - Publishing and merging: `npm publish`, `gh pr merge`, `gh release`.
@@ -76,17 +76,18 @@ In every mode, these always ask, and the prompt never offers "always allow":
 - Dependency changes: `npm install`, `pip install` and the like.
 - Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`.
 - A command marcsh cannot read, such as one with an open quote.
-- Tools marcsh does not classify: MCP tools, web tools and tools from extensions.
+- Tools marcsh does not classify: MCP tools, web tools and tools from extensions. In every mode they keep the prompt they have today, including "always allow".
 
 The worst commands are blocked, not asked: `rm -rf ~`, `rm -rf /`, `mkfs` and `dd` onto a device.
 
 Some rules do not change with the mode:
 
 - A commit on the default branch stays blocked in `auto` and `yolo`, as in [Git guard](#git-guard).
+- The git guard's questions about a merge (`gh pr merge`) or a publish (`npm`, `pnpm`, `yarn` or `bun` `publish`) are never skipped by a mode, and never offer "always allow". Only its questions for `git push` and `gh pr create` are skipped in `yolo`.
 - In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..` and paths with variables still ask.
 - On Claude, a request that your Claude settings say to ask about, and a request Claude flags as risky or protected, keeps asking.
 
-The agent is told the mode, so it runs what the mode allows instead of asking you in chat first.
+The agent is told the mode, so it runs what the mode allows instead of asking you in chat first. The Plan agent is not told: it stays read-only in every mode.
 
 The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. Use `yolo` only in a project you can afford to lose work in.
 

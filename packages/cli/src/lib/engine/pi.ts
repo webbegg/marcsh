@@ -385,7 +385,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         guard: options.guard,
         approvalMode,
       };
-      const promptAppend = systemPromptWithMode(systemPromptAppend, approvalMode);
+      // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
+      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode);
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");

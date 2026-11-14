@@ -2,7 +2,7 @@ import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
-import { decideApproval, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { decideApproval, isFixedGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
@@ -52,7 +52,9 @@ function policyCall(toolName: string, input: Record<string, unknown>): ToolCall 
  * reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
  *
  * With an approval mode, the session's policy decides next, except for asks Claude forces itself (the user's ask rules, `defaultToNo`,
- * a blocked path): those always ask. The mode never turns an ask into an always-allow rule: a policy ask suppresses it.
+ * a blocked path): those always ask, though a catastrophic command is still denied. The mode never turns an ask into an always-allow rule: a
+ * policy ask suppresses it, and so does a branch-guard ask the mode must not skip (merge, publish: only delivery asks are skipped).
+ * The guard's ask arrives as the hook's `decisionReason`.
  *
  * With `pathRules`, a `Bash` call covered by a stored folder rule ("allow `rm` under /tmp/x") runs without asking, in every mode and also past a
  * floor ask, but never past the catastrophic block or for a forced ask; an ask for a path command offers to store one.
@@ -72,10 +74,14 @@ export function createCanUseTool(
     }
 
     const forced = options.matchedAskRule || options.defaultToNo || options.blockedPath;
-    const verdict = policy && !forced ? decideApproval(policy.approvalMode, policyCall(toolName, input), policy.cwd) : undefined;
+    // A forced ask is never auto-allowed, but the catastrophic block still applies to it (read as the policy of normal mode).
+    const verdict = policy ? decideApproval(forced ? "normal" : policy.approvalMode, policyCall(toolName, input), policy.cwd) : undefined;
     if (verdict?.action === "block") return { behavior: "deny", message: verdict.reason };
-    if (verdict?.action === "allow") return { behavior: "allow", updatedInput: input };
-    const floor = verdict?.action === "ask" ? verdict : undefined;
+    // The guard's ask for a merge or publish is never skipped: the ask stays, and cannot be always-allowed.
+    const guardFloor = verdict?.action === "allow" && isFixedGuardAsk(options.decisionReason);
+    if (verdict?.action === "allow" && !guardFloor) return { behavior: "allow", updatedInput: input };
+    const floor = !forced && verdict?.action === "ask" ? verdict : undefined;
+    const noAlways = floor !== undefined || guardFloor;
 
     const folders = forced || !policy?.pathRules ? undefined : { rules: policy.pathRules, cwd: policy.cwd };
     const command = folders && toolName === "Bash" && typeof input.command === "string" ? input.command : undefined;
@@ -91,7 +97,7 @@ export function createCanUseTool(
         decisionReason: floor ? floor.reason : options.decisionReason,
         blockedPath: options.blockedPath,
         defaultToNo: options.defaultToNo,
-        suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule,
+        suppressAlwaysAllowRule: noAlways ? true : options.suppressAlwaysAllowRule,
         ...(candidate ? { pathRule: candidate } : {}),
       },
       options.signal,
@@ -99,7 +105,7 @@ export function createCanUseTool(
     const answered = folders ? answeredPathRule(decision, folders.cwd, candidate) : null;
     if (answered) folders?.rules.addPathRule(answered);
     return toPermissionResult(decision, input, options.suggestions, {
-      suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule || options.defaultToNo,
+      suppressAlwaysAllowRule: noAlways ? true : options.suppressAlwaysAllowRule || options.defaultToNo,
     });
   };
 }
@@ -125,7 +131,8 @@ export function claudeQueryOptions({
   plugins: readonly string[];
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
-  const append = systemPromptWithMode(systemPromptAppend, approvalMode);
+  // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode);
   return {
     cwd,
     model,

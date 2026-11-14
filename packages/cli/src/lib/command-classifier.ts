@@ -290,8 +290,43 @@ function tokenize(command: string): { segments: Segment[]; nested: string[] } | 
 
 const basename = (executable: string) => executable.slice(executable.lastIndexOf("/") + 1);
 
-/** Strips leading reserved words, env assignments and wrapper commands; reports whether sudo or doas was used. */
-function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs: boolean } {
+// Wrapper options that take a separate value, so the value is not mistaken for the wrapped command. The `--opt=value` form takes
+// nothing extra, and neither does an attached value (`-n10`). Options whose value can only be attached (`xargs -i`, `--replace`, `--eof`) are not here.
+const WRAPPER_VALUE_OPTIONS: Record<string, ReadonlySet<string>> = {
+  xargs: new Set(["-I", "-J", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--max-chars", "--delimiter", "--arg-file", "--process-slot-var"]),
+  nice: new Set(["-n", "--adjustment"]),
+  env: new Set(["-u", "--unset", "-C", "--chdir"]),
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  sudo: new Set(["-u", "-g", "-h", "-p", "-C", "-U", "-r", "-t", "-D", "--user", "--group", "--host", "--prompt", "--close-from", "--other-user", "--role", "--type", "--chdir"]),
+  doas: new Set(["-u", "-C"]),
+  exec: new Set(["-a"]),
+  time: new Set(["-f", "-o", "--format", "--output"]),
+  caffeinate: new Set(["-t", "-w"]),
+};
+
+/** Whether the wrapper option `token` is followed by its value: the exact option, or a short group that ends in a value option (`sudo -Hu bob`). */
+function takesNextValue(wrapper: string, token: string): boolean {
+  const options = WRAPPER_VALUE_OPTIONS[wrapper];
+  if (!options) return false;
+  if (options.has(token)) return true;
+  if (!/^-[A-Za-z]{2,}$/.test(token)) return false;
+  return [...token.slice(1)].findIndex((letter) => options.has(`-${letter}`)) === token.length - 2;
+}
+
+/** The command line `env -S` / `--split-string` carries (its value, then the arguments after it), or undefined when the option is not one. */
+function envSplitString(rest: string[]): { script: string; consumed: number } | undefined {
+  const option = rest[0]!;
+  if (option === "-S" || option === "--split-string") return { script: rest[1] ?? "", consumed: 2 };
+  if (option.startsWith("--split-string=")) return { script: option.slice("--split-string=".length), consumed: 1 };
+  if (/^-S./.test(option)) return { script: option.slice(2), consumed: 1 };
+  return undefined;
+}
+
+/**
+ * Strips leading reserved words, env assignments and wrapper commands (and their options, with the values they take); reports whether
+ * sudo or doas was used. `env -S 'cmd args'` leaves the command line it splits as `script`.
+ */
+function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs: boolean; script?: string } {
   let rest = argv;
   let privileged = false;
   let viaXargs = false;
@@ -306,16 +341,27 @@ function unwrap(argv: string[]): { argv: string[]; privileged: boolean; viaXargs
     if (name === "sudo" || name === "doas") privileged = true;
     if (name === "xargs") viaXargs = true;
     rest = rest.slice(1);
-    // Skip wrapper options and the timeout duration.
-    while (rest.length > 0 && (rest[0]!.startsWith("-") || (name === "timeout" && /^\d/.test(rest[0]!)))) rest = rest.slice(1);
+    // Skip the wrapper's options with their values, then the timeout duration.
+    while (rest.length > 0 && rest[0]!.startsWith("-")) {
+      const split = name === "env" ? envSplitString(rest) : undefined;
+      if (split) return { argv: [], privileged, viaXargs, script: [split.script, ...rest.slice(split.consumed)].join(" ") };
+      rest = rest.slice(takesNextValue(name, rest[0]!) ? 2 : 1);
+    }
+    if (name === "timeout") rest = rest.slice(1);
   }
   return { argv: rest, privileged, viaXargs };
 }
 
 const hasShortFlag = (args: string[], letter: string) => args.some((a) => /^-[A-Za-z]+$/.test(a) && a.includes(letter));
 
+/**
+ * Whether `args` hold one of `flags`: a short flag (`-f`) alone or inside a group (`-fu`), a long flag (`--force`) alone or as `--force=value`,
+ * any other word exactly.
+ */
 const hasAny = (args: string[], ...flags: string[]) =>
-  args.some((a) => flags.includes(a) || flags.some((f) => f.startsWith("--") && a.startsWith(`${f}=`)));
+  args.some((a) =>
+    flags.some((f) => (/^-[A-Za-z]$/.test(f) ? /^-[A-Za-z]+$/.test(a) && a.includes(f[1]!) : f.startsWith("--") ? a === f || a.startsWith(`${f}=`) : a === f)),
+  );
 
 /** The directories whose contents are scratch: the system temp dir, and `/tmp` (`/private/tmp` on macOS). */
 export function scratchRoots(): string[] {
@@ -354,6 +400,22 @@ function firstSubcommand(args: string[], valueOptions: ReadonlySet<string>): str
   return undefined;
 }
 
+// After one of these words `publish` names a script or a lookup, not the command (as in plugin/hooks/guard-lib.ts).
+const NOT_PUBLISH = new Set(["run", "run-script", "exec", "x", "dlx", "create", "init", "help", "view", "info", "search"]);
+
+/** The publish-like subcommand (`publish`, `unpublish`, `dist-tag` other than `ls`) anywhere among the words, past options and their values (`npm -w pkg publish`, `yarn npm publish`). */
+function publishWord(name: string, args: string[]): string | undefined {
+  const valueOptions = VALUE_OPTIONS[name] ?? new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]!;
+    if (valueOptions.has(word)) i++;
+    else if (NOT_PUBLISH.has(word)) return undefined;
+    else if (word === "publish" || word === "unpublish") return word;
+    else if (word === "dist-tag") return args[i + 1] === "ls" ? undefined : word;
+  }
+  return undefined;
+}
+
 const dependency = (command: string): CommandMatch => ({ kind: CommandKind.DEPENDENCY, reason: `${command} changes installed dependencies` });
 
 function classifyJsPackageManager(name: string, args: string[]): CommandMatch | undefined {
@@ -369,6 +431,16 @@ function classifyPip(label: string, args: string[]): CommandMatch | undefined {
   return args[0] === "install" || args[0] === "uninstall" ? dependency(`${label} ${args[0]}`) : undefined;
 }
 
+/** A target with trailing slashes, `/.` and `/*` removed (`/.` is `/`, `~/.` and `$HOME/*` are the home directory); empty is the root. */
+function rootedTarget(target: string): string {
+  let current = target;
+  for (let previous = ""; previous !== current; ) {
+    previous = current;
+    current = current.replace(/\/+$/, "").replace(/\/(\.|\*)$/, "");
+  }
+  return current || "/";
+}
+
 function classifyRm(args: string[], viaXargs: boolean): CommandMatch | undefined {
   const recursive = hasShortFlag(args, "r") || hasShortFlag(args, "R") || hasAny(args, "--recursive");
   const force = hasShortFlag(args, "f") || hasAny(args, "--force");
@@ -376,7 +448,7 @@ function classifyRm(args: string[], viaXargs: boolean): CommandMatch | undefined
   // Everything after "--" is a target, even when it starts with a dash.
   const endOfOptions = args.indexOf("--");
   const targets = args.filter((a, i) => (endOfOptions === -1 || i < endOfOptions ? !a.startsWith("-") : i > endOfOptions));
-  if (recursive && targets.some((t) => CATASTROPHIC_RM_TARGETS.has(t.replace(/\/+$/, "") || "/") || CATASTROPHIC_RM_TARGETS.has(t))) {
+  if (recursive && targets.some((t) => CATASTROPHIC_RM_TARGETS.has(rootedTarget(t)) || CATASTROPHIC_RM_TARGETS.has(t))) {
     return { kind: CommandKind.DESTRUCTIVE, reason: `rm on a root, home or wildcard target (${targets.join(" ")})`, hardDeny: true };
   }
   // xargs appends targets from stdin, so the visible ones are not the full list.
@@ -464,6 +536,17 @@ function classifyGit(args: string[]): CommandMatch | undefined {
   }
 }
 
+/** The HTTP method of `gh api` arguments: `-X PUT`, `-XPUT`, `--method PUT` or `--method=PUT`. */
+function ghApiMethod(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "-X" || a === "--method") return args[i + 1]?.toUpperCase();
+    if (a.startsWith("--method=")) return a.slice("--method=".length).toUpperCase();
+    if (/^-X./.test(a)) return a.slice(2).replace(/^=/, "").toUpperCase();
+  }
+  return undefined;
+}
+
 function classifyGh(args: string[]): CommandMatch | undefined {
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -480,11 +563,10 @@ function classifyGh(args: string[]): CommandMatch | undefined {
   }
   if (group === "api") {
     const all = args.slice(args.indexOf("api") + 1);
-    const methodIndex = all.findIndex((a) => a === "-X" || a === "--method");
-    const method = methodIndex >= 0 ? all[methodIndex + 1]?.toUpperCase() : all.find((a) => a.startsWith("--method="))?.split("=")[1]?.toUpperCase();
+    const method = ghApiMethod(all);
     if (method === "DELETE") return { kind: CommandKind.DESTRUCTIVE, reason: "gh api DELETE" };
     if (method && method !== "GET") return { kind: CommandKind.DELIVERY, reason: `gh api ${method}` };
-    if (all.some((a) => a === "-f" || a === "-F" || a === "--field" || a === "--raw-field")) return { kind: CommandKind.DELIVERY, reason: "gh api with fields (POST)" };
+    if (all.some((a) => /^-[fF]/.test(a)) || hasAny(all, "--field", "--raw-field")) return { kind: CommandKind.DELIVERY, reason: "gh api with fields (POST)" };
   }
   return undefined;
 }
@@ -498,10 +580,15 @@ const SQL_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 function classifySegment(rawArgv: string[], before: string, depth: number): CommandAnalysis {
-  const { argv, privileged, viaXargs } = unwrap(rawArgv);
+  const { argv, privileged, viaXargs, script: splitScript } = unwrap(rawArgv);
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
   if (privileged) matches.push({ kind: CommandKind.PRIVILEGED, reason: "elevated privileges (sudo)" });
+  if (splitScript) {
+    const nested = analyze(splitScript, depth + 1);
+    matches.push(...nested.matches);
+    writes.push(...nested.writes);
+  }
   if (argv.length === 0) return { matches, writes };
 
   const name = basename(argv[0]!);
@@ -557,10 +644,9 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
     case "pnpm":
     case "yarn":
     case "bun":
-      if (args[0] === "publish" || args[0] === "unpublish" || (args[0] === "dist-tag" && args[1] !== "ls")) {
-        match = { kind: CommandKind.PUBLISH, reason: `${name} ${args[0]}` };
-      } else {
-        match = classifyJsPackageManager(name, args);
+      {
+        const published = publishWord(name, args);
+        match = published ? { kind: CommandKind.PUBLISH, reason: `${name} ${published}` } : classifyJsPackageManager(name, args);
       }
       break;
     case "pip":

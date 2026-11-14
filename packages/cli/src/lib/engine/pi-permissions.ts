@@ -1,5 +1,5 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { type ApprovalMode, decideApproval, type ToolCall } from "../approval-policy";
+import { type ApprovalMode, decideApproval, isFixedGuardAsk, type ToolCall } from "../approval-policy";
 import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
@@ -117,7 +117,8 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
     const command = seen.kind === "shell" ? seen.command : undefined;
     const { pathRulesFor, addPathRule } = rules;
     if (command !== undefined && pathRulesFor && hasMatchingPathRule({ pathRulesFor }, command, cwd)) return undefined;
-    if (policy.action === "allow") return undefined;
+    // The mode skips the guard's ask only for delivery (`git push`, `gh pr create`); a merge or publish keeps asking, as a floor ask.
+    if (policy.action === "allow" && !(verdict?.decision === "ask" && isFixedGuardAsk(verdict.reason))) return undefined;
     const floor = policy.action === "ask" ? { reason: policy.reason } : verdict?.decision === "ask" ? verdict : undefined;
     // A floor action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const rule = floor ? undefined : ruleFor(cwd, call.toolName, call.input);

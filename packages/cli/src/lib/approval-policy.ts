@@ -86,20 +86,30 @@ function insideProject(path: string, cwd: string): string | null {
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel;
 }
 
-/** Why an edit of `path` must ask, or null when it may run. */
-function editProblem(path: string, cwd: string): string | null {
+/** Why a write to `path` (`what`: "an edit" or "a redirect") must ask, or null when it may run. */
+function editProblem(path: string, cwd: string, what = "an edit"): string | null {
   const rel = insideProject(path, cwd);
-  if (rel === null) return `an edit outside the project (${path})`;
+  if (rel === null) return `${what} outside the project (${path})`;
   const normalized = rel.replace(/\\/g, "/");
-  if (/(^|\/)\.git(\/|$)/.test(normalized)) return `an edit inside .git (${path})`;
-  if (!EXAMPLE_ENV.test(normalized) && SENSITIVE_PATTERNS.some((pattern) => pattern.test(normalized))) return `an edit to a secret-looking file (${path})`;
+  if (/(^|\/)\.git(\/|$)/.test(normalized)) return `${what} inside .git (${path})`;
+  if (!EXAMPLE_ENV.test(normalized) && SENSITIVE_PATTERNS.some((pattern) => pattern.test(normalized))) return `${what} to a secret-looking file (${path})`;
   return null;
 }
 
-/** Why a shell redirect to `target` must ask, or null: inside the project, a scratch path or a device such as /dev/null. */
+/** Why a shell redirect to `target` must ask, or null: a scratch path or a device such as /dev/null, or a file inside the project that is not secret-looking or in `.git`. */
 function writeProblem(target: string, cwd: string): string | null {
   if (DEVICE_WRITES.has(target) || isScratchPath(target)) return null;
-  return insideProject(target, cwd) === null ? `a redirect outside the project (${target})` : null;
+  return editProblem(target, cwd, "a redirect");
+}
+
+// The branch guard's asks read `marcsh: <action> needs your approval`. A mode may skip the ask for delivery, never the others (merge, publish).
+const GUARD_ASK = /^marcsh: (.+) needs your approval$/;
+const GUARD_DELIVERY_ACTIONS = new Set(["git push", "gh pr create"]);
+
+/** True when `reason` is a branch-guard ask for an action a mode must not skip: it keeps asking, with no always-allow. */
+export function isFixedGuardAsk(reason: string | undefined): boolean {
+  const action = reason === undefined ? undefined : GUARD_ASK.exec(reason)?.[1];
+  return action !== undefined && !GUARD_DELIVERY_ACTIONS.has(action);
 }
 
 const askFor = (reasons: string[]): Verdict => ({ action: "ask", reason: `marcsh: ${[...new Set(reasons)].join("; ")} needs your approval` });

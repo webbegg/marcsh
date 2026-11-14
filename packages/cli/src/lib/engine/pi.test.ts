@@ -2328,4 +2328,16 @@ describe("pi engine approval modes (S5, S7, S9)", () => {
       expect(prompts[0]).not.toContain("Approval mode");
     }
   });
+
+  test("a plan turn gets no mode line, whatever the session's approval mode", async () => {
+    for (const approvalMode of ["auto", "yolo"] as const) {
+      const { prompts, step } = promptOf();
+      const { engine, model } = await setup([step]);
+
+      await runTurn(engine, model, { mode: Mode.PLAN, approvalMode, systemPromptAppend: "You are the FTD agent." });
+
+      expect(prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
+      expect(prompts[0]).not.toContain("Approval mode");
+    }
+  });
 });

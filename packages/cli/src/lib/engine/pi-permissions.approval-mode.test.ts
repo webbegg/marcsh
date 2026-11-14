@@ -261,3 +261,29 @@ describe("what the policy does not classify keeps the existing flow", () => {
     }
   });
 });
+
+describe("a publish the guard asks about is never loosened by the mode", () => {
+  const guardAsksPublish: Guard = (command) => (/\bpublish\b/.test(command) ? { decision: "ask", reason: "marcsh: npm publish needs your approval" } : null);
+  test("npm -w pkg publish asks in auto and yolo, without always-allow", async () => {
+    for (const mode of ["auto", "yolo"] as const) {
+      const { bash, asks } = setup(mode, { guard: guardAsksPublish });
+      expect(await bash("npm -w pkg publish")).toBeUndefined();
+      expect(asks).toHaveLength(1);
+      expect(asks[0]?.suppressAlwaysAllowRule).toBe(true);
+    }
+  });
+
+  test("a merge the guard asks about asks in yolo even when the policy would allow the command", async () => {
+    const guardAsksMerge: Guard = (command) => (/make release/.test(command) ? { decision: "ask", reason: "marcsh: gh pr merge needs your approval" } : null);
+    const { bash, asks } = setup("yolo", { guard: guardAsksMerge });
+    expect(await bash("make release")).toBeUndefined();
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ decisionReason: "marcsh: gh pr merge needs your approval", suppressAlwaysAllowRule: true });
+  });
+
+  test("a push the guard asks about still runs in yolo", async () => {
+    const { bash, asks } = setup("yolo", { guard: guardAsks });
+    expect(await bash("git push origin feat")).toBeUndefined();
+    expect(asks).toEqual([]);
+  });
+});

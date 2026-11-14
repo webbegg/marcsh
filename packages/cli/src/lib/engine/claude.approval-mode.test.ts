@@ -223,3 +223,75 @@ describe("the mode line in the options of a Claude turn", () => {
     }
   });
 });
+
+describe("a catastrophic command Claude forces to ask is still blocked", () => {
+  test("matchedAskRule, defaultToNo or blockedPath: denied and never asked, in every mode", async () => {
+    for (const mode of ["normal", "auto", "yolo"] as const) {
+      for (const extra of [{ matchedAskRule: { source: "userSettings", toolName: "Bash", ruleContent: "rm:*" } }, { defaultToNo: true }, { blockedPath: "/Users" }]) {
+        const { asked, call } = setup(mode);
+        expect(await call("Bash", { command: "rm -rf ~" }, extra)).toEqual({ behavior: "deny", message: "marcsh: rm on a root, home or wildcard target (~) is never allowed" });
+        expect(asked).toEqual([]);
+      }
+    }
+  });
+
+  test("a forced ask that is not catastrophic keeps asking, with Claude's own flags", async () => {
+    const { asked, call } = setup("yolo");
+    await call("Bash", { command: "ls" }, { defaultToNo: true });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.defaultToNo).toBe(true);
+    expect(asked[0]?.decisionReason).toBeUndefined();
+  });
+});
+
+describe("the branch guard's ask is only skipped for delivery", () => {
+  const guardReason = (name: string) => ({ decisionReason: `marcsh: ${name} needs your approval` });
+
+  test("a merge or publish the guard asked about still asks in yolo and auto, without always-allow", async () => {
+    for (const mode of ["auto", "yolo"] as const) {
+      for (const [command, name] of [["make release", "gh pr merge"], ["make ship", "npm publish"], ["./publish.sh", "pnpm publish"]] as const) {
+        const { asked, call } = setup(mode, "always");
+        const result = await call("Bash", { command }, { ...guardReason(name), suggestions: suggestionFor(command) });
+        expect(result).toEqual(allowed({ command }));
+        expect(asked).toHaveLength(1);
+        expect(asked[0]?.suppressAlwaysAllowRule).toBe(true);
+        expect(asked[0]?.decisionReason).toContain(name);
+      }
+    }
+  });
+
+  test("a push or PR creation the guard asked about runs in yolo, and asks in auto", async () => {
+    for (const [command, name] of [["git push origin feat", "git push"], ["gh pr create --fill", "gh pr create"]] as const) {
+      const yolo = setup("yolo");
+      expect(await yolo.call("Bash", { command }, guardReason(name))).toEqual(allowed({ command }));
+      expect(yolo.asked).toEqual([]);
+
+      const auto = setup("auto");
+      await auto.call("Bash", { command }, guardReason(name));
+      expect(auto.asked).toHaveLength(1);
+    }
+  });
+
+  test("normal mode keeps today's prompt for a guard ask", async () => {
+    const { asked, call } = setup("normal");
+    await call("Bash", { command: "npm publish" }, guardReason("npm publish"));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.decisionReason).toBe("marcsh: npm publish needs your approval");
+    expect(asked[0]?.suppressAlwaysAllowRule).toBeUndefined();
+  });
+});
+
+describe("plan mode gets no approval mode line", () => {
+  const base = { cwd, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool };
+
+  test("the options of a plan turn leave the prompt as it was, even in yolo", () => {
+    for (const approvalMode of ["auto", "yolo"] as const) {
+      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
+        type: "preset",
+        preset: "claude_code",
+        append: "You are FTD.",
+      });
+    }
+  });
+});
