@@ -13,11 +13,16 @@ type Options = {
 const defaultRead = (cwd: string): Promise<GitStatus | null> =>
   process.env.MARCSH_GIT_STATUS?.trim().toLowerCase() === "off" ? Promise.resolve(null) : readGitStatus(cwd);
 
+/** The longest wait between two polls after reads that found nothing (or an `intervalMs` above it). */
+export const MAX_GIT_BACKOFF_MS = 60_000;
+
 const same = (a: GitStatus | null, b: GitStatus | null) => a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed);
 
 /**
  * The git state of `cwd`, read on mount, every `intervalMs` and whenever `trigger` changes; null until known, outside a repo
  * and without a folder. One read runs at a time: asking during a read runs one more read after it, however often it was asked.
+ * A read that finds nothing (git timed out or failed, or no repo) doubles the wait before the next poll, up to
+ * `MAX_GIT_BACKOFF_MS`, and a poll that came during it is dropped; a trigger still reads, and a good read resets the wait.
  */
 export function useGitStatus(cwd: string | undefined, { read = defaultRead, trigger, intervalMs = 3000 }: Options = {}): GitStatus | null {
   const [status, setStatus] = useState<GitStatus | null>(null);
@@ -31,11 +36,21 @@ export function useGitStatus(cwd: string | undefined, { read = defaultRead, trig
 
     let alive = true;
     let reading = false;
+    /** Asked during a read by a trigger, and by a poll. */
     let again = false;
-    const refresh = () => {
+    let againByPoll = false;
+    const maxDelay = Math.max(intervalMs, MAX_GIT_BACKOFF_MS);
+    let delay = intervalMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(poll, delay);
+    };
+    const refresh = (byPoll = false) => {
       if (!alive) return;
       if (reading) {
-        again = true;
+        if (byPoll) againByPoll = true;
+        else again = true;
         return;
       }
       reading = true;
@@ -46,19 +61,31 @@ export function useGitStatus(cwd: string | undefined, { read = defaultRead, trig
           reading = false;
           if (!alive) return;
           setStatus((previous) => (same(previous, next) ? previous : next));
-          if (again) {
-            again = false;
-            refresh();
+          const failed = next === null;
+          if (failed) {
+            delay = Math.min(delay * 2, maxDelay);
+            schedule();
+          } else if (delay !== intervalMs) {
+            delay = intervalMs;
+            schedule();
           }
+          const rerun = again || (!failed && againByPoll);
+          again = false;
+          againByPoll = false;
+          if (rerun) refresh();
         });
     };
+    const poll = () => {
+      schedule();
+      refresh(true);
+    };
 
-    refreshRef.current = refresh;
+    refreshRef.current = () => refresh();
     refresh();
-    const timer = setInterval(refresh, intervalMs);
+    schedule();
     return () => {
       alive = false;
-      clearInterval(timer);
+      clearTimeout(timer);
       refreshRef.current = () => {};
     };
   }, [cwd, intervalMs]);

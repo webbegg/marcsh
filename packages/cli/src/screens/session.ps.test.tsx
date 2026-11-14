@@ -142,4 +142,21 @@ describe("/ps (S3)", () => {
     expect(newer.status).toBe("running");
     expect(await frameContaining("1 running of 2")).toContain("killed older");
   }, 30000);
+
+  // R3-4: the highlight follows the terminal, not the row: one started meanwhile goes on top without taking it.
+  test("a terminal started while the list is open does not move the highlight, and x kills the highlighted one", async () => {
+    const terminals = await openPiSession();
+    const first = await act(async () => terminals.start({ command: "sleep 30", title: "first", cwd }));
+    await frameContaining("1 background terminal running");
+
+    await type("/ps");
+    await press("RETURN");
+    await frameContaining("1 running of 1");
+    const second = await act(async () => terminals.start({ command: "sleep 31", title: "second", cwd }));
+    await frameContaining("2 running of 2");
+    await type("x");
+    await frameWhere(() => first.status !== "running");
+    expect(first.status).toBe("killed");
+    expect(second.status).toBe("running");
+  }, 30000);
 });

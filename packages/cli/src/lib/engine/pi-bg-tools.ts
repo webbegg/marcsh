@@ -19,7 +19,8 @@ import {
 import type { ToolSource } from "./pi-permissions";
 
 /**
- * marcsh's background terminal tools for a pi session (davi7's `extensions/background-terminals/index.ts`, MIT license). Only a
+ * marcsh's background terminal tools for a pi session (davi7's `extensions/background-terminals/index.ts`, MIT license; see
+ * THIRD_PARTY_NOTICES.md). Only a
  * turn with a background hub loads them, so child sessions and headless `marcsh run` never have them. `bg_start` asks like
  * `bash` (see `pi-permissions.ts`); the others only read or stop this session's own terminals, and run unasked.
  */
@@ -97,7 +98,8 @@ export function createBackgroundTools({ hub, cwd }: BackgroundToolsOptions): Too
       const dir = bgStartDir(cwd, input);
       const error = workingDirError(dir);
       if (error) throw new Error(error);
-      const snapshot = terminals().start({ command, title, cwd: dir });
+      // Resolves once the process has spawned: a start that fails is this call's error, never a "Started".
+      const snapshot = await terminals().start({ command, title, cwd: dir });
       return text(buildStartResult(snapshot), { id: snapshot.id, title: snapshot.title, cwd: dir, pid: snapshot.pid });
     },
   };

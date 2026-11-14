@@ -59,6 +59,14 @@ describe("StatusBar git", () => {
     expect(asked).toBe(false);
   });
 
+  // R1-6: a branch name may hold characters that reorder text (git allows bidi overrides in ref names); they show as escapes.
+  test("escapes the branch name like the rest of the transcript text", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "fix‮txt.exe", changed: 0 })} />);
+
+    expect(frame).toContain("fix\\u202etxt.exe");
+    expect(frame).not.toContain("‮");
+  });
+
   test("drops the usage first, then git, and keeps the engine label", async () => {
     const props = { cwd: "/repo", readGit: gitOf({ branch: "main", changed: 3 }), messages: [usage] };
     const medium = await render(<StatusBar {...props} />, 60);

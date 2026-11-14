@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLogDir, openLog, OutputBuffer, outputLines, sanitizeText } from "./output";
+import { createLogDir, openLog, OutputBuffer, outputLines, outputTail, sanitizeText, sweepStaleLogDirs } from "./output";
 
 let base: string;
 
@@ -66,6 +66,31 @@ describe("the full log (S1)", () => {
     expect(dir.file("bt-2.stdout.log")).toBeUndefined();
   });
 
+  // R4-1: a normal quit calls process.exit before any dispose runs; the logs must not stay behind.
+  test("is removed when the process exits", () => {
+    const script = `const { createLogDir } = await import(${JSON.stringify(join(import.meta.dir, "output.ts"))});
+      const dir = createLogDir(${JSON.stringify(base)});
+      require("node:fs").writeFileSync(dir.file("bt-1.stdout.log"), "out");
+      console.log(dir.path);
+      process.exit(0);`;
+    const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+    expect(result.stderr.toString()).toBe("");
+    const path = result.stdout.toString().trim();
+    expect(path.startsWith(join(base, "marcsh-bg-"))).toBe(true);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("records its owner and registers one exit handler, which dispose takes back", () => {
+    const before = process.listenerCount("exit");
+    const dir = createLogDir(base);
+    dir.file("bt-1.stdout.log");
+    dir.file("bt-1.stderr.log");
+    expect(readFileSync(join(dir.path!, "owner.pid"), "utf8")).toBe(String(process.pid));
+    expect(process.listenerCount("exit")).toBe(before + 1);
+    dir.dispose();
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+
   test("stops at its cap and says so", async () => {
     const dir = createLogDir(base);
     const path = dir.file("bt-1.stdout.log")!;
@@ -79,9 +104,56 @@ describe("the full log (S1)", () => {
   });
 });
 
+describe("stale log directories (R4-1)", () => {
+  const make = (name: string, pid?: number) => {
+    const path = join(base, name);
+    mkdirSync(path, { mode: 0o700 });
+    writeFileSync(join(path, "bt-1.stdout.log"), "old");
+    if (pid !== undefined) writeFileSync(join(path, "owner.pid"), String(pid));
+    return path;
+  };
+
+  test("removes the ones whose owner is gone, and keeps those of a live process, of this one and without an owner", () => {
+    const deadPid = Bun.spawnSync(["true"]).pid;
+    const live = Bun.spawn(["sleep", "30"]);
+    try {
+      const dead = make("marcsh-bg-dead", deadPid);
+      const alive = make("marcsh-bg-alive", live.pid);
+      const mine = make("marcsh-bg-mine", process.pid);
+      const unowned = make("marcsh-bg-unowned");
+      const other = make("other-dead", deadPid);
+      sweepStaleLogDirs(base);
+      expect(existsSync(dead)).toBe(false);
+      expect(existsSync(alive)).toBe(true);
+      expect(existsSync(mine)).toBe(true);
+      expect(existsSync(unowned)).toBe(true);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      live.kill();
+    }
+  });
+
+  test("never fails on a base that does not exist", () => {
+    expect(() => sweepStaleLogDirs(join(base, "missing"))).not.toThrow();
+  });
+});
+
 describe("rendering output", () => {
   test("strips ANSI codes and control characters", () => {
     expect(sanitizeText("\u001b[1;31mred\u001b[0m \u001b]0;title\u0007ok\u0001")).toBe("red ok");
+  });
+
+  // R4-5: the /ps view only draws the end, so only the end is sanitized.
+  test("the tail of the raw text: the last lines, at most so many characters, and whether it was cut", () => {
+    expect(outputTail("a\nb\nc\n", 2, 100)).toEqual({ text: "b\nc\n", cut: true });
+    expect(outputTail("a\nb\nc", 2, 100)).toEqual({ text: "b\nc", cut: true });
+    expect(outputTail("a\nb\n", 2, 100)).toEqual({ text: "a\nb\n", cut: false });
+    expect(outputTail("", 2, 100)).toEqual({ text: "", cut: false });
+    expect(outputTail("0123456789", 5, 4)).toEqual({ text: "6789", cut: true });
+    const big = "x".repeat(1000) + "\n" + "line\n".repeat(5000);
+    const tail = outputTail(big, 3000, 1_000_000);
+    expect(tail.cut).toBe(true);
+    expect(outputLines(tail.text)).toHaveLength(3000);
   });
 
   test("keeps the last state of a carriage-return progress line and drops the trailing empty line", () => {

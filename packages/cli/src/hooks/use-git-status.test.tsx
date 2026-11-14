@@ -43,7 +43,7 @@ function Probe(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus |
 
 let setTrigger: (value: number) => void = () => {};
 // Holds the trigger in state so a test can change it without remounting.
-function Host(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus | null> }) {
+function Host(props: { cwd?: string; read: (cwd: string) => Promise<GitStatus | null>; intervalMs?: number }) {
   const [trigger, set] = useState(0);
   setTrigger = set;
   return <Probe {...props} trigger={trigger} />;
@@ -118,6 +118,46 @@ describe("useGitStatus", () => {
     await fake.answer({ branch: "main", changed: 0 });
     await settle(0);
     expect(fake.calls.length).toBe(2);
+  });
+
+  // R4-6: a git that times out (or a folder outside a repo) is not asked again every few seconds.
+  test("backs off after a read that found nothing, a trigger still reads, and a good read resets the interval", async () => {
+    const fake = fakeRead();
+    await mount(<Host cwd="/repo" read={fake.read} intervalMs={60} />);
+    await fake.answer(null);
+    // The next read waits twice the interval (120 ms), not 60.
+    await settle(90);
+    expect(fake.calls.length).toBe(1);
+    await settle(80);
+    expect(fake.calls.length).toBe(2);
+
+    await fake.answer(null);
+    await act(async () => setTrigger(1));
+    expect(fake.calls.length).toBe(3);
+    await fake.answer({ branch: "main", changed: 0 });
+    await settle(100);
+    expect(fake.calls.length).toBe(4);
+    expect(latest).toEqual({ branch: "main", changed: 0 });
+  });
+
+  test("the backoff stops at a minute", async () => {
+    const fake = fakeRead();
+    const timers: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (typeof ms === "number" && ms >= 1000) timers.push(ms);
+      return realSetTimeout(fn, ms, ...rest);
+    }) as typeof setTimeout;
+    try {
+      await mount(<Host cwd="/repo" read={fake.read} intervalMs={20_000} />);
+      for (let i = 0; i < 4; i++) {
+        await fake.answer(null);
+        await act(async () => setTrigger(i + 1));
+      }
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    expect(timers.filter((ms) => ms > 20_000)).toEqual([40_000, 60_000, 60_000, 60_000]);
   });
 
   test("stops polling and never updates after unmount", async () => {

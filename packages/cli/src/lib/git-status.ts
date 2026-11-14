@@ -1,3 +1,5 @@
+import { readOnlyGitArgs, readOnlyGitEnv } from "./git-safe";
+
 /** What the status bar shows of the project's git state: the branch (a short SHA when HEAD is detached) and how many files changed. */
 export type GitStatus = {
   branch: string;
@@ -37,14 +39,16 @@ export function formatGit(status: GitStatus): string {
 
 /**
  * The git state of `cwd`, from one `git status` call that takes no optional locks (so it never gets in the way of the user's own
- * git commands). Null outside a repo, when git fails, or when it does not answer within `timeoutMs` (it is then killed).
+ * git commands). The folder may be untrusted: the call is hardened (see `git-safe.ts`) so the repo's config runs no program
+ * (fsmonitor, hooks, pager), and submodules are not entered. Null outside a repo, when git fails, or when it does not answer
+ * within `timeoutMs` (it is then killed).
  */
 export async function readGitStatus(cwd: string, { timeoutMs = 2000 }: { timeoutMs?: number } = {}): Promise<GitStatus | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const proc = Bun.spawn(["git", "status", "--porcelain=v2", "--branch"], {
+    const proc = Bun.spawn(["git", ...readOnlyGitArgs(), "status", "--porcelain=v2", "--branch", "--ignore-submodules=all"], {
       cwd,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: readOnlyGitEnv(),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "ignore",

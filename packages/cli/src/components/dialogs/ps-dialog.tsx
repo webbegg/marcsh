@@ -5,18 +5,24 @@ import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { escapeTranscriptText } from "../../lib/display-text";
 import type { BackgroundHub } from "../../lib/background/hub";
-import { outputLines, sanitizeText } from "../../lib/background/output";
+import { outputLines, outputTail, sanitizeText } from "../../lib/background/output";
 import { terminalsFor } from "../../lib/background/session-terminals";
 import { formatElapsed, formatExit, type BackgroundTerminals, type TerminalSnapshot } from "../../lib/background/terminals";
 
-// The /ps viewer follows davi7's `extensions/background-terminals/src/ui/ps.ts` (MIT license): a list, and a read-only output view.
+// The /ps viewer follows davi7's `extensions/background-terminals/src/ui/ps.ts` (MIT license; see THIRD_PARTY_NOTICES.md): a list,
+// and a read-only output view.
 
 const MAX_VISIBLE_ROWS = 8;
 /** More output lines than this are not drawn: the log file has them all. */
 export const MAX_OUTPUT_ROWS = 3000;
+/** Nor more characters than this (a few very long lines): only this much of the end is sanitized for each draw. */
+const MAX_OUTPUT_CHARS = 512 * 1024;
+/** The list redraws on a change at most this often; the output view, which sanitizes its text again, less often. */
+const LIST_REDRAW_MS = 50;
+const DETAIL_REDRAW_MS = 250;
 
-/** The session's terminals, drawn again when they change (at most every 50 ms) and every second for the runtimes. */
-function useTerminals(hub: BackgroundHub): BackgroundTerminals {
+/** The session's terminals, drawn again when they change (at most every `redrawMs`) and every second for the runtimes. */
+function useTerminals(hub: BackgroundHub, redrawMs: number): BackgroundTerminals {
   const terminals = terminalsFor(hub);
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -25,7 +31,7 @@ function useTerminals(hub: BackgroundHub): BackgroundTerminals {
       pending ??= setTimeout(() => {
         pending = undefined;
         setTick((tick) => tick + 1);
-      }, 50);
+      }, redrawMs);
     };
     const off = terminals.subscribe(bump);
     const timer = setInterval(() => setTick((tick) => tick + 1), 1000);
@@ -34,7 +40,7 @@ function useTerminals(hub: BackgroundHub): BackgroundTerminals {
       clearInterval(timer);
       if (pending) clearTimeout(pending);
     };
-  }, [terminals]);
+  }, [terminals, redrawMs]);
   return terminals;
 }
 
@@ -74,9 +80,10 @@ function TerminalDetail({ snapshot, terminals, onBack }: { snapshot: TerminalSna
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
   const view = snapshot[stream];
-  const lines = useMemo(() => outputLines(view.text), [view.text]);
-  const shown = lines.slice(-MAX_OUTPUT_ROWS);
-  const hidden = lines.length - shown.length + (view.truncatedBytes > 0 ? 1 : 0);
+  // Only the end that can be drawn is sanitized: the raw text can be megabytes.
+  const tail = useMemo(() => outputTail(view.text, MAX_OUTPUT_ROWS, MAX_OUTPUT_CHARS), [view.text]);
+  const shown = useMemo(() => outputLines(tail.text).slice(-MAX_OUTPUT_ROWS), [tail]);
+  const hidden = tail.cut || view.truncatedBytes > 0;
   // The dialog adds a title, padding and a footer; the header here takes four lines.
   const visible = Math.max(5, Math.min(Math.max(shown.length, 1), height - 16));
 
@@ -111,7 +118,7 @@ function TerminalDetail({ snapshot, terminals, onBack }: { snapshot: TerminalSna
         </text>
       </box>
       <scrollbox ref={scrollRef} height={visible} stickyScroll stickyStart="bottom">
-        {hidden > 0 && <text attributes={TextAttributes.DIM}>{`… earlier output is in the full log`}</text>}
+        {hidden && <text attributes={TextAttributes.DIM}>{`… earlier output is in the full log`}</text>}
         {shown.length === 0 ? (
           <text attributes={TextAttributes.DIM}>{`(no ${stream} yet)`}</text>
         ) : (
@@ -129,19 +136,28 @@ function TerminalDetail({ snapshot, terminals, onBack }: { snapshot: TerminalSna
 
 /** `/ps`: the session's background terminals, newest first. Enter shows one's output, `x` kills the highlighted one. */
 export const PsDialogContent = ({ hub }: { hub: BackgroundHub }) => {
-  const terminals = useTerminals(hub);
-  const { isTopLayer } = useKeyboardLayer();
-  const [selected, setSelected] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
+  const terminals = useTerminals(hub, openId ? DETAIL_REDRAW_MS : LIST_REDRAW_MS);
+  const { isTopLayer } = useKeyboardLayer();
+  // The highlight is a terminal, not a row: one started or pruned meanwhile does not move it. When the highlighted one is
+  // pruned, the row it was on keeps the highlight.
+  const [selected, setSelected] = useState<{ id: string | null; index: number }>({ id: null, index: 0 });
   const list = [...terminals.list()].reverse();
-  const index = Math.min(selected, Math.max(0, list.length - 1));
+  const found = selected.id === null ? -1 : list.findIndex((snapshot) => snapshot.id === selected.id);
+  const index = found >= 0 ? found : Math.min(selected.index, Math.max(0, list.length - 1));
   const open = openId ? terminals.get(openId) : undefined;
+  const select = (at: number) => setSelected({ id: list[at]?.id ?? null, index: at });
+  // Pin what is highlighted (the first row on opening, the next one after a prune) to its terminal.
+  const highlightedId = list[index]?.id ?? null;
+  useEffect(() => {
+    if (highlightedId !== selected.id) setSelected({ id: highlightedId, index });
+  }, [highlightedId, selected.id, index]);
 
   useKeyboard((key) => {
     if (!isTopLayer("dialog") || open) return;
     const highlighted = list[index];
-    if (key.name === "up") setSelected(Math.max(0, index - 1));
-    else if (key.name === "down") setSelected(Math.min(list.length - 1, index + 1));
+    if (key.name === "up") select(Math.max(0, index - 1));
+    else if (key.name === "down") select(Math.min(list.length - 1, index + 1));
     else if ((key.name === "return" || key.name === "enter") && highlighted) setOpenId(highlighted.id);
     else if (key.name === "x" && highlighted) terminals.requestKill(highlighted.id);
   });

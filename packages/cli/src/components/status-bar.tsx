@@ -10,6 +10,7 @@ import { PI_VERSION } from "../lib/engine/pi-version";
 import type { ChatMessage } from "../lib/chat-types";
 import { formatUsage, sessionUsage } from "../lib/usage";
 import { formatGit, type GitStatus } from "../lib/git-status";
+import { escapeTranscriptText } from "../lib/display-text";
 import { useGitStatus } from "../hooks/use-git-status";
 
 /** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
@@ -68,7 +69,8 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, background }: 
   const usageText = useMemo(() => (messages ? formatUsage(sessionUsage(messages)) : ""), [messages]);
   const toolCalls = useMemo(() => finishedToolCalls(messages), [messages]);
   const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls });
-  const gitText = git ? formatGit(git) : "";
+  // The branch name comes from the folder, which may be untrusted: what could act on the terminal shows as an escape.
+  const gitText = git ? formatGit({ ...git, branch: escapeTranscriptText(git.branch) }) : "";
   const gitShown = gitText !== "" && (width === null || baseUsed + 1 + 2 + gitText.length <= width);
   const withGit = baseUsed + (gitShown ? 1 + 2 + gitText.length : 0);
   const usageShown = usageText !== "" && (width === null || withGit + 1 + 2 + usageText.length <= width);

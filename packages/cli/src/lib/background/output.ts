@@ -1,11 +1,11 @@
-import { chmodSync, createWriteStream, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, createWriteStream, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
  * What a background terminal printed: a bounded copy in memory per stream, the full stream in a private log file, and the
  * rendering that strips terminal control codes. Ported from davi7's `extensions/background-terminals/src/output.ts` and
- * `src/ui/output-view.ts` (MIT license), in plain TypeScript.
+ * `src/ui/output-view.ts` (MIT license; see THIRD_PARTY_NOTICES.md), in plain TypeScript.
  */
 
 /** In-memory output kept per stream. */
@@ -32,6 +32,8 @@ export type LogFile = {
   write(chunk: string): boolean;
   /** Flushes and closes the file. */
   end(): Promise<void>;
+  /** Closes the file and deletes it. */
+  remove(): Promise<void>;
   readonly note: string | undefined;
 };
 
@@ -50,6 +52,17 @@ export function openLog(path: string, { maxBytes = MAX_LOG_BYTES_PER_STREAM, onD
     note ??= `The full log could not be written: ${error.message}`;
     onDrain?.();
   });
+  const end = () => {
+    ended ??= new Promise<void>((resolve) => {
+      try {
+        file.end(() => resolve());
+        file.once("error", () => resolve());
+      } catch {
+        resolve();
+      }
+    });
+    return ended;
+  };
   return {
     path,
     write(chunk) {
@@ -64,16 +77,13 @@ export function openLog(path: string, { maxBytes = MAX_LOG_BYTES_PER_STREAM, onD
       if (!accepted && onDrain) file.once("drain", onDrain);
       return accepted;
     },
-    end() {
-      ended ??= new Promise<void>((resolve) => {
+    end,
+    remove() {
+      return end().then(() => {
         try {
-          file.end(() => resolve());
-          file.once("error", () => resolve());
-        } catch {
-          resolve();
-        }
+          rmSync(path, { force: true });
+        } catch {}
       });
-      return ended;
     },
     get note() {
       return note;
@@ -81,7 +91,11 @@ export function openLog(path: string, { maxBytes = MAX_LOG_BYTES_PER_STREAM, onD
   };
 }
 
-/** One private directory (mode 0700) for a session's logs, made on first use; `dispose` removes it with its files. */
+/**
+ * One private directory (mode 0700) for a session's logs, made on first use; `dispose` removes it with its files, and so does the
+ * process's exit (a quit calls `process.exit` before any dispose runs). It records its owner's pid in `owner.pid`, so a later
+ * marcsh can tell the directory of one that was killed (see `sweepStaleLogDirs`).
+ */
 export type LogDir = {
   /** The path of a new log file in the directory; undefined once disposed or when the directory cannot be made. */
   file(name: string): string | undefined;
@@ -89,17 +103,71 @@ export type LogDir = {
   dispose(): void;
 };
 
+const LOG_DIR_PREFIX = "marcsh-bg-";
+const OWNER_FILE = "owner.pid";
+
+/** Whether a process with this pid exists (one of another user counts: signalling it is refused, not unknown). */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes the log directories in `base` that a marcsh which did not exit normally (killed, crashed) left behind: only real
+ * directories named `marcsh-bg-*`, owned by this user, whose `owner.pid` names a process that is gone. One without an owner
+ * file, of a live process or of this one is kept. Never throws.
+ */
+export function sweepStaleLogDirs(base = tmpdir()): void {
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return;
+  }
+  const uid = process.getuid?.();
+  for (const name of names) {
+    if (!name.startsWith(LOG_DIR_PREFIX)) continue;
+    const dir = join(base, name);
+    try {
+      const stat = lstatSync(dir);
+      if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) continue;
+      const recorded = readFileSync(join(dir, OWNER_FILE), "utf8").trim();
+      if (!/^\d+$/.test(recorded)) continue;
+      const pid = Number(recorded);
+      if (pid === process.pid || processAlive(pid)) continue;
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 export function createLogDir(base = tmpdir()): LogDir {
   let dir: string | undefined;
   let state: "new" | "ready" | "failed" | "disposed" = "new";
+  const remove = () => {
+    if (state === "ready" && dir) rmSync(dir, { recursive: true, force: true });
+  };
+  // Synchronous, as an exit handler must be; it never throws out of the process's exit.
+  const onExit = () => {
+    try {
+      remove();
+    } catch {}
+  };
   return {
     file(name) {
       if (state === "new") {
         try {
-          dir = mkdtempSync(join(base, "marcsh-bg-"));
+          dir = mkdtempSync(join(base, LOG_DIR_PREFIX));
           chmodSync(dir, 0o700);
           state = "ready";
+          process.on("exit", onExit);
+          writeFileSync(join(dir, OWNER_FILE), String(process.pid), { mode: 0o600 });
         } catch {
+          if (state === "ready") onExit();
+          process.off("exit", onExit);
           state = "failed";
         }
       }
@@ -109,8 +177,12 @@ export function createLogDir(base = tmpdir()): LogDir {
       return dir;
     },
     dispose() {
-      if (state === "ready" && dir) rmSync(dir, { recursive: true, force: true });
-      state = "disposed";
+      process.off("exit", onExit);
+      try {
+        remove();
+      } finally {
+        state = "disposed";
+      }
     },
   };
 }
@@ -189,6 +261,25 @@ const CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 /** Output as text to show: ANSI sequences and control characters removed, tabs as two spaces. Newlines stay. */
 export function sanitizeText(text: string): string {
   return text.replace(OSC_PATTERN, "").replace(CSI_PATTERN, "").replace(ESCAPE_PATTERN, "").replaceAll("\t", "  ").replace(CONTROL_PATTERN, "");
+}
+
+/**
+ * The end of raw output, before any sanitizing: its last `maxLines` lines (a trailing newline ends the last line, it adds none),
+ * and at most its last `maxChars` characters. `cut` says something before it was left out.
+ */
+export function outputTail(text: string, maxLines: number, maxChars: number): { text: string; cut: boolean } {
+  let start = Math.max(0, text.length - maxChars);
+  let at = text.endsWith("\n") ? text.length - 1 : text.length;
+  for (let seen = 0; at > start; ) {
+    const newline = text.lastIndexOf("\n", at - 1);
+    if (newline < start) break;
+    if (++seen === maxLines) {
+      start = newline + 1;
+      break;
+    }
+    at = newline;
+  }
+  return { text: start > 0 ? text.slice(start) : text, cut: start > 0 };
 }
 
 /** Output as lines to show: a carriage-return progress line keeps its last state, and a trailing newline adds no empty line. */

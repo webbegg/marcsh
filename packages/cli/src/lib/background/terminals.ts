@@ -1,13 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { QuitTurn } from "../quit";
-import { createLogDir, MAX_LOG_BYTES_PER_STREAM, openLog, OutputBuffer, RETAINED_PER_STREAM, type LogFile, type OutputView } from "./output";
+import { createLogDir, MAX_LOG_BYTES_PER_STREAM, openLog, OutputBuffer, RETAINED_PER_STREAM, sweepStaleLogDirs, type LogFile, type OutputView } from "./output";
 
 /**
  * Background terminals: shell commands the model starts and that keep running after the tool call returns. Each runs with
  * `/bin/sh -c` in its own process group with no stdin; its stdout and stderr are captured apart (see `output.ts`). It settles
  * once, when its output pipes close, so the result has all of it. Killing sends SIGTERM to the whole group, then SIGKILL after
- * a grace. Ported from davi7's `extensions/background-terminals/src/manager.ts` and `src/domain.ts` (MIT license), in plain
- * TypeScript without its Effect runtime.
+ * a grace. Ported from davi7's `extensions/background-terminals/src/manager.ts` and `src/domain.ts` (MIT license; see
+ * THIRD_PARTY_NOTICES.md), in plain TypeScript without its Effect runtime.
  */
 
 export const MAX_RUNNING = 8;
@@ -20,6 +20,8 @@ const SETTLE_GRACE_MS = 1_000;
 const LOG_FLUSH_TIMEOUT_MS = 1_500;
 /** The longest dispose waits for the processes it killed. */
 const DISPOSE_TIMEOUT_MS = 5_000;
+/** The longest a start waits to learn whether the process spawned (it normally knows within milliseconds). */
+const SPAWN_WAIT_MS = 2_000;
 const ERROR_MAX = 4_096;
 
 /** done = exit code 0; failed = another exit code, a signal it did not get from marcsh, or no start; killed = stopped by marcsh. */
@@ -72,8 +74,11 @@ export type TerminalsOptions = {
 };
 
 export type BackgroundTerminals = {
-  /** Starts a terminal; throws when at the running cap, disposed, or the shell cannot start. */
-  start(options: StartOptions): TerminalSnapshot;
+  /**
+   * Starts a terminal once its process has spawned; rejects when at the running cap, disposed, or the process cannot start
+   * (a folder that is gone or not searchable). A start that fails is not kept, and its result is never announced.
+   */
+  start(options: StartOptions): Promise<TerminalSnapshot>;
   get(id: string): TerminalSnapshot | undefined;
   /** Oldest first. */
   list(): TerminalSnapshot[];
@@ -119,6 +124,10 @@ type Entry = {
   /** marcsh signalled it while it was still running: it settles as killed. */
   killSignaled: boolean;
   processErrored: boolean;
+  /** The process spawned ('spawn' came). */
+  spawned: boolean;
+  /** It failed before it spawned: the start reports it, so its settle is not announced. */
+  startFailed: boolean;
   exited: boolean;
   /** Its output pipes closed: the settle trigger. */
   closed: boolean;
@@ -143,6 +152,19 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals) {
   } catch {}
 }
 
+/** Bases already swept for the logs of a marcsh that did not exit normally: once per process is enough. */
+const swept = new Set<string>();
+
+/** Its pipes are not read any more: what a descendant that left the group still writes goes nowhere. */
+function releasePipes(child: ChildProcess) {
+  for (const stream of [child.stdout, child.stderr]) {
+    try {
+      stream?.removeAllListeners("data");
+      stream?.destroy();
+    } catch {}
+  }
+}
+
 export function createTerminals({
   onSettled,
   onChange,
@@ -156,6 +178,10 @@ export function createTerminals({
   /** Ids a `kill` call is collecting: their settle is that call's to report. */
   const collecting = new Map<string, number>();
   const listeners = new Set<() => void>();
+  if (!swept.has(logBase ?? "")) {
+    swept.add(logBase ?? "");
+    sweepStaleLogDirs(logBase);
+  }
   const logDir = createLogDir(logBase);
   let counter = 0;
   let disposed = false;
@@ -192,6 +218,8 @@ export function createTerminals({
     for (const entry of candidates) {
       if (entries.size <= MAX_TRACKED) break;
       entries.delete(entry.snapshot.id);
+      // Forgotten terminals keep no logs on disk.
+      for (const log of entry.logs) void log.remove();
     }
   };
 
@@ -202,9 +230,11 @@ export function createTerminals({
     snapshot.status = entry.killSignaled ? "killed" : entry.processErrored ? "failed" : snapshot.exitCode === 0 ? "done" : "failed";
     for (const timer of entry.timers) clearTimeout(timer);
     entry.timers.clear();
+    // Settled while a descendant still holds the pipes: stop reading them.
+    if (!entry.closed) releasePipes(entry.child);
     entry.unregister();
     entry.resolveSettled();
-    if (!disposed && !collecting.has(snapshot.id)) {
+    if (!disposed && !collecting.has(snapshot.id) && !entry.startFailed) {
       try {
         onSettled?.(snapshot);
       } catch {}
@@ -240,7 +270,7 @@ export function createTerminals({
     });
   };
 
-  const start = ({ command, title, cwd }: StartOptions): TerminalSnapshot => {
+  const start = async ({ command, title, cwd }: StartOptions): Promise<TerminalSnapshot> => {
     if (disposed) throw new Error("Background terminals are shutting down.");
     if (running() >= MAX_RUNNING) {
       throw new Error(`At most ${MAX_RUNNING} background terminals can run at once. Stop one with bg_kill before starting another.`);
@@ -288,6 +318,8 @@ export function createTerminals({
       logs: [stdoutLog, stderrLog].filter((file): file is LogFile => file !== undefined),
       killSignaled: false,
       processErrored: false,
+      spawned: false,
+      startFailed: false,
       exited: false,
       closed: false,
       terminating: false,
@@ -308,8 +340,12 @@ export function createTerminals({
       if (!stderr.push(chunk)) child.stderr?.pause();
       notify();
     });
+    child.once("spawn", () => {
+      entry.spawned = true;
+    });
     // A failed start arrives as 'error'; 'close' may follow, and the one settle happens once the logs are flushed.
     child.once("error", (error) => {
+      if (!entry.spawned) entry.startFailed = true;
       entry.processErrored = true;
       entry.exited = true;
       snapshot.errorText ??= bounded(error);
@@ -334,8 +370,20 @@ export function createTerminals({
       settleAfterFlush(entry);
     });
 
+    // Kept while it spawns, so it counts towards the running cap; listed once it has spawned.
     entries.set(id, entry);
     entry.unregister = registerTurn({ stop: () => terminate(entry), done: settled });
+    const failure = await new Promise<Error | undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), SPAWN_WAIT_MS);
+      child.once("spawn", () => (clearTimeout(timer), resolve(undefined)));
+      child.once("error", (error) => (clearTimeout(timer), resolve(error)));
+    });
+    if (failure && entry.startFailed) {
+      // The start reports it: not kept, not announced (see `settle`), and no log stays behind.
+      entries.delete(id);
+      for (const file of entry.logs) void file.remove();
+      throw new Error(`The command could not be started: ${bounded(failure)}`);
+    }
     changed();
     return snapshot;
   };
@@ -392,7 +440,10 @@ export function createTerminals({
       for (const entry of all) terminate(entry);
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, DISPOSE_TIMEOUT_MS).unref?.());
       await Promise.race([Promise.all(all.map((entry) => entry.settled)), timeout]);
-      for (const entry of all) entry.unregister();
+      for (const entry of all) {
+        entry.unregister();
+        releasePipes(entry.child);
+      }
       try {
         logDir.dispose();
       } catch {}

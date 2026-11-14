@@ -3,7 +3,7 @@ import { formatElapsed, formatExit, MAX_RUNNING, type KillResult, type TerminalS
 
 /**
  * What the model is told about background terminals: the tool descriptions and the text of their results. Ported from
- * davi7's `extensions/background-terminals/src/prompt.ts` (MIT license).
+ * davi7's `extensions/background-terminals/src/prompt.ts` (MIT license; see THIRD_PARTY_NOTICES.md).
  */
 
 const KIB = 1024;

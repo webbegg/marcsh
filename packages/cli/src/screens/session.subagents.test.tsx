@@ -159,4 +159,22 @@ describe("/subagents (S4a)", () => {
     expect(newer.status).toBe("running");
     expect(await frameContaining("1 running of 2")).toContain("stopped older");
   }, 30000);
+
+  // R3-4: the highlight follows the subagent, not the row: one started meanwhile goes on top without taking it.
+  test("a subagent started while the list is open does not move the highlight, and x cancels the highlighted one", async () => {
+    const subagents = await openPiSession();
+    const contexts: SubagentRunContext[] = [];
+    const first = await act(async () => subagents.start({ description: "first", prompt: "first job", run: stubRun("ONE", contexts) }));
+    await frameContaining("1 background subagent running");
+
+    await type("/subagents");
+    await press("RETURN");
+    await frameContaining("1 running of 1");
+    const second = await act(async () => subagents.start({ description: "second", prompt: "second job", run: stubRun("TWO", contexts) }));
+    await frameContaining("2 running of 2");
+    await type("x");
+    await frameWhere(() => first.status !== "running");
+    expect(first.status).toBe("stopped");
+    expect(second.status).toBe("running");
+  }, 30000);
 });

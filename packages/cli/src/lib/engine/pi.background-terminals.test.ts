@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -128,7 +128,7 @@ describe("background terminals in a pi turn (S1, S1a)", () => {
 
   test("bg_kill only knows this session's terminals", async () => {
     const other = newHub();
-    const foreign = terminalsFor(other.hub).start({ command: "sleep 30", title: "other session", cwd });
+    const foreign = await terminalsFor(other.hub).start({ command: "sleep 30", title: "other session", cwd });
     const { hub } = newHub();
     const results: string[][] = [];
     const after: FauxResponseStep = (context) => {
@@ -182,7 +182,7 @@ describe("background terminals in a pi turn (S1, S1a)", () => {
 
   test("bg_kill and bg_status of a terminal whose result the hub already handed on still show its output (V-A2: a duplicate, never a loss)", async () => {
     const { hub, idle } = newHub();
-    const snapshot = terminalsFor(hub).start({ command: "echo TAIL-OUT", title: "tail", cwd });
+    const snapshot = await terminalsFor(hub).start({ command: "echo TAIL-OUT", title: "tail", cwd });
     await until(() => idle.length === 1);
     const tools = createBackgroundTools({ hub, cwd });
     const execute = (name: string, params: unknown) => tools.find((tool) => tool.name === name)!.execute("t1", params as never, undefined, undefined, undefined as never);
@@ -191,6 +191,29 @@ describe("background terminals in a pi turn (S1, S1a)", () => {
     expect(killed).toContain("was already done");
     expect(killed).toContain("TAIL-OUT");
     expect(await texts("bg_status", { id: snapshot.id })).toContain("TAIL-OUT");
+  }, 20000);
+
+  // R3-5: the folder passes the check but the process cannot start there (here: not searchable).
+  test("a bg_start whose process cannot start is a tool error, never a 'Started' nor a background result", async () => {
+    const { hub, idle } = newHub();
+    const locked = join(dir, "locked");
+    mkdirSync(locked, { mode: 0o000 });
+    const tools = createBackgroundTools({ hub, cwd });
+    const start = tools.find((tool) => tool.name === "bg_start")!;
+    let outcome: unknown;
+    try {
+      outcome = await start.execute("t1", { command: "echo never", title: "locked", working_dir: locked } as never, undefined, undefined, undefined as never);
+    } catch (error) {
+      outcome = error;
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/could not be started.*EACCES/);
+    await wait(300);
+    expect(idle).toEqual([]);
+    expect(hub.pending()).toEqual([]);
+    expect(terminalsFor(hub).list()).toEqual([]);
   }, 20000);
 
   test("a bg_start a stored bash rule allows runs without asking", async () => {

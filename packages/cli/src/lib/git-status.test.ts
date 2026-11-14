@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatGit, parseGitStatus, readGitStatus } from "./git-status";
@@ -99,5 +99,20 @@ describe("readGitStatus", () => {
 
   test("is null when git does not answer in time", async () => {
     expect(await readGitStatus(repo, { timeoutMs: 0 })).toBeNull();
+  });
+
+  // R1-1: the status line reads any folder, trusted or not, so nothing in the repo's own config may run a program.
+  test("never runs a program the repo's config names (core.fsmonitor)", async () => {
+    const marker = join(dir, "fsmonitor-ran");
+    const hook = join(dir, "fsmonitor.sh");
+    writeFileSync(hook, `#!/bin/sh\necho ran > '${marker}'\n`);
+    chmodSync(hook, 0o755);
+    git("config", "core.fsmonitor", hook);
+    try {
+      expect(await readGitStatus(repo)).toEqual({ branch: "trunk", changed: 0 });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      git("config", "--unset", "core.fsmonitor");
+    }
   });
 });
