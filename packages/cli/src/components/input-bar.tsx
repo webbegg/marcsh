@@ -305,7 +305,23 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
 ];
 
 export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false }: Props) {
-  const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const {
+    agent,
+    mode,
+    cycleAgent,
+    selectAgent,
+    reloadAgents,
+    setModel,
+    defaultEngine,
+    setDefaultEngine,
+    piModel,
+    setPiModel,
+    refreshPiModel,
+    approvalMode,
+    setApprovalMode,
+    defaultApprovalMode,
+    setDefaultApprovalMode,
+  } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
   const onSubmitRef = useRef<() => void>(() => {});
@@ -515,11 +531,15 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         reloadAgents,
         selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
         setModel,
+        approvalMode,
+        setApprovalMode,
+        defaultApprovalMode,
+        setDefaultApprovalMode,
       });
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel]);
+  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode]);
 
   const handleCommandExecute = useCallback(
     (index: number) => {

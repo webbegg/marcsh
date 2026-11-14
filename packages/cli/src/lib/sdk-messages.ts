@@ -187,6 +187,7 @@ export function toPermissionResult(
     return { behavior: "deny", message: "The user denied this tool call." };
   }
 
+  // A folder answer (`path:<dir>`) is a one-time allow here: the engine stores the rule itself, Claude gets no updatedPermissions.
   if (decision === "always" && !suppressAlwaysAllowRule && suggestions?.length) {
     return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions };
   }

@@ -2,11 +2,15 @@ import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
+import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { type BranchSource, type BranchState, branchState } from "../git-branch";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
+import { Mode } from "../modes";
 import { prepareViewForTurn } from "../packs";
+import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import { marcshPluginPath } from "../plugin";
 import {
   applySdkMessage,
@@ -16,7 +20,8 @@ import {
   toPermissionMode,
   toPermissionResult,
 } from "../sdk-messages";
-import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
+import { getStorage } from "../storage";
+import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
 function emitCommands(host: TurnHost, commands: unknown) {
@@ -31,12 +36,35 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
+/** Claude's edit tools and the input key that names the file each one writes. */
+const EDIT_PATH_KEYS: Record<string, string> = { Edit: "file_path", Write: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+
+/** What the approval policy sees of a call: `Bash` is a shell command, the edit tools a file edit, any other tool is not classified. */
+function policyCall(toolName: string, input: Record<string, unknown>): ToolCall {
+  if (toolName === "Bash" && typeof input.command === "string") return { kind: "shell", command: input.command };
+  const key = EDIT_PATH_KEYS[toolName];
+  const path = key ? input[key] : undefined;
+  return typeof path === "string" ? { kind: "edit", path } : { kind: "other" };
+}
+
 /**
  * The permission callback of a turn. A denied tool is refused here whoever calls it (the turn or a Task child), before anything is asked.
  * Backstop for `disallowedTools` (the SDK documents its MCP wildcard for agent definitions; this keeps a denied MCP call from ever
  * reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
+ *
+ * With an approval mode, the session's policy decides next, except for asks Claude forces itself (the user's ask rules, `defaultToNo`,
+ * a blocked path): those always ask, though a catastrophic command is still denied. The mode never turns an ask into an always-allow rule: a
+ * policy ask suppresses it, and so does any branch-guard ask (push, PR, merge, publish): no mode skips one. The guard's ask arrives as the
+ * hook's `decisionReason`. The branch is read for every call: auto and yolo count only on a feature branch.
+ *
+ * With `pathRules`, a `Bash` call covered by a stored folder rule ("allow `rm` under /tmp/x") runs without asking, in every mode and also past a
+ * floor ask, but never past the catastrophic block or for a forced ask; an ask for a path command offers to store one.
  */
-export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] | undefined): CanUseTool {
+export function createCanUseTool(
+  host: TurnHost,
+  deniedTools: readonly Group[] | undefined,
+  policy?: { approvalMode: ApprovalMode; currentApprovalMode?: () => ApprovalMode; cwd: string; pathRules?: PathRuleStore; branchOf?: (cwd: string) => BranchState },
+): CanUseTool {
   return async (toolName, input, options) => {
     if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
 
@@ -46,49 +74,76 @@ export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] |
       return answers ? toAnswersResult(input, answers) : toDeclinedResult();
     }
 
+    const forced = options.matchedAskRule || options.defaultToNo || options.blockedPath;
+    // A forced ask is never auto-allowed, but the catastrophic block still applies to it (read as the policy of normal mode).
+    const verdict = policy ? decideApproval(forced ? "normal" : (policy.currentApprovalMode?.() ?? policy.approvalMode), policyCall(toolName, input), policy.cwd, () => (policy.branchOf ?? branchState)(policy.cwd)) : undefined;
+    if (verdict?.action === "block") return { behavior: "deny", message: verdict.reason };
+    // The guard's ask is never skipped by a mode: the ask stays, and cannot be always-allowed.
+    const guardFloor = verdict?.action === "allow" && isGuardAsk(options.decisionReason);
+    if (verdict?.action === "allow" && !guardFloor) return { behavior: "allow", updatedInput: input };
+    const floor = !forced && verdict?.action === "ask" ? verdict : undefined;
+    const noAlways = floor !== undefined || guardFloor;
+
+    const folders = forced || !policy?.pathRules ? undefined : { rules: policy.pathRules, cwd: policy.cwd };
+    const command = folders && toolName === "Bash" && typeof input.command === "string" ? input.command : undefined;
+    if (folders && command !== undefined && hasMatchingPathRule(folders.rules, command, folders.cwd)) return { behavior: "allow", updatedInput: input };
+    const candidate = folders && command !== undefined ? pathRuleCandidate(command, folders.cwd) : null;
+
     const decision = await host.askPermission(
       {
         toolName,
         input,
         title: options.title,
         description: options.description,
-        decisionReason: options.decisionReason,
+        decisionReason: floor ? floor.reason : options.decisionReason,
         blockedPath: options.blockedPath,
         defaultToNo: options.defaultToNo,
-        suppressAlwaysAllowRule: options.suppressAlwaysAllowRule,
+        suppressAlwaysAllowRule: noAlways ? true : options.suppressAlwaysAllowRule,
+        ...(candidate ? { pathRule: candidate } : {}),
       },
       options.signal,
     );
+    const answered = folders ? answeredPathRule(decision, folders.cwd, candidate) : null;
+    if (answered) folders?.rules.addPathRule(answered);
     return toPermissionResult(decision, input, options.suggestions, {
-      suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || options.defaultToNo,
+      suppressAlwaysAllowRule: noAlways ? true : options.suppressAlwaysAllowRule || options.defaultToNo,
     });
   };
 }
 
-/** The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`. */
+/**
+ * The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`.
+ * The approval mode only adds its line to the appended system prompt: the permission mode stays default or plan, never bypassPermissions.
+ */
 export function claudeQueryOptions({
   cwd,
   mode,
   model,
   systemPromptAppend,
+  approvalMode,
+  branch,
   deniedTools,
   resumeRef,
   abortController,
   canUseTool,
   plugins,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "deniedTools" | "resumeRef"> & {
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "resumeRef"> & {
+  /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
+  branch?: BranchSource;
   abortController: AbortController;
   canUseTool: CanUseTool;
   plugins: readonly string[];
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
+  // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, branch ?? (() => branchState(cwd)));
   return {
     cwd,
     model,
     permissionMode: toPermissionMode(mode),
     resume: resumeRef,
     abortController,
-    systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
+    systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
     settingSources: ["user", "project", "local"],
     canUseTool,
     ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
@@ -96,10 +151,17 @@ export function claudeQueryOptions({
   };
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
-  const canUseTool = createCanUseTool(host, deniedTools);
+  // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
+  // Folder rules do not apply in plan mode either: Claude's read-only guarantee stays as it is.
+  const canUseTool = createCanUseTool(host, deniedTools, {
+    approvalMode: mode === Mode.PLAN ? "normal" : (approvalMode ?? "normal"),
+    ...(mode !== Mode.PLAN && currentApprovalMode ? { currentApprovalMode } : {}),
+    cwd,
+    ...(mode === Mode.PLAN ? {} : { pathRules: getStorage() }),
+  });
 
   let chat: Query | null = null;
   const done = (async () => {
@@ -113,7 +175,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
     try {
       chat = query({
         prompt,
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, deniedTools, resumeRef, abortController, canUseTool, plugins }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, resumeRef, abortController, canUseTool, plugins }),
       });
 
       for await (const message of chat) {
