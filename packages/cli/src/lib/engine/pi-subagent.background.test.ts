@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -190,6 +190,37 @@ describe("a background subagent in a pi turn (S4)", () => {
     await run(engine, "faux/faux-1", { background: hub, mode: Mode.PLAN }).turn.done;
     expect(results[0]![0]).toContain("Background subagents are not available");
     expect(subagentsFor(hub).list()).toEqual([]);
+  }, 30000);
+
+  test("the child follows the session's plan mode as it is at each call: once in plan its writes are blocked, back in build they run (R1-3)", async () => {
+    const { hub, idle } = newHub();
+    const sessionAsks: PermissionAsk[] = [];
+    hub.host = { askPermission: async (ask) => (sessionAsks.push(ask), "allow") };
+    let plan = false;
+    let parentDone = false;
+    const { engine, model, seen } = await setup({
+      parent: startInBackground,
+      child: async (results) => {
+        if (results.length === 0) {
+          await until(() => parentDone);
+          // The user switches the session to plan while the child runs.
+          plan = true;
+          return call("bash", { command: "touch planned" }, "b1");
+        }
+        if (results.length === 1) return (plan = false), call("bash", { command: "touch built" }, "b2");
+        return fauxAssistantMessage([fauxText("done")]);
+      },
+    });
+    const { turn } = run(engine, model, { background: hub, currentPlanMode: () => plan });
+    await turn.done;
+    parentDone = true;
+    await until(() => idle.length === 1);
+
+    expect(seen.childResults.at(-1)![0]).toContain("Plan mode");
+    expect(existsSync(join(cwd, "planned"))).toBe(false);
+    expect(existsSync(join(cwd, "built"))).toBe(true);
+    // Blocked without asking; back in build the call asked as usual.
+    expect(sessionAsks.map((ask) => ask.input.command)).toEqual(["touch built"]);
   }, 30000);
 
   test("the child asks under the session's approval mode as it is at each call, also after the parent turn ended", async () => {

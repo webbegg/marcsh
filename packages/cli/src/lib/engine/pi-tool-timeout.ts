@@ -15,20 +15,27 @@ function formatTimeout(ms: number): string {
   return `${ms}ms`;
 }
 
-/** What the model reads when a call ran out of time: what to use instead for longer work. */
-export function toolTimeoutMessage(toolName: string, ms: number): string {
-  return (
-    `Tool call "${toolName}" timed out after ${formatTimeout(ms)} and was stopped. ` +
-    "For longer work, run the command with bg_start, or start the subagent with Task and `background: true`."
-  );
+/** What the turn offers for longer work: `background` when it has bg_start and background Task (a session's turn, not plan mode). */
+export type TimeoutHints = { background?: boolean };
+
+/** What the model reads when a call ran out of time: what to use instead for longer work, only what this turn has. */
+export function toolTimeoutMessage(toolName: string, ms: number, { background = false }: TimeoutHints = {}): string {
+  const head = `Tool call "${toolName}" timed out after ${formatTimeout(ms)} and was stopped.`;
+  if (toolName === BASH_TOOL) {
+    return `${head} For a longer command, pass a larger \`timeout\` (in seconds)${background ? ", or run it in the background with bg_start" : ""}.`;
+  }
+  return `${head} ${background ? "For longer work, start the subagent with Task and `background: true`." : "Give it a smaller piece of work."}`;
 }
 
 export class ToolCallTimeoutError extends Error {
-  constructor(toolName: string, ms: number) {
-    super(toolTimeoutMessage(toolName, ms));
+  constructor(toolName: string, ms: number, hints?: TimeoutHints) {
+    super(toolTimeoutMessage(toolName, ms, hints));
     this.name = "ToolCallTimeoutError";
   }
 }
+
+/** The call's clock: `hold()` stops it (while the call waits for the user) until the function it returns is called. Holds nest. */
+export type ToolClock = { hold(): () => void };
 
 /** Whether the call asked to run in the background, which no timeout applies to. */
 export function isBackgroundCall(params: unknown): boolean {
@@ -38,21 +45,53 @@ export function isBackgroundCall(params: unknown): boolean {
 /**
  * Runs `execute` with a signal that aborts when `signal` does or when `ms` have passed. Rejects with a
  * `ToolCallTimeoutError` on timeout, and with the abort reason when `signal` aborts first, without waiting
- * for `execute` to notice.
+ * for `execute` to notice. The time `execute` holds its clock (`ToolClock`) does not count.
  *
- * Ported from davi7 `extensions/shared/tool-call-timeout.ts` (MIT).
+ * Ported from davi7 `extensions/shared/tool-call-timeout.ts` (MIT; see THIRD_PARTY_NOTICES.md).
  */
-export async function runWithToolTimeout<T>(toolName: string, ms: number, signal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function runWithToolTimeout<T>(
+  toolName: string,
+  ms: number,
+  signal: AbortSignal | undefined,
+  execute: (signal: AbortSignal, clock: ToolClock) => Promise<T>,
+  hints?: TimeoutHints,
+): Promise<T> {
   const timeoutController = new AbortController();
   const executionSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
-  const timeoutError = new ToolCallTimeoutError(toolName, ms);
+  const timeoutError = new ToolCallTimeoutError(toolName, ms, hints);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let fire = () => {};
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
+    fire = () => {
       reject(timeoutError);
       timeoutController.abort(timeoutError);
-    }, ms);
+    };
   });
+  // What is left of `ms`, and when the clock last started; it runs while nothing holds it.
+  let remaining = ms;
+  let runningSince = Date.now();
+  let holds = 0;
+  let over = false;
+  const run = () => {
+    runningSince = Date.now();
+    timer = setTimeout(fire, remaining);
+  };
+  run();
+  const clock: ToolClock = {
+    hold() {
+      if (over || timeoutController.signal.aborted) return () => {};
+      if (holds++ === 0) {
+        clearTimeout(timer);
+        remaining = Math.max(0, remaining - (Date.now() - runningSince));
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (--holds === 0 && !over) run();
+      };
+    },
+  };
 
   let removeAbortListener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -64,8 +103,9 @@ export async function runWithToolTimeout<T>(toolName: string, ms: number, signal
   });
 
   try {
-    return await Promise.race([execute(executionSignal), timeout, aborted]);
+    return await Promise.race([execute(executionSignal, clock), timeout, aborted]);
   } finally {
+    over = true;
     clearTimeout(timer);
     removeAbortListener?.();
   }
@@ -82,9 +122,10 @@ export async function runWithToolTimeout<T>(toolName: string, ms: number, signal
  * for the result handlers after it. The transcript keeps the model's arguments too (pi validates a copy of them).
  *
  * For the calls it gave a timeout, pi's `Command timed out after N seconds` becomes marcsh's message. A call blocked
- * after this handler ran gets no `tool_result`, only `tool_execution_end`, which forgets it too.
+ * after this handler ran gets no `tool_result`, only `tool_execution_end`, which forgets it too. `hints`: what the turn offers
+ * for longer work, so the message only points at tools it has.
  */
-export function createBashTimeoutExtension(ms: number = TOOL_CALL_TIMEOUT_MS): InlineExtension {
+export function createBashTimeoutExtension(ms: number = TOOL_CALL_TIMEOUT_MS, hints?: TimeoutHints): InlineExtension {
   return {
     name: BASH_TIMEOUT_EXTENSION,
     hidden: true,
@@ -111,7 +152,7 @@ export function createBashTimeoutExtension(ms: number = TOOL_CALL_TIMEOUT_MS): I
         const content = event.content.map((block) => {
           if (block.type !== "text" || !PI_TIMED_OUT.test(block.text)) return block;
           changed = true;
-          return { ...block, text: block.text.replace(PI_TIMED_OUT, toolTimeoutMessage(BASH_TOOL, ms)) };
+          return { ...block, text: block.text.replace(PI_TIMED_OUT, toolTimeoutMessage(BASH_TOOL, ms, hints)) };
         });
         return changed ? { content } : undefined;
       });

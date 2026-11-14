@@ -17,13 +17,22 @@ describe("toolTimeoutMessage", () => {
     expect(TOOL_CALL_TIMEOUT_MS).toBe(180_000);
   });
 
-  test("names the tool and the time, and points at bg_start and Task with background: true", () => {
+  test("names the tool and the time; bash always suggests an explicit timeout, and nothing points at background tools the turn lacks (R3-2)", () => {
     const message = toolTimeoutMessage("bash", TOOL_CALL_TIMEOUT_MS);
 
     expect(message).toStartWith('Tool call "bash" timed out after 3m');
-    expect(message).toContain("bg_start");
-    expect(message).toContain("Task");
-    expect(message).toContain("background: true");
+    expect(message).toContain("`timeout`");
+    expect(message).not.toContain("bg_start");
+    expect(message).not.toContain("background: true");
+    expect(toolTimeoutMessage("Task", TOOL_CALL_TIMEOUT_MS)).not.toContain("background: true");
+    expect(toolTimeoutMessage("Task", TOOL_CALL_TIMEOUT_MS)).not.toContain("bg_start");
+  });
+
+  test("with background support, bash points at bg_start and Task at `background: true` (R3-2)", () => {
+    const bash = toolTimeoutMessage("bash", TOOL_CALL_TIMEOUT_MS, { background: true });
+    expect(bash).toContain("`timeout`");
+    expect(bash).toContain("bg_start");
+    expect(toolTimeoutMessage("Task", TOOL_CALL_TIMEOUT_MS, { background: true })).toContain("Task and `background: true`");
   });
 
   test("a time under a minute is shown in seconds, and under a second in milliseconds", () => {
@@ -86,6 +95,35 @@ describe("runWithToolTimeout", () => {
     await expect(runWithToolTimeout("bash", 5_000, turn.signal, hanging)).rejects.toThrow("over");
   });
 
+  test("the clock stops while the tool holds it (an approval waits for the user) and runs on after (R3-3)", async () => {
+    const startedAt = Date.now();
+    const value = await runWithToolTimeout("Task", 60, undefined, async (_signal, clock) => {
+      const release = clock.hold();
+      await Bun.sleep(150);
+      release();
+      release();
+      await Bun.sleep(20);
+      return "answered";
+    });
+    expect(value).toBe("answered");
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+
+    // Held and released, the time before and after still adds up to the timeout.
+    const error = await runWithToolTimeout("Task", 60, undefined, async (signal, clock) => {
+      await Bun.sleep(30);
+      const release = clock.hold();
+      await Bun.sleep(100);
+      release();
+      return hanging(signal);
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ToolCallTimeoutError);
+  });
+
+  test("the timeout error says what the turn offers (R3-2)", async () => {
+    const error = await runWithToolTimeout("Task", 20, undefined, hanging, { background: true }).catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe(toolTimeoutMessage("Task", 20, { background: true }));
+  });
+
   test("a tool error passes through unchanged", async () => {
     await expect(
       runWithToolTimeout("bash", 1_000, undefined, async () => {
@@ -98,9 +136,9 @@ describe("runWithToolTimeout", () => {
 type Handler = (event: any) => unknown;
 
 // The parts of pi's extension API the bash extension uses: its handlers by event, and the registered tools.
-function loadBashExtension(timeoutMs: number, bashSource = "builtin:bash") {
+function loadBashExtension(timeoutMs: number, bashSource = "builtin:bash", options?: { background?: boolean }) {
   const handlers = new Map<string, Handler[]>();
-  const extension = createBashTimeoutExtension(timeoutMs);
+  const extension = createBashTimeoutExtension(timeoutMs, options);
   if (typeof extension === "function") throw new Error("expected a named inline extension");
   extension.factory({
     on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
@@ -189,6 +227,16 @@ describe("createBashTimeoutExtension", () => {
     const { changed } = result(TIMED_OUT) as { changed: { content: { type: string; text: string }[] } };
 
     expect(changed.content).toEqual([{ type: "text", text: `partial output\n\n${toolTimeoutMessage("bash", 500)}` }]);
+  });
+
+  test("in a turn with background support the message points at bg_start (R3-2)", () => {
+    const { call, result } = loadBashExtension(500, "builtin:bash", { background: true });
+    call({ command: "sleep 30" });
+
+    const { changed } = result(TIMED_OUT) as { changed: { content: { type: string; text: string }[] } };
+
+    expect(changed.content).toEqual([{ type: "text", text: `partial output\n\n${toolTimeoutMessage("bash", 500, { background: true })}` }]);
+    expect(changed.content[0]!.text).toContain("bg_start");
   });
 
   test("the result handlers after it (pack hooks) see the input without the timeout marcsh added", () => {

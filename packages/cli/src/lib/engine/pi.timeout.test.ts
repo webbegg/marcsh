@@ -10,7 +10,8 @@ import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
 import { toolTimeoutMessage } from "./pi-tool-timeout";
 import { trustEveryProject } from "./test-trust";
-import type { EngineEvent, PermissionDecision, TurnHost } from "./types";
+import type { EngineEvent, PermissionDecision, TurnHost, TurnRequest } from "./types";
+import { createBackgroundHub, type BackgroundHub } from "../background/hub";
 
 let dir: string;
 let agentDir: string;
@@ -23,9 +24,18 @@ beforeEach(() => {
   mkdirSync(cwd, { recursive: true });
 });
 
-afterEach(() => {
+const hubs: BackgroundHub[] = [];
+
+afterEach(async () => {
+  await Promise.all(hubs.splice(0).map((hub) => hub.dispose()));
   rmSync(dir, { recursive: true, force: true });
 });
+
+function newHub() {
+  const hub = createBackgroundHub({ debounceMs: 5, registerTurn: () => () => {} });
+  hubs.push(hub);
+  return hub;
+}
 
 // A short timeout, so no test waits the real 3 minutes.
 const TIMEOUT_MS = 400;
@@ -40,7 +50,14 @@ async function setup(responses: FauxResponseStep[]) {
 }
 
 // Answers each approval in turn (the last answer repeats). Keeps a copy of each input as it was when asked, and the input itself as the host got it.
-async function runTurn(engine: Awaited<ReturnType<typeof setup>>["engine"], model: string, decisions: PermissionDecision[] = ["allow"]) {
+// `answerAfterMs`: how long the user takes to answer each approval.
+async function runTurn(
+  engine: Awaited<ReturnType<typeof setup>>["engine"],
+  model: string,
+  decisions: PermissionDecision[] = ["allow"],
+  request: Partial<TurnRequest> = {},
+  answerAfterMs = 0,
+) {
   const events: EngineEvent[] = [];
   const asked: Record<string, unknown>[] = [];
   const held: Record<string, unknown>[] = [];
@@ -49,12 +66,13 @@ async function runTurn(engine: Awaited<ReturnType<typeof setup>>["engine"], mode
     askPermission: async (ask) => {
       asked.push(structuredClone(ask.input));
       held.push(ask.input);
+      if (answerAfterMs > 0) await Bun.sleep(answerAfterMs);
       return decisions[Math.min(asked.length, decisions.length) - 1]!;
     },
     askQuestions: async () => null,
   };
   const startedAt = Date.now();
-  await engine.startTurn({ prompt: "hello", cwd, mode: Mode.BUILD, model, signal: new AbortController().signal }, host).done;
+  await engine.startTurn({ prompt: "hello", cwd, mode: Mode.BUILD, model, signal: new AbortController().signal, ...request }, host).done;
   let reply: ChatMessage = { id: "reply", role: "assistant", parts: [] };
   for (const event of events) if (event.type === "reply") reply = event.update(reply);
   return { reply, asked, held, elapsed: Date.now() - startedAt, errors: events.flatMap((e) => (e.type === "error" ? [e.message] : [])) };
@@ -77,7 +95,7 @@ const bashCall = (input: { command: string; timeout?: number }, id = "call-1") =
 const toolParts = (reply: ChatMessage) => reply.parts.flatMap((p) => (p.type === "tool" ? [p] : []));
 
 describe("pi engine tool-call timeouts (S5)", () => {
-  test("a bash call that runs past the timeout is stopped and the model reads that it timed out, with bg_start suggested", async () => {
+  test("a bash call that runs past the timeout is stopped and the model reads that it timed out, with an explicit timeout suggested", async () => {
     const { seen, step } = reading();
     const { engine, model } = await setup([bashCall({ command: "sleep 30" }), step]);
 
@@ -86,7 +104,9 @@ describe("pi engine tool-call timeouts (S5)", () => {
     expect(errors).toEqual([]);
     expect(seen[0]).toHaveLength(1);
     expect(seen[0]![0]).toContain(toolTimeoutMessage("bash", TIMEOUT_MS));
-    expect(seen[0]![0]).toContain("bg_start");
+    expect(seen[0]![0]).toContain("`timeout`");
+    // Headless (no background hub): bg_start does not exist in this turn, so it is not suggested (R3-2).
+    expect(seen[0]![0]).not.toContain("bg_start");
     expect(seen[0]![0]).not.toContain("Command timed out after");
     expect(elapsed).toBeLessThan(10_000);
     // Approval and the transcript see the command as the model sent it, without the timeout marcsh added.
@@ -141,7 +161,47 @@ describe("pi engine tool-call timeouts (S5)", () => {
     const { reply, elapsed } = await runTurn(engine, model);
 
     expect(seen[0]).toEqual([toolTimeoutMessage("Task", TIMEOUT_MS)]);
+    expect(seen[0]![0]).not.toContain("background: true");
     expect(reply.parts.flatMap((p) => (p.type === "task" ? [[p.status, p.error]] : []))).toEqual([["failed", toolTimeoutMessage("Task", TIMEOUT_MS)]]);
     expect(elapsed).toBeLessThan(10_000);
   });
+
+  test("in a turn with background support the messages point at bg_start and a background Task; in plan mode they do not (R3-2)", async () => {
+    const hanging: FauxResponseStep = (_context, options) =>
+      new Promise((resolve) => options?.signal?.addEventListener("abort", () => resolve(fauxAssistantMessage([], { stopReason: "aborted" })), { once: true }));
+    const taskCall = () => fauxAssistantMessage([fauxToolCall("Task", { description: "Slow work", prompt: "go" }, { id: "task-1" })], { stopReason: "toolUse" });
+
+    const bash = reading();
+    const first = await setup([bashCall({ command: "sleep 30" }), bash.step]);
+    await runTurn(first.engine, first.model, ["allow"], { background: newHub() });
+    expect(bash.seen[0]![0]).toContain(toolTimeoutMessage("bash", TIMEOUT_MS, { background: true }));
+    expect(bash.seen[0]![0]).toContain("bg_start");
+
+    const task = reading();
+    const second = await setup([taskCall(), hanging, task.step]);
+    await runTurn(second.engine, second.model, ["allow"], { background: newHub() });
+    expect(task.seen[0]).toEqual([toolTimeoutMessage("Task", TIMEOUT_MS, { background: true })]);
+
+    const plan = reading();
+    const third = await setup([taskCall(), hanging, plan.step]);
+    await runTurn(third.engine, third.model, ["allow"], { background: newHub(), mode: Mode.PLAN });
+    expect(plan.seen[0]).toEqual([toolTimeoutMessage("Task", TIMEOUT_MS)]);
+  }, 30_000);
+
+  test("a Task's clock stops while its subagent waits for the user's approval: a slow answer does not time it out (R3-3)", async () => {
+    const { seen, step } = reading();
+    const { engine, model } = await setup([
+      fauxAssistantMessage([fauxToolCall("Task", { description: "Careful work", prompt: "go" }, { id: "task-1" })], { stopReason: "toolUse" }),
+      bashCall({ command: "echo CHILD-RAN" }, "child-bash"),
+      fauxAssistantMessage([fauxText("child done")]),
+      step,
+    ]);
+
+    // The user answers the child's approval after twice the timeout.
+    const { reply, asked } = await runTurn(engine, model, ["allow"], {}, TIMEOUT_MS * 2);
+
+    expect(asked).toEqual([{ command: "echo CHILD-RAN" }]);
+    expect(seen[0]).toEqual(["child done"]);
+    expect(reply.parts.flatMap((p) => (p.type === "task" ? [p.status] : []))).toEqual(["completed"]);
+  }, 20_000);
 });

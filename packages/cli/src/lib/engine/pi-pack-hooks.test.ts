@@ -320,14 +320,15 @@ describe("createPackHooksExtension", () => {
     expect(existsSync(out)).toBe(false);
   });
 
-  test("a bg_start with a working_dir runs its Bash hooks in that directory, which the payload names as cwd (S1a, B1)", async () => {
+  test("a bg_start with a working_dir runs its Bash hooks in the session's folder; the payload names the run directory as cwd (S1a, B1, R1-4)", async () => {
     const out = join(dir, "stdin.json");
     const other = join(dir, "other");
     mkdirSync(other);
     const { call, result } = load({ PreToolUse: group(`cat > ${out}; pwd > ${out}.pwd`, "Bash"), PostToolUse: group(`cat > ${out}.post`, "Bash") });
     expect(await call("bg_start", { command: "make", title: "m", working_dir: "../other" })).toBeUndefined();
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ cwd: other, tool_name: "Bash", tool_input: { command: "make" } });
-    expect(readFileSync(`${out}.pwd`, "utf8").trim()).toBe(realpathSync(other));
+    // The model chose that folder and nothing approved it yet: the hook process starts in the session's folder, not there.
+    expect(readFileSync(`${out}.pwd`, "utf8").trim()).toBe(realpathSync(cwd));
     await result("bg_start", { command: "make", title: "m", working_dir: other }, "Started bt-1");
     expect(JSON.parse(readFileSync(`${out}.post`, "utf8"))).toMatchObject({ cwd: other });
     // Without a working_dir, it is the session's folder.

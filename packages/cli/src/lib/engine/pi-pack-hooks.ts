@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hooks";
 import { claudeToolName, claudeToolNames } from "../tool-names";
-import { bgStartDir, hasWorkingDir, workingDirError } from "./pi-bg-tools";
+import { BG_START_TOOL, bgStartDir, hasWorkingDir, workingDirError } from "./pi-bg-tools";
 import type { NoticeLevel } from "./types";
 
 // Pack hooks on pi, which has none: marcsh runs an enabled pack's tool-call events itself, with Claude's hook contract (see the agent-workflows skill).
@@ -17,21 +17,20 @@ const PIPE_GRACE_MS = 250;
 
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {
-  if (piName === BG_START) return { command: input.command };
+  if (piName === BG_START_TOOL) return { command: input.command };
   return ["read", "edit", "write"].includes(piName) && typeof input.path === "string" ? { ...input, file_path: input.path } : input;
 }
 
 /** marcsh's `bg_start` runs a shell command like Bash, so a pack's Bash hooks run on it too, told it is Bash: a hook cannot be bypassed by running in the background. */
-const BG_START = "bg_start";
-const hookName = (piName: string) => (piName === BG_START ? "Bash" : claudeToolName(piName));
-const hookNames = (piName: string) => (piName === BG_START ? ["Bash"] : claudeToolNames(piName));
+const hookName = (piName: string) => (piName === BG_START_TOOL ? "Bash" : claudeToolName(piName));
+const hookNames = (piName: string) => (piName === BG_START_TOOL ? ["Bash"] : claudeToolNames(piName));
 
 /**
- * The directory the call's command runs in, where its hooks run and which their payload names as `cwd`: a `bg_start`'s
- * `working_dir` (resolved like `bg_start` resolves it), the session's folder for anything else.
+ * The directory the call's command runs in, which the hooks' payload names as `cwd`: a `bg_start`'s `working_dir` (resolved like
+ * `bg_start` resolves it), the session's folder for anything else. The hook processes themselves always start in the session's folder.
  */
 function runDirOf(piName: string, input: Record<string, unknown>, cwd: string): { dir: string; error?: string } {
-  if (piName !== BG_START || !hasWorkingDir(input)) return { dir: cwd };
+  if (piName !== BG_START_TOOL || !hasWorkingDir(input)) return { dir: cwd };
   const dir = bgStartDir(cwd, input);
   return { dir, error: workingDirError(dir) };
 }
@@ -230,14 +229,15 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
   const post = plan(config, "PostToolUse");
   const failure = plan(config, "PostToolUseFailure");
   return (pi) => {
-    // The hooks run where the call's command runs; the payload's `cwd` says so. CLAUDE_PROJECT_DIR stays the session's folder.
+    // The payload's `cwd` says where the call's command runs. The hook process starts in the session's folder (CLAUDE_PROJECT_DIR):
+    // a `bg_start`'s `working_dir` is the model's choice and nothing has approved it when PreToolUse runs.
     const execute = (hooks: HookCommand[], payload: Json & { cwd: string }) => {
       const input = JSON.stringify(payload);
       const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd };
       return Promise.all(
         hooks.map(async (hook) => ({
           hook,
-          outcome: await runHookCommand({ command: hook.command, cwd: payload.cwd, env, input, timeoutMs: (hook.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS) * 1000, signal }),
+          outcome: await runHookCommand({ command: hook.command, cwd, env, input, timeoutMs: (hook.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS) * 1000, signal }),
         })),
       );
     };

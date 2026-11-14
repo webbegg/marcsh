@@ -3,13 +3,13 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, MessagePart } from "../chat-types";
 import type { BackgroundHub } from "../background/hub";
 import { subagentsFor } from "../background/session-subagents";
-import { buildSubagentResult, type BackgroundSubagents, type SubagentRunContext, type SubagentSnapshot } from "../background/subagents";
+import { buildSubagentResult, MAX_RUNNING_SUBAGENTS, type BackgroundSubagents, type SubagentRunContext, type SubagentSnapshot } from "../background/subagents";
 import { formatElapsed } from "../background/terminals";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { createErrorTracker } from "./pi-events";
 import { disposePiSession } from "./pi-mcp";
 import type { ToolSource } from "./pi-permissions";
-import { isBackgroundCall, runWithToolTimeout, TOOL_CALL_TIMEOUT_MS, ToolCallTimeoutError } from "./pi-tool-timeout";
+import { isBackgroundCall, runWithToolTimeout, TOOL_CALL_TIMEOUT_MS, ToolCallTimeoutError, type ToolClock } from "./pi-tool-timeout";
 import type { TurnHost } from "./types";
 
 export const TASK_TOOL = "Task";
@@ -72,6 +72,11 @@ export type RunChild = (request: {
   onProgress(progress: ChildProgress): void;
   /** Each event of the child session (the live transcript of a background child). */
   onEvent?(event: AgentSessionEvent): void;
+  /**
+   * A foreground child's call clock: the child's ask host holds it while an approval waits for the user (the returned function
+   * releases it), so the time the user takes to answer does not count toward the call's timeout.
+   */
+  holdClock?: () => () => void;
 }) => Promise<ChildRun>;
 
 /** Runs a background child: it is not bound to the turn, and its approvals go to the session's ask channel. */
@@ -145,7 +150,7 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
       "Launch a subagent to handle a self-contained task, such as researching or exploring the codebase, and get back its final " +
       "answer. The subagent works on its own with the same tools and permissions as you but does not see this conversation, " +
       "so give it a complete prompt. It cannot start further subagents. Launch several in one message to run them in parallel." +
-      (canStart ? ` Pass \`background: true\` for long work: at most 4 background subagents run at once.` : ""),
+      (canStart ? ` Pass \`background: true\` for long work: at most ${MAX_RUNNING_SUBAGENTS} background subagents run at once.` : ""),
     promptSnippet: "Launch a subagent for a self-contained task and get its final answer",
     parameters: parametersFor(canStart),
     async execute(toolCallId, params, toolSignal) {
@@ -169,11 +174,12 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
         host.emit({ type: "reply", update: (reply) => upsertTask(reply, toolCallId, changes) });
 
       update({ description, status: "running" });
-      const start = (childSignal: AbortSignal) => runChild({ prompt, signal: childSignal, onProgress: (progress) => update(progress) });
+      const start = (childSignal: AbortSignal, clock: ToolClock) =>
+        runChild({ prompt, signal: childSignal, onProgress: (progress) => update(progress), holdClock: () => clock.hold() });
       let run: ChildRun;
       try {
-        // A foreground call is aborted once it runs too long (a background one returned above, untimed).
-        run = await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start);
+        // A foreground call is aborted once it runs too long (a background one returned above, untimed); waiting for the user does not count.
+        run = await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start, { background: canStart });
       } catch (error) {
         if (signal.aborted) {
           update({ status: "stopped" });
@@ -320,7 +326,21 @@ function createTaskTools({ hub, maxWaitMs = MAX_TASK_WAIT_MS }: BackgroundSubage
     } as never,
     async execute(_toolCallId, params) {
       const ids = known(parseIds(params)).map((snapshot) => snapshot.id);
-      const snapshots = await subagents().cancel(ids);
+      // Like task_wait: each one is collected the moment it settles, or the hub would announce an early one while this call waits for the rest.
+      let waiting = true;
+      for (const id of ids) {
+        void subagents()
+          .settled(id)
+          .then(() => {
+            if (waiting) hub.consume([id]);
+          });
+      }
+      let snapshots: SubagentSnapshot[];
+      try {
+        snapshots = await subagents().cancel(ids);
+      } finally {
+        waiting = false;
+      }
       return toolText(collect(snapshots).join("\n\n"), { ids, statuses: snapshots.map((snapshot) => snapshot.status) });
     },
   };

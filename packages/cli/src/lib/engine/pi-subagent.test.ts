@@ -558,6 +558,29 @@ describe("task_check, task_wait, task_cancel and task_list (S4)", () => {
     expect(idle).toEqual([]);
   });
 
+  test("task_cancel over several ids collects each as it settles: one that stops early is never announced as well (R3-1)", async () => {
+    // Each child ends some time after its abort: the first after 20 ms, the second after 300 ms.
+    let started = 0;
+    const { call, idle, subagents, hub } = setupBackground({
+      runChild: ({ signal }) => {
+        const after = ++started === 1 ? 20 : 300;
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => setTimeout(() => reject(new Error("aborted")), after), { once: true }),
+        );
+      },
+    });
+    await call("Task", { description: "First", prompt: "go", background: true });
+    await call("Task", { description: "Second", prompt: "go", background: true });
+
+    const cancelled = textOf(await call("task_cancel", { ids: ["sa-1", "sa-2"] }));
+    expect(cancelled).toContain('Background subagent sa-1 "First" was stopped');
+    expect(cancelled).toContain('Background subagent sa-2 "Second" was stopped');
+    expect(subagents.get("sa-1")!.status).toBe("stopped");
+    await Bun.sleep(30);
+    expect(idle).toEqual([]);
+    expect(hub.pending()).toEqual([]);
+  });
+
   test("task_list lists them all with their status", async () => {
     const { call, subagents } = setupBackground({ runChild: hangingChild });
     expect(textOf(await call("task_list", {}))).toBe("No background subagents.");

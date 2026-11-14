@@ -79,6 +79,8 @@ export type ApprovalOptions = {
   signal: AbortSignal;
   /** Plan mode: every call except pi's read-only built-ins is blocked without asking, whatever the rules say. */
   planMode?: boolean;
+  /** Reads whether the session is in plan mode when each call is decided (a background child's calls follow the session); true blocks like `planMode`. */
+  currentPlanMode?: () => boolean;
   /** The session's tools with their sources (`pi.getAllTools()`), read when a call arrives. */
   tools: () => readonly ToolSource[];
   /** The branch/ship guard for pi's built-in `bash`. Default: the same decision Claude's PreToolUse hook makes. */
@@ -145,6 +147,7 @@ export function createApprovalHandler({
   host,
   signal,
   planMode = false,
+  currentPlanMode,
   tools,
   guard = guardBashCommand,
   approvalMode = "normal",
@@ -152,7 +155,7 @@ export function createApprovalHandler({
   branchOf = branchState,
 }: ApprovalOptions) {
   return async (call: Call): Promise<ToolCallBlock | undefined> => {
-    if (planMode) {
+    if (planMode || currentPlanMode?.() === true) {
       const tool = tools().find((candidate) => candidate.name === call.toolName);
       return tool && offeredInPlan(tool) ? undefined : { block: true, reason: PLAN_MODE_REASON };
     }

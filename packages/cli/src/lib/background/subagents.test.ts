@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { QuitTurn } from "../quit";
 import type { ChildRun } from "../engine/pi-subagent";
-import { createBackgroundHub, type BackgroundBatch, type BackgroundHub } from "./hub";
+import { backgroundResultsText, createBackgroundHub, type BackgroundBatch, type BackgroundHub } from "./hub";
 import { subagentsFor } from "./session-subagents";
 import {
   buildSubagentResult,
   createSubagents,
   MAX_RUNNING_SUBAGENTS,
+  MAX_TOOL_INPUT_CHARS,
+  MAX_TRANSCRIPT_CHARS,
+  MAX_TRANSCRIPT_PARTS,
   type BackgroundSubagents,
   type SubagentRunContext,
   type SubagentSnapshot,
@@ -190,6 +193,37 @@ describe("background subagents (S4)", () => {
     expect(heard).toBeGreaterThan(before);
     expect(snap.version).toBeGreaterThan(0);
   });
+
+  test("the live transcript is capped: long tool inputs are cut with a marker, and only the newest parts and text are kept, also once settled (R4-4)", async () => {
+    const { subagents } = setup();
+    let context!: SubagentRunContext;
+    let finish!: (run: ChildRun) => void;
+    const snap = subagents.start({ description: "Chatty", prompt: "go", run: (given) => ((context = given), new Promise((resolve) => (finish = resolve))) });
+    const say = (content: unknown[]) => context.onEvent({ type: "message_end", message: { role: "assistant", content } } as never);
+
+    say([{ type: "toolCall", id: "w1", name: "write", arguments: { path: "big.txt", content: "x".repeat(10_000) } }]);
+    const tool = snap.transcript.parts[0]!;
+    if (tool.type !== "tool") throw new Error("expected a tool part");
+    expect(tool.input.path).toBe("big.txt");
+    expect(String(tool.input.content).length).toBeLessThan(MAX_TOOL_INPUT_CHARS + 50);
+    expect(String(tool.input.content)).toEndWith("[truncated]");
+
+    for (let at = 0; at < MAX_TRANSCRIPT_PARTS + 100; at++) say([{ type: "text", text: `${at}:${"y".repeat(2_000)}` }]);
+    const size = () => snap.transcript.parts.reduce((sum, part) => sum + (part.type === "text" || part.type === "reasoning" ? part.text.length : 0), 0);
+    expect(snap.transcript.parts.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_PARTS);
+    expect(size()).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS);
+    const last = snap.transcript.parts.at(-1)!;
+    expect(last.type === "text" && last.text.startsWith(`${MAX_TRANSCRIPT_PARTS + 99}:`)).toBe(true);
+
+    // One message over the whole cap keeps its tail.
+    say([{ type: "text", text: `${"z".repeat(MAX_TRANSCRIPT_CHARS)}THE-END` }]);
+    finish(FINISHED);
+    await subagents.settled(snap.id);
+    expect(snap.transcript.parts).toHaveLength(1);
+    expect(size()).toBeLessThanOrEqual(MAX_TRANSCRIPT_CHARS + 50);
+    const tail = snap.transcript.parts[0]!;
+    expect(tail.type === "text" && tail.text.endsWith("THE-END") && tail.text.startsWith("[truncated]")).toBe(true);
+  });
 });
 
 describe("the result the model gets", () => {
@@ -226,7 +260,7 @@ describe("subagentsFor(hub)", () => {
     await until(() => idle.length === 1);
     expect(idle[0]!.ids).toEqual([snap.id]);
     expect(idle[0]!.notice).toBe("[background] Find it finished");
-    expect(idle[0]!.text).toBe(buildSubagentResult(snap));
+    expect(idle[0]!.text).toBe(backgroundResultsText([{ id: snap.id, kind: "subagent", text: buildSubagentResult(snap) }]));
   });
 
   test("the hub's dispose stops its subagents", async () => {

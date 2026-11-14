@@ -1,5 +1,5 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type { ChatMessage } from "../chat-types";
+import type { ChatMessage, MessagePart } from "../chat-types";
 import type { ChildProgress, ChildRun } from "../engine/pi-subagent";
 import { applyPiEvent } from "../engine/pi-events";
 import type { QuitTurn } from "../quit";
@@ -10,7 +10,7 @@ import { formatElapsed } from "./terminals";
  * tool call (and the turn) returns. Each has its own abort signal; at most `MAX_RUNNING_SUBAGENTS` run at once, and a start
  * takes its slot before anything awaits. Cancelling aborts the child and marks it stopped after a grace if it has not ended by
  * then. Its events build a live transcript for `/subagents`. The shape follows `terminals.ts`; the idea is davi7's background
- * subagents (MIT license).
+ * subagents (MIT license; see THIRD_PARTY_NOTICES.md).
  */
 
 export const MAX_RUNNING_SUBAGENTS = 4;
@@ -19,6 +19,13 @@ export const MAX_TRACKED_SUBAGENTS = 32;
 export const STOP_GRACE_MS = 5_000;
 /** The same on quit and when the session is left: under quit's 5 s grace. */
 export const QUIT_STOP_GRACE_MS = 2_000;
+
+/** The live transcript keeps at most this many parts, the newest. */
+export const MAX_TRANSCRIPT_PARTS = 200;
+/** ...and about this much text (text, reasoning, tool inputs and errors), the newest. */
+export const MAX_TRANSCRIPT_CHARS = 256 * 1024;
+/** A tool call's input over this size has its long values cut. */
+export const MAX_TOOL_INPUT_CHARS = 4 * 1024;
 
 const NO_TEXT = "The subagent finished without returning any text.";
 const ERROR_MAX = 4_096;
@@ -114,6 +121,71 @@ export function buildSubagentResult(snapshot: SubagentSnapshot): string {
   return `${who} is still running (${formatElapsed(snapshot)}, ${usageOf(snapshot)}).`;
 }
 
+const TRUNCATED = "… [truncated]";
+const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}${TRUNCATED}` : text);
+
+/** A tool input over the cap with each long value cut (a value that is not a string is cut as JSON); the keys stay, so the view still finds `command` or `path`. */
+function cappedInput(input: Record<string, unknown>): Record<string, unknown> {
+  if ((JSON.stringify(input) ?? "").length <= MAX_TOOL_INPUT_CHARS) return input;
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => {
+      if (typeof value === "string") return [key, cut(value, MAX_TOOL_INPUT_CHARS)];
+      const json = JSON.stringify(value) ?? "";
+      return [key, json.length > MAX_TOOL_INPUT_CHARS ? cut(json, MAX_TOOL_INPUT_CHARS) : value];
+    }),
+  );
+}
+
+// Parts already capped, with their size: each event only measures what is new.
+const cappedSize = new WeakMap<MessagePart, number>();
+
+function capPart(part: MessagePart): { part: MessagePart; size: number } {
+  const known = cappedSize.get(part);
+  if (known !== undefined) return { part, size: known };
+  let next = part;
+  if (part.type === "tool") {
+    const input = cappedInput(part.input);
+    const errorText = part.errorText === undefined ? undefined : cut(part.errorText, MAX_TOOL_INPUT_CHARS);
+    if (input !== part.input || errorText !== part.errorText) next = { ...part, input, ...(errorText === undefined ? {} : { errorText }) };
+  }
+  const size =
+    next.type === "text" || next.type === "reasoning"
+      ? next.text.length
+      : next.type === "tool"
+        ? (JSON.stringify(next.input) ?? "").length + (next.errorText?.length ?? 0)
+        : (next.summary?.length ?? 0) + next.description.length;
+  cappedSize.set(next, size);
+  return { part: next, size };
+}
+
+/**
+ * The transcript with at most `MAX_TRANSCRIPT_PARTS` parts and about `MAX_TRANSCRIPT_CHARS` of text, the newest kept; a newest part
+ * over the whole cap keeps its tail. Returns the same message when nothing changes. Only applied when no part is streaming
+ * (after a message or a tool call ended): pi's event folding finds a streamed part by identity.
+ */
+export function capTranscript(message: ChatMessage): ChatMessage {
+  const kept: MessagePart[] = [];
+  let total = 0;
+  let changed = false;
+  for (let at = message.parts.length - 1; at >= 0; at--) {
+    const original = message.parts[at]!;
+    if (kept.length >= MAX_TRANSCRIPT_PARTS) break;
+    let { part, size } = capPart(original);
+    if (total + size > MAX_TRANSCRIPT_CHARS) {
+      // Only the newest part may be cut to fit; older ones are dropped whole.
+      if (kept.length > 0 || (part.type !== "text" && part.type !== "reasoning")) break;
+      part = { ...part, text: `[truncated]…${part.text.slice(-MAX_TRANSCRIPT_CHARS)}` };
+      size = MAX_TRANSCRIPT_CHARS;
+      cappedSize.set(part, size);
+    }
+    if (part !== original) changed = true;
+    kept.push(part);
+    total += size;
+  }
+  if (!changed && kept.length === message.parts.length) return message;
+  return { ...message, parts: kept.reverse() };
+}
+
 type Mutable = { -readonly [K in keyof SubagentSnapshot]: SubagentSnapshot[K] };
 
 type Entry = {
@@ -168,6 +240,8 @@ export function createSubagents({
     const snapshot = entry.snapshot;
     if (snapshot.status !== "running") return;
     snapshot.status = status;
+    // Settled, it only keeps the capped tail (a part that was still streaming is capped now too).
+    snapshot.transcript = capTranscript(snapshot.transcript);
     snapshot.settledAt = Date.now();
     if (error !== undefined) snapshot.error = error;
     snapshot.version += 1;
@@ -232,7 +306,9 @@ export function createSubagents({
       },
       onEvent(event) {
         if (snapshot.status !== "running") return;
-        const next = applyPiEvent(snapshot.transcript, event);
+        const folded = applyPiEvent(snapshot.transcript, event);
+        // Capped when nothing streams: once a message or a tool call has ended.
+        const next = folded !== snapshot.transcript && (event.type === "message_end" || event.type === "tool_execution_end") ? capTranscript(folded) : folded;
         if (event.type === "message_end" && event.message.role === "assistant") {
           const text = assistantText(event.message);
           if (text) snapshot.text = text;

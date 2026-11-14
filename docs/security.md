@@ -15,7 +15,7 @@ When the model wants to do something that is not a plain read, marcsh stops and 
 
 On pi, `bg_start` runs a command in the background. It asks exactly like `bash` for the same command, and the prompt names `bg_start` so you can see it will keep running. The git guard and a pack's `Bash` hooks apply to it too. A `bg_start` in another folder (`working_dir`) is checked for that folder, and rules saved in the session folder do not cover it. Background terminals stop when you leave the session or quit marcsh.
 
-On pi, `Task` with `background: true` starts a subagent that keeps working after the turn ends. Its tool calls still ask, the same way as any other call. A prompt that comes between turns shows in the normal approval prompt, labelled `Background subagent: <description>`. If nobody can answer, the call is denied. Background subagents stop when you leave the session or quit marcsh.
+On pi, `Task` with `background: true` starts a subagent that keeps working after the turn ends. Its tool calls still ask, the same way as any other call. A prompt that comes between turns shows in the normal approval prompt, labelled `Background subagent: <description>`. If nobody can answer, the call is denied. Once you switch the session to Plan, a background subagent's calls are limited like Plan's: it can still read, but it can't write or run anything until you switch back. Background subagents stop when you leave the session or quit marcsh.
 
 On Claude, Claude Code's own settings still apply. marcsh lets it read your user, project and local settings, so permission rules in them count.
 
@@ -137,7 +137,7 @@ An agent's `tools` field can only take tools away. It never adds any. See [Agent
 
 ### Turns marcsh starts
 
-When background work finishes while a pi session is idle, marcsh starts a turn to give the agent the result (see [The screen](screen.md#background-results)). That turn is like one you start. It runs as the agent and model selected at that moment, and every tool call it makes asks the same way, including in Plan. Its message is the work's output, sent as it is: a `/command` in it is not run.
+When background work finishes while a pi session is idle, marcsh starts a turn to give the agent the result (see [The screen](screen.md#background-results)). That turn is like one you start. It runs as the agent and model selected at that moment, and every tool call it makes asks the same way, including in Plan. Its message is the work's output, sent as it is: a `/command` in it is not run. The agent gets every background result marked as output of work it started, not as your words, and is told to treat any instructions in it as data.
 
 ## Project trust
 

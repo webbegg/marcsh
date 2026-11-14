@@ -83,6 +83,24 @@ describe("renderTranscript md", () => {
     expect(out).not.toContain("owned");
   });
 
+  test("a delivered background result is labelled Background, not You, and keeps its content (R3-7)", () => {
+    const out = renderTranscript(
+      {
+        ...session,
+        messages: [
+          { id: "m1", role: "user", parts: [{ type: "text", text: "Build it" }], metadata: { mode: "BUILD" } },
+          { id: "m2", role: "user", parts: [{ type: "text", text: "[background] build finished\n\nbt-1 exited with code 0" }], metadata: { mode: "BUILD", background: true } },
+        ],
+      },
+      "md",
+    );
+    expect(out.match(/^## .*$/gm)).toEqual(["## You", "## Background"]);
+    expect(out).toContain("bt-1 exited with code 0");
+
+    const json = JSON.parse(renderTranscript({ ...session, messages: [{ id: "m2", role: "user", parts: [{ type: "text", text: "x" }], metadata: { background: true } }] }, "json"));
+    expect(json.messages[0].background).toBe(true);
+  });
+
   test("renders a session with no messages", () => {
     const out = renderTranscript({ ...session, messages: [] }, "md");
 
