@@ -22,6 +22,8 @@ export type SessionCommands = {
   copy: () => Promise<void>;
   /** `/ps`: the session's background terminals (pi sessions only). */
   ps: () => void;
+  /** `/subagents`: the session's background subagents (pi sessions only). */
+  subagents: () => void;
 };
 
 export const SessionCommandsContext = createContext<SessionCommands | null>(null);

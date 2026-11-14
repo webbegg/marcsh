@@ -49,6 +49,10 @@ export const PI_TOOL_GROUPS: Readonly<Record<string, readonly Group[]>> = {
   bg_status: ["bash"],
   bg_list: ["bash"],
   bg_kill: ["bash"],
+  task_wait: ["task"],
+  task_check: ["task"],
+  task_cancel: ["task"],
+  task_list: ["task"],
 };
 
 // Spellings the field takes that are no tool's name: OpenCode's, a few common ones, and the group names themselves.

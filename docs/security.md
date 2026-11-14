@@ -10,10 +10,12 @@ When the model wants to do something that is not a plain read, marcsh stops and 
 
 | Engine | Runs without asking | Asks |
 | --- | --- | --- |
-| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), and `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
+| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals), and `task_wait`, `task_check`, `task_cancel` and `task_list` (they only look at, wait for or stop this session's background subagents) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
 | Claude | What Claude Code's default permission mode allows without asking | The rest. marcsh shows Claude's question |
 
 On pi, `bg_start` runs a command in the background. It asks exactly like `bash` for the same command, and the prompt names `bg_start` so you can see it will keep running. The git guard and a pack's `Bash` hooks apply to it too. Background terminals stop when you leave the session or quit marcsh.
+
+On pi, `Task` with `background: true` starts a subagent that keeps working after the turn ends. Its tool calls still ask, the same way as any other call. A prompt that comes between turns shows in the normal approval prompt, labelled `Background subagent: <description>`. If nobody can answer, the call is denied. Background subagents stop when you leave the session or quit marcsh.
 
 On Claude, Claude Code's own settings still apply. marcsh lets it read your user, project and local settings, so permission rules in them count.
 
@@ -62,7 +64,7 @@ This is a safety net, not a wall:
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
 
-- On pi it is only given the read tools, the question tool, `Task`, `bg_status` and `bg_list`, so it cannot write files, run commands or stop background terminals. A saved "always allow" does not change this.
+- On pi it is only given the read tools, the question tool, `Task`, `bg_status`, `bg_list`, `task_wait`, `task_check` and `task_list`, so it cannot write files, run commands, start background subagents or stop background work. A saved "always allow" does not change this.
 - On Claude it runs in Claude Code's plan mode.
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).

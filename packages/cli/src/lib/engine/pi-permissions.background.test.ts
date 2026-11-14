@@ -115,3 +115,29 @@ describe("bg_* in plan mode (S1a, A10)", () => {
     expect(tools.filter(offeredInPlan).map((tool) => tool.name)).toEqual(["read", "bg_status", "bg_list"]);
   });
 });
+
+// S4: marcsh's task_* tools only read, wait for or stop this session's background subagents: they run unasked.
+const marcshTask = (name: string): ToolSource => ({ name, sourceInfo: { path: "<inline:marcsh-subagent>" } });
+const TASK = ["task_wait", "task_check", "task_cancel", "task_list"];
+const taskTools = [builtin("read"), marcshTask("Task"), ...TASK.map(marcshTask)];
+
+describe("task_* approval (S4)", () => {
+  test("marcsh's task tools run unasked", () => {
+    for (const name of TASK) expect(needsApproval(name, taskTools), name).toBe(false);
+  });
+
+  test("a same-named tool from another source asks: a foreign task_cancel is not marcsh's", async () => {
+    for (const name of TASK) expect(runsUnasked(fromExtension(name)), name).toBe(false);
+    const { asks, handler } = setup({ list: [fromExtension("task_cancel")] });
+    await handler({ toolName: "task_cancel", input: { ids: ["sa-1"] } });
+    expect(asks).toEqual([{ toolName: "task_cancel", input: { ids: ["sa-1"] } }]);
+  });
+
+  test("plan mode offers task_wait, task_check and task_list, and blocks task_cancel without asking (A10)", async () => {
+    expect(taskTools.filter(offeredInPlan).map((tool) => tool.name)).toEqual(["read", "Task", "task_wait", "task_check", "task_list"]);
+    const { asks, handler } = setup({ planMode: true, list: taskTools });
+    expect(await handler({ toolName: "task_cancel", input: { ids: ["sa-1"] } })).toEqual({ block: true, reason: PLAN_MODE_REASON });
+    for (const name of ["task_wait", "task_check", "task_list"]) expect(await handler({ toolName: name, input: {} }), name).toBeUndefined();
+    expect(asks).toEqual([]);
+  });
+});

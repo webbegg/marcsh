@@ -1,5 +1,10 @@
 import type { AgentSession, InlineExtension, ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, MessagePart } from "../chat-types";
+import type { BackgroundHub } from "../background/hub";
+import { subagentsFor } from "../background/session-subagents";
+import { buildSubagentResult, type BackgroundSubagents, type SubagentRunContext, type SubagentSnapshot } from "../background/subagents";
+import { formatElapsed } from "../background/terminals";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { createErrorTracker } from "./pi-events";
 import { disposePiSession } from "./pi-mcp";
@@ -8,6 +13,13 @@ import { isBackgroundCall, runWithToolTimeout, TOOL_CALL_TIMEOUT_MS, ToolCallTim
 import type { TurnHost } from "./types";
 
 export const TASK_TOOL = "Task";
+/** The tools that look after background subagents. */
+export const TASK_TOOLS = ["task_wait", "task_check", "task_cancel", "task_list"] as const;
+/** The task tools plan mode offers: they only read or wait (plan mode stops nothing). */
+export const TASK_PLAN_TOOLS = ["task_wait", "task_check", "task_list"] as const;
+/** The longest a `task_wait` waits, under the 3 minutes a foreground call may run. */
+export const MAX_TASK_WAIT_MS = 170_000;
+const DEFAULT_TASK_WAIT_S = 120;
 const TASK_EXTENSION = "marcsh-subagent";
 /** Where pi says a tool comes from when an inline extension named `marcsh-subagent` registered it. */
 const TASK_SOURCE = `<inline:${TASK_EXTENSION}>`;
@@ -23,6 +35,11 @@ const MAX_SUMMARY = 280;
  */
 export function isMarcshTask(tool: ToolSource): boolean {
   return tool.name === TASK_TOOL && tool.sourceInfo.path === TASK_SOURCE;
+}
+
+/** Whether pi's tool is one of marcsh's own task_* tools: by name and by marcsh's own extension. */
+export function isMarcshTaskTool(tool: ToolSource): boolean {
+  return (TASK_TOOLS as readonly string[]).includes(tool.name) && tool.sourceInfo.path === TASK_SOURCE;
 }
 
 type TaskPart = Extract<MessagePart, { type: "task" }>;
@@ -53,7 +70,22 @@ export type RunChild = (request: {
   /** Aborts when the turn is interrupted or over, when pi aborts the Task call, or when the call runs too long. */
   signal: AbortSignal;
   onProgress(progress: ChildProgress): void;
+  /** Each event of the child session (the live transcript of a background child). */
+  onEvent?(event: AgentSessionEvent): void;
 }) => Promise<ChildRun>;
+
+/** Runs a background child: it is not bound to the turn, and its approvals go to the session's ask channel. */
+export type BackgroundRunChild = (request: { description: string; prompt: string } & SubagentRunContext) => Promise<ChildRun>;
+
+export type BackgroundSubagentOptions = {
+  /** The session's hub: its subagents (`subagentsFor`) and where their results go. */
+  hub: BackgroundHub;
+  runChild: BackgroundRunChild;
+  /** Whether `Task` may start one (not in plan mode). The task tools are offered either way. */
+  canStart: boolean;
+  /** The longest a `task_wait` waits. Default: `MAX_TASK_WAIT_MS`. */
+  maxWaitMs?: number;
+};
 
 export type SubagentOptions = {
   host: Pick<TurnHost, "emit">;
@@ -62,6 +94,8 @@ export type SubagentOptions = {
   runChild: RunChild;
   /** How long a foreground call may run before the child is aborted. Default: `TOOL_CALL_TIMEOUT_MS`. */
   timeoutMs?: number;
+  /** Background subagents (a turn with a background hub only): `Task` takes `background`, and the task tools are offered. */
+  background?: BackgroundSubagentOptions;
 };
 
 /** The child's text as one short line for the task line. */
@@ -76,29 +110,60 @@ function parseTaskInput(params: unknown): { description: string; prompt: string 
   return { description: description.trim(), prompt };
 }
 
-const parameters = {
-  type: "object",
-  properties: {
-    description: { type: "string", description: "A short (3-5 words) description of the task." },
-    prompt: { type: "string", description: "The task for the subagent to perform. It starts with no memory of this conversation, so include everything it needs." },
-  },
-  required: ["description", "prompt"],
-} as unknown as ToolDefinition["parameters"];
+const baseProperties = {
+  description: { type: "string", description: "A short (3-5 words) description of the task." },
+  prompt: { type: "string", description: "The task for the subagent to perform. It starts with no memory of this conversation, so include everything it needs." },
+};
 
-export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS }: SubagentOptions): ToolDefinition {
+const parametersFor = (background: boolean) =>
+  ({
+    type: "object",
+    properties: background
+      ? {
+          ...baseProperties,
+          background: {
+            type: "boolean",
+            description:
+              "Run it in the background: the call returns an id at once and the subagent keeps working. Its result is delivered to you when it " +
+              "finishes; task_wait collects it sooner, task_check peeks, task_cancel stops it.",
+          },
+        }
+      : baseProperties,
+    required: ["description", "prompt"],
+  }) as unknown as ToolDefinition["parameters"];
+
+const toolText = (value: string, details: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
+
+const NO_BACKGROUND = "Background subagents are not available here. Run the Task without `background`.";
+
+export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS, background }: SubagentOptions): ToolDefinition {
+  const canStart = background?.canStart === true;
   return {
     name: TASK_TOOL,
     label: "Subagent task",
     description:
       "Launch a subagent to handle a self-contained task, such as researching or exploring the codebase, and get back its final " +
       "answer. The subagent works on its own with the same tools and permissions as you but does not see this conversation, " +
-      "so give it a complete prompt. It cannot start further subagents. Launch several in one message to run them in parallel.",
+      "so give it a complete prompt. It cannot start further subagents. Launch several in one message to run them in parallel." +
+      (canStart ? ` Pass \`background: true\` for long work: at most 4 background subagents run at once.` : ""),
     promptSnippet: "Launch a subagent for a self-contained task and get its final answer",
-    parameters,
+    parameters: parametersFor(canStart),
     async execute(toolCallId, params, toolSignal) {
       const { description, prompt } = parseTaskInput(params);
       const signal = toolSignal ? AbortSignal.any([toolSignal, turnEnded]) : turnEnded;
       if (signal.aborted) throw new Error(INTERRUPTED);
+
+      if (isBackgroundCall(params)) {
+        // Only a turn that can start one: never headless, a child session, or plan mode. Never run as an untimed foreground call.
+        if (!background || !canStart) throw new Error(NO_BACKGROUND);
+        // Not bound to the turn or the call: it runs until it ends, is cancelled, or the session is left. Throws at the cap.
+        const snapshot = subagentsFor(background.hub).start({ description, prompt, run: (context) => background.runChild({ description, prompt, ...context }) });
+        return toolText(
+          `Started background subagent ${snapshot.id} "${description}". Its result is delivered to you when it finishes. ` +
+            `Use task_wait to wait for it, task_check to peek, task_cancel to stop it.`,
+          { id: snapshot.id, background: true },
+        );
+      }
 
       const update = (changes: Partial<Omit<TaskPart, "type" | "taskId">>) =>
         host.emit({ type: "reply", update: (reply) => upsertTask(reply, toolCallId, changes) });
@@ -107,8 +172,8 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
       const start = (childSignal: AbortSignal) => runChild({ prompt, signal: childSignal, onProgress: (progress) => update(progress) });
       let run: ChildRun;
       try {
-        // A background call is not timed; a foreground one is aborted once it runs too long.
-        run = isBackgroundCall(params) ? await start(signal) : await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start);
+        // A foreground call is aborted once it runs too long (a background one returned above, untimed).
+        run = await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start);
       } catch (error) {
         if (signal.aborted) {
           update({ status: "stopped" });
@@ -140,13 +205,154 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
   };
 }
 
-/** The named inline extension that offers the tool, so pi's tool list says it is marcsh's. */
+const unknownSubagent = (id: string, known: BackgroundSubagents) =>
+  new Error(`Unknown subagent id "${id}". Known: ${known.list().map((snapshot) => snapshot.id).join(", ") || "none"}.`);
+
+const MAX_CHECK_TEXT = 4_000;
+
+/** One line per subagent: id, status, description, runtime and usage. */
+function describeSubagent(snapshot: SubagentSnapshot): string {
+  const cost = snapshot.costUsd > 0 ? ` · $${snapshot.costUsd.toFixed(2)}` : "";
+  return `${snapshot.id} [${snapshot.status}] "${snapshot.description}" · ${formatElapsed(snapshot)} · ${snapshot.toolUses} tool uses · ${snapshot.totalTokens} tokens${cost}`;
+}
+
+function parseIds(params: unknown): string[] {
+  const raw = (params as { ids?: unknown } | undefined)?.ids;
+  const ids = [...new Set(Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [])];
+  if (ids.length === 0) throw new Error("Pass at least one subagent id in ids.");
+  return ids;
+}
+
+/** The task tools for this session's background subagents. Only its own ids are known; a result a tool reports is collected (never announced). */
+function createTaskTools({ hub, maxWaitMs = MAX_TASK_WAIT_MS }: BackgroundSubagentOptions, turnEnded: AbortSignal): ToolDefinition[] {
+  const subagents = () => subagentsFor(hub);
+  const known = (ids: readonly string[]) => {
+    const missing = ids.find((id) => !subagents().get(id));
+    if (missing) throw unknownSubagent(missing, subagents());
+    return ids.map((id) => subagents().get(id)!);
+  };
+  // The hub may have handed a result to a sink already: the tool still shows it, so it is never lost (see `hub.consume`).
+  const collect = (snapshots: readonly SubagentSnapshot[]) => {
+    hub.consume(snapshots.filter((snapshot) => snapshot.status !== "running").map((snapshot) => snapshot.id));
+    return snapshots.map((snapshot) => (snapshot.status === "running" ? `${describeSubagent(snapshot)}\nIt is still running.` : buildSubagentResult(snapshot)));
+  };
+
+  const wait: ToolDefinition = {
+    name: "task_wait",
+    label: "Wait for background subagents",
+    description:
+      "Wait until these background subagents finish, then get their results (they are not delivered again). Returns early after " +
+      `\`timeout\` seconds (default ${DEFAULT_TASK_WAIT_S}, at most ${Math.floor(maxWaitMs / 1000)}) with those still running marked so.`,
+    parameters: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "string" }, description: 'The subagent ids, e.g. ["sa-1"].' },
+        timeout: { type: "number", description: `Seconds to wait at most (default ${DEFAULT_TASK_WAIT_S}).` },
+      },
+      required: ["ids"],
+      additionalProperties: false,
+    } as never,
+    async execute(_toolCallId, params, toolSignal) {
+      const snapshots = known(parseIds(params));
+      const asked = (params as { timeout?: unknown } | undefined)?.timeout;
+      const seconds = typeof asked === "number" && Number.isFinite(asked) && asked > 0 ? asked : DEFAULT_TASK_WAIT_S;
+      const ms = Math.min(seconds * 1000, maxWaitMs);
+      const signal = toolSignal ? AbortSignal.any([toolSignal, turnEnded]) : turnEnded;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      // Each one is collected the moment it settles: the hub would otherwise announce an early one while this call waits for the rest.
+      let waiting = true;
+      const settledNow = snapshots.map((snapshot) =>
+        subagents()
+          .settled(snapshot.id)
+          .then(() => {
+            if (waiting) hub.consume([snapshot.id]);
+          }),
+      );
+      try {
+        await Promise.race([
+          Promise.all(settledNow),
+          new Promise<void>((resolve) => (timer = setTimeout(resolve, ms))),
+          new Promise<void>((resolve) => {
+            if (signal.aborted) return resolve();
+            onAbort = resolve;
+            signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        waiting = false;
+        clearTimeout(timer);
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      }
+      return toolText(collect(snapshots).join("\n\n"), { ids: snapshots.map((snapshot) => snapshot.id), statuses: snapshots.map((snapshot) => snapshot.status) });
+    },
+  };
+
+  const check: ToolDefinition = {
+    name: "task_check",
+    label: "Check background subagent",
+    description: "Peek at a background subagent: its status, usage and latest text so far. It collects nothing: a finished result is still delivered.",
+    parameters: {
+      type: "object",
+      properties: { id: { type: "string", description: 'The subagent id, e.g. "sa-1".' } },
+      required: ["id"],
+      additionalProperties: false,
+    } as never,
+    async execute(_toolCallId, params) {
+      const id = String((params as { id?: unknown } | undefined)?.id ?? "");
+      const [snapshot] = known([id]);
+      const text = snapshot!.text.length > MAX_CHECK_TEXT ? `…${snapshot!.text.slice(-MAX_CHECK_TEXT)}` : snapshot!.text;
+      const latest = text ? `\n${snapshot!.status === "running" ? "Latest text so far" : "Its text"}:\n${text}` : "";
+      const error = snapshot!.error ? `\nError: ${snapshot!.error}` : "";
+      return toolText(`${describeSubagent(snapshot!)}${error}${latest}`, { id, status: snapshot!.status });
+    },
+  };
+
+  const cancel: ToolDefinition = {
+    name: "task_cancel",
+    label: "Stop background subagents",
+    description: "Stop these background subagents and get what they had (they are not delivered again).",
+    parameters: {
+      type: "object",
+      properties: { ids: { type: "array", items: { type: "string" }, description: 'The subagent ids to stop, e.g. ["sa-1"].' } },
+      required: ["ids"],
+      additionalProperties: false,
+    } as never,
+    async execute(_toolCallId, params) {
+      const ids = known(parseIds(params)).map((snapshot) => snapshot.id);
+      const snapshots = await subagents().cancel(ids);
+      return toolText(collect(snapshots).join("\n\n"), { ids, statuses: snapshots.map((snapshot) => snapshot.status) });
+    },
+  };
+
+  const list: ToolDefinition = {
+    name: "task_list",
+    label: "List background subagents",
+    description: "List this session's background subagents with their status, runtime and usage.",
+    parameters: { type: "object", properties: {}, additionalProperties: false } as never,
+    async execute() {
+      const all = subagents().list();
+      return toolText(all.length === 0 ? "No background subagents." : all.map(describeSubagent).join("\n"), {
+        subagents: all.map((snapshot) => ({ id: snapshot.id, description: snapshot.description, status: snapshot.status })),
+      });
+    },
+  };
+
+  return [wait, check, cancel, list];
+}
+
+/** `Task`, plus the task tools when the turn has background subagents. */
+export function createSubagentTools(options: SubagentOptions): ToolDefinition[] {
+  return [createTaskTool(options), ...(options.background ? createTaskTools(options.background, options.signal) : [])];
+}
+
+/** The named inline extension that offers the tools, so pi's tool list says they are marcsh's. */
 export function createSubagentExtension(options: SubagentOptions): InlineExtension {
   return {
     name: TASK_EXTENSION,
     hidden: true,
     factory: (pi) => {
-      pi.registerTool(createTaskTool(options));
+      for (const tool of createSubagentTools(options)) pi.registerTool(tool);
     },
   };
 }
@@ -167,6 +373,8 @@ export type ChildSessionOptions = {
   prompt: string;
   signal: AbortSignal;
   onProgress(progress: ChildProgress): void;
+  /** Each event of the child session, for a live transcript. */
+  onEvent?(event: AgentSessionEvent): void;
 };
 
 /** The text of an assistant message's text blocks. */
@@ -217,7 +425,7 @@ export async function runChildSession(pi: PiModule, options: ChildSessionOptions
   }
 }
 
-async function promptChild(session: AgentSession, { prompt, signal, onProgress }: ChildSessionOptions): Promise<ChildRun> {
+async function promptChild(session: AgentSession, { prompt, signal, onProgress, onEvent }: ChildSessionOptions): Promise<ChildRun> {
   await session.bindExtensions({});
   if (signal.aborted) throw new Error(INTERRUPTED);
 
@@ -225,6 +433,9 @@ async function promptChild(session: AgentSession, { prompt, signal, onProgress }
   const errors = createErrorTracker();
   let failure: string | null = null;
   session.subscribe((event) => {
+    try {
+      onEvent?.(event);
+    } catch {}
     failure = errors.observe(event) ?? failure;
     if (event.type === "tool_execution_start") {
       run.toolUses += 1;
