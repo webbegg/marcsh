@@ -15,11 +15,11 @@
 // commands are blocked. Tools the policy does not know (MCP, web, extension tools) keep the existing flow, and the
 // branch guard runs before this policy: a commit on the default branch stays denied in every mode.
 
-import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { CommandKind, analyzeCommand, isScratchPath } from "./command-classifier";
 import { type BranchSource, type BranchState, branchState, resolveBranch } from "./git-branch";
-import { realTarget } from "./real-path";
+import { holdsSymlink, realTarget } from "./real-path";
 
 export const APPROVAL_MODES = ["normal", "auto", "yolo"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
@@ -129,6 +129,25 @@ function writeProblem(target: string, cwd: string, what: string): string | null 
   return editProblem(target, cwd, what);
 }
 
+/**
+ * Why the name a copy or move lands on in the folder `into` must ask, or null. Only checked when `into` is a folder (a file or device
+ * destination is the write itself), and not again when `into` already asks. A name the shell expands (`"$f"`, `*.ts`) cannot be checked:
+ * it asks only when the folder holds a symlink it could land on.
+ */
+function landingProblem(path: string, into: string, cwd: string, what: string): string | null {
+  if (writeProblem(into, cwd, what) !== null) return null;
+  if (DEVICE_WRITES.has(into) || isScratchPath(path)) return null;
+  const dir = /^~|\$|`/.test(into) ? null : realTarget(resolve(cwd, into));
+  if (dir === null) return null;
+  try {
+    if (!statSync(dir).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  if (/[*?[\]$`~]/.test(basename(path))) return holdsSymlink(dir) ? `${what} into a folder holding a symlink (${into})` : null;
+  return writeProblem(path, cwd, what);
+}
+
 // The branch guard's asks read `marcsh: <action> needs your approval`. No mode skips one.
 const GUARD_ASK = /^marcsh: .+ needs your approval$/;
 
@@ -164,8 +183,9 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
     const problem = writeProblem(target, cwd, "a redirect");
     if (problem) reasons.push(problem);
   }
-  for (const { program, path } of files) {
-    const problem = writeProblem(path, cwd, `a write by ${program}`);
+  for (const { program, path, into } of files) {
+    const what = `a write by ${program}`;
+    const problem = into === undefined ? writeProblem(path, cwd, what) : landingProblem(path, into, cwd, what);
     if (problem) reasons.push(problem);
   }
   return reasons.length > 0 ? askFor(reasons) : ALLOW;

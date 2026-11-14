@@ -78,3 +78,23 @@ describe("a copy or move into a folder holding a link reports the link's target 
     eachShell("yolo", ["cp x dist2/", "cp x dist2", "cp -t dist2 x", "mv x dist2/", "install x dist2/", "cp x plain/y"], "allow");
   });
 });
+
+describe("the landing name is only checked when the destination is a folder (verification blocker)", () => {
+  test("a copy onto a file name, onto a device, or with a variable into a folder without links still runs", () => {
+    mkdirSync(join(cwd, "out"), { recursive: true });
+    writeFileSync(join(cwd, "out", "x.ts"), "1");
+    eachShell(
+      "yolo",
+      ['cp "$f" out/x.ts', "cp x out/x.ts", 'cp "$f" out/', 'for f in src/*.ts; do cp "$f" out/; done', "cp x /dev/null", "mv x /dev/null", "cp src/*.ts out/"],
+      "allow",
+    );
+  });
+
+  test("a variable or glob copied into a folder that holds a symlink asks", () => {
+    eachShell("yolo", ['cp "$f" dist/', "cp src/*.ts dist"], "ask");
+  });
+
+  test("an ask on the destination is not repeated for the landing name", () => {
+    expect(reasonOf(shell("yolo", "cp x ~"))).toBe("marcsh: a write by cp outside the project (~) needs your approval");
+  });
+});

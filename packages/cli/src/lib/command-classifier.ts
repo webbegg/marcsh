@@ -46,7 +46,10 @@ export type CommandAnalysis = {
   files: FileWrite[];
 };
 
-export type FileWrite = { program: string; path: string };
+/** `into`: the destination folder when `path` is the name a copy or move lands on there (only a write when `into` is a folder). */
+export type FileWrite = { program: string; path: string; into?: string };
+
+type Operand = string | { into: string; path: string };
 
 type Redirect = { op: string; target: string };
 type Segment = { argv: string[]; before: string; redirects: Redirect[] };
@@ -752,13 +755,13 @@ function readOptions(args: string[], spec: ValueSpec): { words: string[]; values
 }
 
 /** `<dest>/<basename(source)>` for every source: where a copy or move lands when `dest` is a folder (and that name may be a link). */
-function intoFolder(dest: string, sources: string[]): string[] {
+function intoFolder(dest: string, sources: string[]): Operand[] {
   const folder = dest.endsWith("/") ? dest : `${dest}/`;
-  return sources.map((source) => `${folder}${baseName(source)}`);
+  return sources.map((source) => ({ into: dest, path: `${folder}${baseName(source)}` }));
 }
 
 /** The files a program writes, moves or deletes because it was given them; empty for programs it does not know. */
-function fileOperands(name: string, args: string[]): string[] {
+function fileOperands(name: string, args: string[]): Operand[] {
   switch (name) {
     case "cp":
     case "ln":
@@ -865,7 +868,13 @@ function classifySegment(rawArgv: string[], before: string, depth: number, ctx: 
   }
 
   // xargs appends more operands from stdin; the visible ones are still checked.
-  for (const path of fileOperands(name, args)) files.push({ program: name, path: fromDirectory(path, ctx) });
+  for (const operand of fileOperands(name, args)) {
+    files.push(
+      typeof operand === "string"
+        ? { program: name, path: fromDirectory(operand, ctx) }
+        : { program: name, path: fromDirectory(operand.path, ctx), into: fromDirectory(operand.into, ctx) },
+    );
+  }
 
   if (SHELLS.has(name) || name === "eval") {
     const scriptIndex = name === "eval" ? 0 : args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
