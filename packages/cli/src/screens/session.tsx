@@ -36,6 +36,8 @@ import { SessionCommandsContext } from "../components/command-menu/session-comma
 import { escapeTranscriptText } from "../lib/display-text";
 import { openSnapshots } from "../lib/session-snapshots";
 import { userCommandTurn } from "../lib/user-commands";
+import { backgroundMessageText, createBackgroundHub, noticeOf, type BackgroundBatch } from "../lib/background/hub";
+import { BackgroundContext } from "../lib/background/context";
 
 const sessionLocationSchema = z.object({
   initialPrompt: z
@@ -67,6 +69,8 @@ function ChatMessage(
       .map((p) => p.text)
       .join("");
 
+    // Background results: the notice is shown, the result itself was for the model.
+    if (msg.metadata?.background) return <UserMessage message={noticeOf(text)} mode={msg.metadata.mode ?? "BUILD"} marker="background" />;
     return <UserMessage message={text} mode={msg.metadata?.mode ?? "BUILD"} marker={msg.metadata?.steered ? "↳ steer" : undefined} attachments={msg.metadata?.attachments} />;
   }
 
@@ -114,6 +118,8 @@ function SessionChat({
   const toast = useToast();
   // Where this project's files are snapshotted around each turn; none (and a reason) without git.
   const snapshots = useMemo(() => openSnapshots(session.cwd), [session.cwd]);
+  // Where this session's background work delivers its results (pi only); disposed, with everything it runs, when the session is left.
+  const hub = useMemo(() => (session.engine === "pi" ? createBackgroundHub() : undefined), [session.engine]);
   // An engine's notices are toasts (an extension's text is stripped of terminal controls); a warning has no color of its own, so it says so.
   const chatOptions = useMemo(
     () => ({
@@ -124,10 +130,11 @@ function SessionChat({
       // Text the engine did not take goes back to the input on screen; once this session is left there is no input of its own to return it to.
       restore: (text: string) => mountedRef.current && giveBackText(renderer, text),
       snapshots,
+      background: hub,
     }),
-    [toast, renderer, snapshots],
+    [toast, renderer, snapshots, hub],
   );
-  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest, compacting, editMessages, getMessages, hasConversation, snapshotIssue, compact } = useChat(session, engine, chatOptions);
+  const { messages, status, submit, abort, interrupt, steer, followUp, queued, canSteer, inputClosed, error, pendingRequest, compacting, editMessages, getMessages, hasConversation, snapshotIssue, isIdle, compact } = useChat(session, engine, chatOptions);
   const [notices, setNotices] = useState<Notice[]>([]);
   const addNotice = useCallback((text: string) => setNotices((prev) => [...prev, { id: prev.length, at: getMessages().length, text }]), [getMessages]);
   const hasSubmittedInitialPromptRef = useRef(false);
@@ -138,6 +145,12 @@ function SessionChat({
   const busy = status === "submitted" || status === "streaming";
   // A pi turn waits for the model check (a login or logout can change which models exist) before it starts.
   const [choosingModel, setChoosingModel] = useState(false);
+  // Read by the background idle path, which runs outside a render.
+  const choosingModelRef = useRef(false);
+  const setChoosing = useCallback((choosing: boolean) => {
+    choosingModelRef.current = choosing;
+    setChoosingModel(choosing);
+  }, []);
 
   // Tells the user when a turn ends: not when the session opens, not when they interrupted it, not when they left. It is `submit` settling
   // that says so (a turn that fails at once never shows as busy on screen), and the effect reads whether the turn failed once that has rendered.
@@ -145,16 +158,18 @@ function SessionChat({
   const errorRef = useRef(error);
   errorRef.current = error;
   const [turnsEnded, setTurnsEnded] = useState(0);
+  // Returns whether a turn started.
   const startTurn = useCallback(
     (request: Parameters<typeof submit>[0]) => {
       const before = getMessages();
       const done = submit(request);
       // A turn that is still running keeps the request out: nothing was started, so nothing will end.
-      if (getMessages() === before) return;
+      if (getMessages() === before) return false;
       turnInterruptedRef.current = false;
       void done.finally(() => {
         if (mountedRef.current && !turnInterruptedRef.current) setTurnsEnded((count) => count + 1);
       });
+      return true;
     },
     [submit, getMessages],
   );
@@ -175,41 +190,68 @@ function SessionChat({
     return () => {
       mountedRef.current = false;
       abort();
+      void hub?.dispose();
     };
-  }, [abort]);
+  }, [abort, hub]);
 
   // Starts a turn for `turnAgent` on the model this session's engine uses: `modelOverride` (a custom command's, already checked against
   // the engine), else the agent's own when this engine can use it, else the session's (a pi session sends the pi model that has credentials now).
+  // `background`: the turn delivers this batch of background results. Resolves with whether a turn started.
   const send = useCallback(
-    (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string, attachments?: MessageAttachment[]) => {
-      const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools }, ...(attachments?.length ? { attachments } : {}) };
+    (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string, attachments?: MessageAttachment[], background?: BackgroundBatch): Promise<boolean> => {
+      const turn = {
+        userText,
+        mode: turnAgent.mode,
+        turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools },
+        ...(attachments?.length ? { attachments } : {}),
+        ...(background ? { background } : {}),
+      };
       const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
         const used = agentModel ?? modelForEngine(session.engine, claudeModel);
         if (session.engine === "claude" && isChatModel(used)) recordRecentModel("claude", used);
-        startTurn({ ...turn, model: used });
-        return;
+        return Promise.resolve(startTurn({ ...turn, model: used }));
       }
-      setChoosingModel(true);
-      void refreshPiModel(agentModel)
-        .then((used) => {
-          if (!mountedRef.current) return;
-          if (isPiRef(used)) recordRecentModel("pi", used);
-          startTurn({ ...turn, model: used });
-        })
-        .finally(() => {
-          if (mountedRef.current) setChoosingModel(false);
-        });
+      setChoosing(true);
+      const started = refreshPiModel(agentModel).then((used) => {
+        if (!mountedRef.current) return false;
+        if (isPiRef(used)) recordRecentModel("pi", used);
+        return startTurn({ ...turn, model: used });
+      });
+      void started.finally(() => {
+        if (mountedRef.current) setChoosing(false);
+      });
+      return started;
     },
-    [session.engine, startTurn, refreshPiModel],
+    [session.engine, startTurn, refreshPiModel, setChoosing],
   );
+
+  // A background result that finishes while the session is idle starts a turn of its own, as the agent and model selected at that
+  // moment; its tool calls ask like any other's. While anything else holds the session (a turn, the model check, a request waiting for
+  // the user, a compaction) the hub keeps the result and retries once the chat is idle again.
+  const agentRef = useRef(agent);
+  agentRef.current = agent;
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  useEffect(() => {
+    if (!hub) return;
+    hub.setIdleSink((batch) => {
+      if (!mountedRef.current || choosingModelRef.current || !isIdle()) return false;
+      const requeue = () => hub.requeue(batch.ids);
+      send(backgroundMessageText(batch), agentRef.current, modelRef.current, undefined, undefined, batch).then((started) => {
+        if (!started) requeue();
+      }, requeue);
+      return true;
+    });
+    return () => hub.setIdleSink(undefined);
+  }, [hub, isIdle, send]);
 
   const sessionCommands = useSessionCommands({
     session,
     chat: { getMessages, editMessages, snapshotIssue, hasConversation, compact, busy },
     snapshots,
     compactModel: () => (session.engine === "pi" ? refreshPiModel() : Promise.resolve(model)),
-    compactWithTurn: () => send("/compact", agent, model),
+    compactWithTurn: () => void send("/compact", agent, model),
     addNotice,
   });
 
@@ -305,6 +347,7 @@ function SessionChat({
 
   return (
     <SessionCommandsContext.Provider value={sessionCommands}>
+    <BackgroundContext.Provider value={hub}>
     <TurnInputContext.Provider value={turnInput}>
       <SessionShell
         cwd={session.cwd}
@@ -342,6 +385,7 @@ function SessionChat({
       {/* The trust question owns the whole screen while pending, so its title and key hints never scroll away. */}
       {pendingRequest?.kind === "trust" && <TrustPrompt key={pendingRequest.id} request={pendingRequest} />}
     </TurnInputContext.Provider>
+    </BackgroundContext.Provider>
     </SessionCommandsContext.Provider>
   );
 }

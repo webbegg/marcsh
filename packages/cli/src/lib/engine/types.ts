@@ -1,5 +1,6 @@
 import type { AskQuestion } from "../ask-user-question";
 import type { Attachment } from "../attachments";
+import type { BackgroundHub } from "../background/hub";
 import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
@@ -32,8 +33,11 @@ export type EngineEvent =
   | { type: "error"; message: string }
   /** The messages the user typed during the turn that the engine has not sent yet (replaces the last list). */
   | { type: "queue"; steering: string[]; followUp: string[] }
-  /** A queued message was just sent: the reply so far is complete, and what follows answers this message. */
-  | { type: "delivered"; text: string; kind: "steer" | "followUp" }
+  /**
+   * A queued message was just sent: the reply so far is complete, and what follows answers this message. A `background` one is a
+   * batch of background results (its text is `backgroundMessageText`, see `lib/background/hub.ts`), not something the user typed.
+   */
+  | { type: "delivered"; text: string; kind: "steer" | "followUp" | "background" }
   /** The engine has settled: the turn takes no more steers or follow-ups, though it may still be shutting down. */
   | { type: "input-closed" };
 
@@ -70,6 +74,13 @@ export type TurnRequest = {
    * conversation carries over (Claude's) subtracts it, so each reply holds only its own cost.
    */
   priorCostUsd?: number;
+  /**
+   * The session's background hub: results that finish while the turn runs are sent into it as follow-ups. Only a pi session's
+   * screen has one; the Claude engine ignores it and headless `marcsh run` never sets it.
+   */
+  background?: BackgroundHub;
+  /** `background`: the prompt is a batch of background results, sent as it is (no command or template is expanded). */
+  promptKind?: "background";
   /** Aborting stops the turn. */
   signal: AbortSignal;
 };
