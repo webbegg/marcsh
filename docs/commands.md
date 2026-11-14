@@ -12,7 +12,7 @@ Type `/` in the prompt to run a command. This page lists every marcsh command, h
 
 Picking a command that is not one of marcsh's own (for example one from the engine) puts `/name ` in the prompt. Add what it needs and press `Enter`.
 
-`/agents`, `/rename` and `/export` take arguments. For the other commands, text after the name is ignored.
+`/agents`, `/permissions`, `/rename` and `/export` take arguments. For the other commands, text after the name is ignored.
 
 The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
 
@@ -135,6 +135,30 @@ Choose the engine for new sessions.
 - Sessions that already exist keep the engine they started with.
 
 See [Engines and models](engines-and-models.md).
+
+### /permissions
+
+Choose how much runs without asking.
+
+```
+/permissions
+/permissions <normal|auto|yolo>
+/permissions default <normal|auto|yolo>
+```
+
+- `/permissions` opens "Permissions" with three rows. The current mode has a bullet.
+  - `normal`: asks before edits and commands, as before.
+  - `auto`: on a feature branch: edits and ordinary commands run; commits and remote actions ask.
+  - `yolo`: on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask.
+- Choose one to set the mode of the current app session. marcsh shows "Approval mode: auto for this session". Every session starts in `normal` unless you saved a default.
+- `auto` and `yolo` work only when the folder is on a feature branch (not the default branch). Anywhere else, on the default branch, on a detached HEAD or outside a git repository, the mode is paused and marcsh asks as in `normal`. The toast then adds, for example, "yolo is paused here: on the default branch main. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree." The mode stays set and starts working when the folder is on a feature branch. marcsh checks the branch on every tool call.
+- When the current mode is not the saved default, the dialog has one more row, "Use auto for new sessions" (with the current mode's name). It saves the current mode.
+- `/permissions auto` sets the mode without the dialog. `/permissions default auto` saves the default for new sessions without changing this one. marcsh shows "New sessions will start in auto mode".
+- A word that is not a mode shows `Usage: /permissions [normal|auto|yolo | default <normal|auto|yolo>]`.
+- The status line shows `auto` or `yolo` after the engine name. It shows nothing in `normal`.
+- The mode is separate from the agent. `Tab` still switches agents, and Plan stays read-only in every mode.
+
+See [Security](security.md#permission-modes) for the feature branch rule, what each mode runs, what always asks and what is blocked.
 
 ### /sessions
 

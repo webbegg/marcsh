@@ -349,6 +349,8 @@ describe("the commands in the menu and outside a session", () => {
     await openSession();
     await type("/");
     expect(frame()).toContain("/rename <title> Rename this session");
+    // The menu shows 10 rows and scrolls: with /permissions among marcsh's older commands, /fork is the 11th, so scroll to it.
+    for (let i = 0; i < 10; i++) await arrow("down");
     expect(frame()).toContain("/fork Continue in a copy of this session");
   });
 

@@ -155,6 +155,30 @@ describe("custom commands in the / menu (S7)", () => {
     expect(text).toContain("Start a new conversation");
     expect(text).not.toContain("Shadow of new");
   });
+
+  test("/permissions is a marcsh command: a personal or project command of that name neither shows nor runs", async () => {
+    getStorage().setProjectTrust(project, "trusted");
+    personalFile("permissions.md", "---\ndescription: Shadow of permissions\n---\nPersonal $ARGUMENTS");
+    projectFile("permissions.md", "---\ndescription: Project shadow of permissions\n---\nProject $ARGUMENTS");
+    await openSession();
+
+    await type("/permis");
+    const text = frame();
+    expect(text).toContain("Choose how much runs without asking");
+    expect(text).not.toContain("Shadow of permissions");
+    expect(text).not.toContain("Project shadow");
+    await act(async () => screen!.mockInput.pressKey("ESCAPE" as never));
+    await settle(60);
+
+    await type("sions auto");
+    await enter();
+
+    expect(calls).toHaveLength(0);
+    // The marcsh command ran: the status line now shows the session's mode next to usage.
+    expect(frame()).toContain("· auto");
+    expect(frame()).not.toContain("Personal");
+    expect(frame()).not.toContain("Project auto");
+  });
 });
 
 describe("running a custom command (S7)", () => {

@@ -42,6 +42,7 @@ const DEFAULT_LEADER_KEYS: readonly (readonly [command: string, key: string])[] 
   ["sessions", "s"],
   ["theme", "t"],
   ["engine", "e"],
+  ["permissions", "p"],
   ["undo", "u"],
   ["redo", "r"],
   ["diff", "d"],

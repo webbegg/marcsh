@@ -4,12 +4,15 @@ import type { ModeType } from "../../lib/modes";
 import { findAgent, loadAgents, nextAgent, type Agent } from "../../lib/agents";
 import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
 import { getPiRuntime, type EngineId } from "../../lib/engine";
+import { DEFAULT_APPROVAL_MODE, type ApprovalMode } from "../../lib/approval-policy";
 import { listAvailablePiModels, pickPiModel, pickTurnPiModel } from "../../lib/engine/pi-models";
 import {
   getAgentId,
+  getDefaultApprovalMode,
   getDefaultEngine,
   getPiModel,
   setAgentId,
+  setDefaultApprovalMode as persistDefaultApprovalMode,
   setDefaultEngine as persistDefaultEngine,
   setPiModel as persistPiModel,
 } from "../../lib/preferences";
@@ -39,6 +42,12 @@ type PromptConfigContextValue = {
   /** The engine new sessions start on; an open session keeps the one it was created with. */
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
+  /** What the policy lets run without asking in this app session; apart from the agent's Plan/Build `mode`. Not kept unless saved as the default. */
+  approvalMode: ApprovalMode;
+  setApprovalMode: (mode: ApprovalMode) => void;
+  /** The approval mode new sessions start in (kept in the preferences); `approvalMode` starts as this. */
+  defaultApprovalMode: ApprovalMode;
+  setDefaultApprovalMode: (mode: ApprovalMode) => void;
   /** The model pi turns use ("provider/id"): the chosen one while it is available, else a fallback. */
   piModel: string;
   /** Whether `piModel` is known to be usable; see {@link PiModelStatus}. */
@@ -72,6 +81,11 @@ export function usePromptConfig(): PromptConfigContextValue {
   }
   return value;
 };
+
+/** The approval mode in use, or normal outside a provider: for hooks that must not throw there. */
+export function useApprovalMode(): ApprovalMode {
+  return useContext(PromptConfigContext)?.approvalMode ?? DEFAULT_APPROVAL_MODE;
+}
 
 type PromptConfigProviderProps = {
   children: ReactNode;
@@ -109,6 +123,14 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
   const setDefaultEngine = useCallback((engine: EngineId) => {
     setDefaultEngineState(engine);
     persistDefaultEngine(engine);
+  }, []);
+
+  const [defaultApprovalMode, setDefaultApprovalModeState] = useState<ApprovalMode>(() => getDefaultApprovalMode());
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(defaultApprovalMode);
+
+  const setDefaultApprovalMode = useCallback((next: ApprovalMode) => {
+    setDefaultApprovalModeState(next);
+    persistDefaultApprovalMode(next);
   }, []);
 
   // What the user chose stays apart from what is in use: a model that is unavailable for a while
@@ -170,6 +192,10 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
         setModel,
         defaultEngine,
         setDefaultEngine,
+        approvalMode,
+        setApprovalMode,
+        defaultApprovalMode,
+        setDefaultApprovalMode,
         piModel,
         piModelStatus,
         setPiModel,

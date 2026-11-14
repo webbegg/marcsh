@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from "./approval-policy";
 import { DEFAULT_ENGINE_ID, isEngineId, type EngineId } from "./engine";
 import { pushRecent } from "./model-picks";
 
@@ -20,6 +21,8 @@ export type Preferences = {
   piModel?: string;
   /** The ID of the selected agent (see lib/agents). */
   agent?: string;
+  /** The approval mode new sessions start in (normal, auto or yolo; see lib/approval-policy). */
+  approvalMode?: string;
   /** The models marked as favorites, per engine, in the order they were marked. */
   favoriteModels?: ModelLists;
   /** The models last chosen or used for a turn, per engine, newest first. */
@@ -69,6 +72,15 @@ export function getDefaultEngine(path = preferencesPath()): EngineId {
 export function setDefaultEngine(engine: EngineId, path = preferencesPath()) {
   launchEngine = undefined;
   updatePreferences({ defaultEngine: engine }, path);
+}
+
+export function getDefaultApprovalMode(path = preferencesPath()): ApprovalMode {
+  const { approvalMode } = readPreferences(path);
+  return isApprovalMode(approvalMode) ? approvalMode : DEFAULT_APPROVAL_MODE;
+}
+
+export function setDefaultApprovalMode(mode: ApprovalMode, path = preferencesPath()) {
+  updatePreferences({ approvalMode: mode }, path);
 }
 
 /** The stored pi model, or undefined when none is stored or the value is not a "provider/id" ref. */
