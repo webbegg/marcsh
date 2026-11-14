@@ -20,6 +20,8 @@ export type SessionCommands = {
   compact: () => Promise<void>;
   /** `/copy`: the last reply to the clipboard. */
   copy: () => Promise<void>;
+  /** `/ps`: the session's background terminals (pi sessions only). */
+  ps: () => void;
 };
 
 export const SessionCommandsContext = createContext<SessionCommands | null>(null);

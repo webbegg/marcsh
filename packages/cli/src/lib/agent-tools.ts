@@ -3,7 +3,7 @@
  * and a tool in no group (Claude's Skill, a pi extension's own tools) is left alone, in the list form too.
  */
 
-import { CLAUDE_MCP_PREFIX, CLAUDE_MCP_RESOURCE_TOOLS, FIELD_NAMES, TOOL_GROUPS, claudeGroupTools, type Group } from "./tool-names";
+import { CLAUDE_MCP_PREFIX, CLAUDE_MCP_RESOURCE_TOOLS, FIELD_NAMES, PI_TOOL_GROUPS, TOOL_GROUPS, claudeGroupTools, type Group } from "./tool-names";
 
 /** The groups an agent does not get. Never `ask` (marcsh asks its questions through it), and `read` stays when everything else would go. */
 export type AgentTools = {
@@ -199,6 +199,8 @@ const PI_MCP_RESOURCE_TOOLS = ["list_mcp_resources", "list_mcp_resource_template
 /** Whether a pi tool, by name, belongs to a denied group. An extension tool with a built-in's name is denied too: narrowing is the safe side. */
 export function isPiToolDenied(toolName: string, deny: readonly Group[]): boolean {
   if (deny.includes("mcp") && PI_MCP_RESOURCE_TOOLS.includes(toolName.toLowerCase())) return true;
+  const own = Object.hasOwn(PI_TOOL_GROUPS, toolName) ? PI_TOOL_GROUPS[toolName] : undefined;
+  if (own) return own.some((group) => deny.includes(group));
   const group = groupOf(toolName);
   return group !== undefined && group !== "ask" && deny.includes(group);
 }

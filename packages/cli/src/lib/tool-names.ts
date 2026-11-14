@@ -43,6 +43,14 @@ export const CLAUDE_TOOLS: readonly ClaudeTool[] = [
   { name: "WebSearch", groups: ["web"], field: true },
 ];
 
+/** marcsh's own pi tools that have no Claude counterpart, and the groups whose denial takes them away. Matched by name: narrowing is the safe side. */
+export const PI_TOOL_GROUPS: Readonly<Record<string, readonly Group[]>> = {
+  bg_start: ["bash"],
+  bg_status: ["bash"],
+  bg_list: ["bash"],
+  bg_kill: ["bash"],
+};
+
 // Spellings the field takes that are no tool's name: OpenCode's, a few common ones, and the group names themselves.
 const FIELD_ALIASES: Record<Exclude<Group, "mcp">, readonly string[]> = {
   read: ["list"],

@@ -238,6 +238,13 @@ export const COMMANDS: Command[] = [
     action: onSession("copy", (session) => session.copy()),
   },
   {
+    name: "ps",
+    description: "Show this session's background terminals",
+    value: "/ps",
+    scope: "session",
+    action: onSession("ps", (session) => session.ps()),
+  },
+  {
     name: "theme",
     description: "Change color theme",
     value: "/theme",

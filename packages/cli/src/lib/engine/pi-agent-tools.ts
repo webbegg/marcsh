@@ -2,6 +2,7 @@ import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-a
 import { isPiToolDenied, notAvailableReason } from "../agent-tools";
 import type { Group } from "../tool-names";
 import { isMarcshAskUser } from "./pi-ask-user";
+import { isMarcshBgTool } from "./pi-bg-tools";
 import type { ToolSource } from "./pi-permissions";
 import { isMarcshTask } from "./pi-subagent";
 
@@ -29,9 +30,9 @@ function lastNarrowing(sessionManager: Pick<SessionManagerLike, "getBranch">): N
 /** Where pi says a tool comes from when marcsh's inline MCP extension (see `createMarcshMcpExtension`) registered it. */
 const MCP_SOURCE = "<inline:marcsh-mcp>";
 
-/** Task, AskUserQuestion and the tools of marcsh's MCP extension: the ones marcsh itself offers by default. A name alone proves nothing. */
+/** Task, AskUserQuestion, the bg tools and the tools of marcsh's MCP extension: the ones marcsh itself offers by default. A name alone proves nothing. */
 function isMarcshOwned(tool: ToolSource): boolean {
-  return isMarcshTask(tool) || isMarcshAskUser(tool) || tool.sourceInfo.path === MCP_SOURCE;
+  return isMarcshTask(tool) || isMarcshAskUser(tool) || isMarcshBgTool(tool) || tool.sourceInfo.path === MCP_SOURCE;
 }
 
 /**

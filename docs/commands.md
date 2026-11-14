@@ -251,6 +251,20 @@ Copy the last reply to the clipboard.
 - Copies the text of the last reply that has any (its text parts, one blank line apart; tool calls and reasoning are left out).
 - On macOS it uses `pbcopy`. Anywhere else, or if `pbcopy` fails, it sends an OSC 52 sequence to the terminal; the toast then says so, because marcsh cannot tell whether your terminal allowed it (it works over SSH where the terminal supports it).
 
+### /ps
+
+Show this session's background terminals.
+
+```
+/ps
+```
+
+- On pi the agent can start a shell command that keeps running in the background, such as a dev server or a watcher. `/ps` lists them, newest first, with their status (`running`, `done`, `failed` or `killed`), title, command and runtime.
+- `Up` and `Down` move. `Enter` opens the selected terminal's output. It is read-only and follows new output. `t` switches between stdout and stderr. `Left` goes back to the list.
+- `x` kills the selected terminal, in the list and in the output view. The agent is told it was killed.
+- The output view strips colors and other terminal codes. It shows the last 3000 lines; the full log file is named at the top.
+- Background terminals stop when you leave the session or quit marcsh. On Claude, `/ps` says they run in pi sessions only.
+
 ### /theme
 
 Change the color theme.

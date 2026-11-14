@@ -26,6 +26,8 @@ type Props = {
   cwd?: string;
   /** Reads the git state of a folder; injectable so screen tests do not spawn git. */
   readGit?: (cwd: string) => Promise<GitStatus | null>;
+  /** What runs in the background (`2 background terminals running · /ps`); none when empty. The first segment dropped when narrow. */
+  background?: string;
 };
 
 /** Changes after each tool call ends and each new message, so the git segment is read again then. */
@@ -35,7 +37,7 @@ const finishedToolCalls = (messages: readonly ChatMessage[] | undefined) =>
     0,
   );
 
-export function StatusBar({ engine, messages, hint, cwd, readGit }: Props) {
+export function StatusBar({ engine, messages, hint, cwd, readGit, background }: Props) {
   const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
@@ -66,7 +68,10 @@ export function StatusBar({ engine, messages, hint, cwd, readGit }: Props) {
   const gitShown = gitText !== "" && (width === null || baseUsed + 1 + 2 + gitText.length <= width);
   const withGit = baseUsed + (gitShown ? 1 + 2 + gitText.length : 0);
   const usageShown = usageText !== "" && (width === null || withGit + 1 + 2 + usageText.length <= width);
-  const used = withGit + (usageShown ? 1 + 2 + usageText.length : 0);
+  const withUsage = withGit + (usageShown ? 1 + 2 + usageText.length : 0);
+  // The background segment goes before usage and git when the line is too narrow.
+  const backgroundShown = !!background && (width === null || withUsage + 1 + 2 + background.length <= width);
+  const used = withUsage + (backgroundShown ? 1 + 2 + background.length : 0);
   const wordings = hint === undefined ? [] : typeof hint === "string" ? [hint] : hint;
   const shown = wordings.find((wording) => wording.length > 0 && (width === null || used + 1 + 2 + wording.length <= width));
 
@@ -98,6 +103,11 @@ export function StatusBar({ engine, messages, hint, cwd, readGit }: Props) {
       {gitShown ? (
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
           · {gitText}
+        </text>
+      ) : null}
+      {backgroundShown ? (
+        <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
+          · {background}
         </text>
       ) : null}
       {shown ? (

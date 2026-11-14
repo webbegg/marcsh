@@ -16,8 +16,14 @@ const PIPE_GRACE_MS = 250;
 
 /** Claude's tools take `file_path`; pi's take `path`. Both are given to the hook so a script written for Claude finds what it looks for. */
 function toolInput(piName: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (piName === BG_START) return { command: input.command };
   return ["read", "edit", "write"].includes(piName) && typeof input.path === "string" ? { ...input, file_path: input.path } : input;
 }
+
+/** marcsh's `bg_start` runs a shell command like Bash, so a pack's Bash hooks run on it too, told it is Bash: a hook cannot be bypassed by running in the background. */
+const BG_START = "bg_start";
+const hookName = (piName: string) => (piName === BG_START ? "Bash" : claudeToolName(piName));
+const hookNames = (piName: string) => (piName === BG_START ? ["Bash"] : claudeToolNames(piName));
 
 export type HookOutcome =
   | { kind: "exit"; code: number | null; stdout: string; stderr: string }
@@ -234,8 +240,8 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
 
     if (pre.length > 0) {
       pi.on("tool_call", async (event, ctx) => {
-        const name = claudeToolName(event.toolName);
-        const hooks = selected(pre, claudeToolNames(event.toolName));
+        const name = hookName(event.toolName);
+        const hooks = selected(pre, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
         try {
           const results = await execute(hooks, {
@@ -263,8 +269,8 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
       pi.on("tool_result", async (event, ctx) => {
         // A call that failed is PostToolUseFailure's, one that succeeded PostToolUse's: never both, and nothing when the pack has no hook for it.
         const eventName = event.isError ? "PostToolUseFailure" : "PostToolUse";
-        const name = claudeToolName(event.toolName);
-        const hooks = selected(event.isError ? failure : post, claudeToolNames(event.toolName));
+        const name = hookName(event.toolName);
+        const hooks = selected(event.isError ? failure : post, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
         try {
           const results = await execute(hooks, {
