@@ -4,13 +4,15 @@
 //
 // The command is split into simple commands on `;` `&&` `||` `|` `&` newlines, parentheses and backticks outside quotes.
 // Command substitutions inside double quotes (`"$(...)"`, "`...`") are read as commands of their own; `bash -c` and
-// `eval` scripts too. Heredoc bodies and the text of `[[ ]]` / `(( ))` are data.
+// `eval` scripts too. Heredoc bodies, `#` comments and the text of `[[ ]]` / `(( ))` are data. Programs that write the files
+// they are given (cp, mv, tee, sed -i, curl -o…) report those files, so the policy checks them like redirects.
 //
 // A `cd`, `pushd` or `popd` counts for the rest of the line, subshells and nested scripts included: relative redirect
 // targets are read from the folder it moves to, and a git command after one that leaves the checkout is run elsewhere.
 
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename as baseName, isAbsolute, join } from "node:path";
+import { reallyInside } from "./real-path";
 
 export const CommandKind = {
   DESTRUCTIVE: "destructive",
@@ -40,7 +42,11 @@ export type CommandAnalysis = {
   matches: CommandMatch[];
   /** Targets of output redirections (`>`, `>>`, `&>`…); file-descriptor duplications such as `2>&1` are left out. */
   writes: string[];
+  /** Files a program writes, moves or deletes because it was given them (`cp a b` writes `b`, `mv a b` both). */
+  files: FileWrite[];
 };
+
+export type FileWrite = { program: string; path: string };
 
 type Redirect = { op: string; target: string };
 type Segment = { argv: string[]; before: string; redirects: Redirect[] };
@@ -75,6 +81,39 @@ function blankHeredocs(command: string): string {
     const header = raw.slice(0, raw.indexOf("\n") + 1);
     return header + " ".repeat(raw.length - header.length);
   });
+}
+
+/**
+ * Blanks `#` comments (newlines kept): a `#` that starts a word outside quotes runs to the end of the line. Inside a word
+ * (`a#b`, `${#x}`, `16#ff`) or quotes it is text.
+ */
+function blankComments(command: string): string {
+  let out = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        out += command.slice(i, i + 2);
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === "\\") {
+      out += command.slice(i, i + 2);
+      i++;
+      continue;
+    } else if (ch === "#" && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) {
+      const end = command.indexOf("\n", i);
+      const stop = end === -1 ? command.length : end;
+      out += " ".repeat(stop - i);
+      i = stop - 1;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 /** Index just past the `))` closing an arithmetic expression whose `((` ends at `from`, or -1. */
@@ -400,7 +439,8 @@ export function isScratchPath(target: string, roots: readonly string[] = scratch
     if (!root.startsWith("/") || root.split("/").some((seg) => seg === "." || seg === "..")) return false;
     if (!target.startsWith(`${root}/`)) return false;
     const segments = target.slice(root.length + 1).replace(/\/$/, "").split("/");
-    return segments.every((seg) => seg !== "" && seg !== "." && seg !== "..");
+    // A symlink on the way (the last name too) can lead out of the temp folder.
+    return segments.every((seg) => seg !== "" && seg !== "." && seg !== "..") && reallyInside(target, root);
   });
 }
 
@@ -597,10 +637,17 @@ function classifyGitSubcommand(sub: string, rest: string[]): CommandMatch | unde
     }
     case "commit":
       return { kind: CommandKind.COMMIT, reason: hasAny(rest, "--amend") ? "git commit --amend" : "git commit" };
+    // They make commits on the current branch, so they count as local commits (`--abort` and `--quit` only stop one).
+    case "merge":
+    case "cherry-pick":
+    case "revert":
+    case "am":
+      return hasAny(rest, "--abort", "--quit") ? undefined : { kind: CommandKind.COMMIT, reason: `git ${sub}` };
     case "fetch":
     case "pull": {
       const refspec = refspecWithDestination(rest);
-      return refspec ? leaving(`${sub} writes a local branch (${refspec})`) : undefined;
+      if (refspec) return leaving(`${sub} writes a local branch (${refspec})`);
+      return sub === "pull" ? { kind: CommandKind.COMMIT, reason: "git pull" } : undefined;
     }
     // Pushes under another name.
     case "send-pack":
@@ -666,6 +713,97 @@ function classifyGh(args: string[]): CommandMatch | undefined {
   return undefined;
 }
 
+// Devices whose writes go nowhere or to the terminal.
+const HARMLESS_DEVICES = new Set(["/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr", "/dev/tty"]);
+
+/** Options that take a value: single letters (also last in a group such as `-fsSLo FILE`, or with the value attached) and long names. */
+type ValueSpec = { short?: string; long?: string[] };
+
+/** Splits arguments into words and option values (`values` maps an option letter or long name to its values). After `--` all are words. */
+function readOptions(args: string[], spec: ValueSpec): { words: string[]; values: Map<string, string[]>; flags: string[] } {
+  const words: string[] = [];
+  const values = new Map<string, string[]>();
+  const flags: string[] = [];
+  const add = (key: string, value: string) => values.set(key, [...(values.get(key) ?? []), value]);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--") {
+      words.push(...args.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("--")) {
+      const [name, inline] = a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, undefined];
+      flags.push(name);
+      if (spec.long?.includes(name)) {
+        if (inline !== undefined) add(name, inline);
+        else add(name, args[++i] ?? "");
+      }
+    } else if (a.startsWith("-") && a.length > 1) {
+      flags.push(a);
+      for (let j = 1; j < a.length; j++) {
+        if (!spec.short?.includes(a[j]!)) continue;
+        if (j < a.length - 1) add(a[j]!, a.slice(j + 1));
+        else add(a[j]!, args[++i] ?? "");
+        break;
+      }
+    } else words.push(a);
+  }
+  return { words, values, flags };
+}
+
+/** The files a program writes, moves or deletes because it was given them; empty for programs it does not know. */
+function fileOperands(name: string, args: string[]): string[] {
+  switch (name) {
+    case "cp":
+    case "ln":
+    case "install": {
+      const { words, values, flags } = readOptions(args, { short: "tSmogT", long: ["--target-directory", "--suffix", "--mode", "--owner", "--group"] });
+      const target = [...(values.get("t") ?? []), ...(values.get("--target-directory") ?? [])];
+      if (target.length > 0) return target;
+      if (name === "install" && flags.some((f) => f === "-d" || f === "--directory" || (/^-[^-]/.test(f) && f.includes("d")))) return words;
+      // `ln -s target` alone makes the link in the current folder, under the target's name.
+      if (name === "ln" && words.length === 1) return [baseName(words[0]!)];
+      return words.length >= 2 ? [words.at(-1)!] : [];
+    }
+    case "mv": {
+      const { words, values } = readOptions(args, { short: "tS", long: ["--target-directory", "--suffix"] });
+      return [...words, ...(values.get("t") ?? []), ...(values.get("--target-directory") ?? [])];
+    }
+    case "tee":
+      return readOptions(args, { long: ["--output-error"] }).words;
+    case "touch":
+      return readOptions(args, { short: "dtr", long: ["--date", "--reference", "--time"] }).words;
+    case "mkdir":
+      return readOptions(args, { short: "m", long: ["--mode", "--context"] }).words;
+    case "rm":
+    case "rmdir":
+    case "unlink":
+      return readOptions(args, {}).words;
+    case "sed": {
+      // BSD `sed -i ''` takes the backup suffix as its own word.
+      const normalized = args.flatMap((a, i) => (a === "" && args[i - 1] === "-i" ? [] : [a]));
+      const { words, values, flags } = readOptions(normalized, { short: "efl", long: ["--expression", "--file", "--line-length"] });
+      const inPlace = flags.some((f) => f === "--in-place" || (/^-[^-]/.test(f) && /^-[A-Za-z]*i/.test(f)));
+      if (!inPlace) return [];
+      const scripted = values.has("e") || values.has("f") || values.has("--expression") || values.has("--file");
+      return scripted ? words : words.slice(1);
+    }
+    case "curl": {
+      const { values } = readOptions(args, {
+        short: "oDcuHdXAebEKrTxyYzwF",
+        long: ["--output", "--dump-header", "--cookie-jar", "--output-dir", "--user", "--header", "--data", "--request", "--config", "--upload-file", "--proxy", "--write-out", "--form"],
+      });
+      return ["o", "--output", "D", "--dump-header", "c", "--cookie-jar", "--output-dir"].flatMap((key) => values.get(key) ?? []);
+    }
+    case "wget": {
+      const { values } = readOptions(args, { short: "OoaP", long: ["--output-document", "--output-file", "--append-output", "--directory-prefix"] });
+      return ["O", "--output-document", "o", "--output-file", "a", "--append-output", "P", "--directory-prefix"].flatMap((key) => values.get(key) ?? []);
+    }
+    default:
+      return [];
+  }
+}
+
 const SQL_PATTERNS: Array<[RegExp, string]> = [
   [/\bDROP\s+(TABLE|DATABASE|SCHEMA|VIEW|INDEX|COLLECTION)\b/i, "SQL DROP"],
   [/\bTRUNCATE\s+(TABLE\s+)?[`"\w]/i, "SQL TRUNCATE"],
@@ -696,25 +834,30 @@ function classifySegment(rawArgv: string[], before: string, depth: number, ctx: 
   const { argv, privileged, viaXargs, assignments, script: splitScript } = unwrap(rawArgv);
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
+  const files: FileWrite[] = [];
   if (privileged) matches.push({ kind: CommandKind.PRIVILEGED, reason: "elevated privileges (sudo)" });
   if (splitScript) {
     const nested = analyze(splitScript, depth + 1, ctx);
     matches.push(...nested.matches);
     writes.push(...nested.writes);
+    files.push(...nested.files);
   }
   // `GIT_DIR=… ` on its own, or `export GIT_DIR=…`, points the git commands that follow at another repository.
   const location = argv.length === 0 ? assignments : basename(argv[0] ?? "") === "export" ? argv.slice(1) : [];
   const moved = location.find((a) => GIT_LOCATION_VARIABLE.test(a));
   if (moved) matches.push({ kind: CommandKind.LEAVING, reason: `git pointed elsewhere (${moved})` });
-  if (argv.length === 0) return { matches, writes };
+  if (argv.length === 0) return { matches, writes, files };
 
   const name = basename(argv[0]!);
   const args = argv.slice(1);
 
   if (DIRECTORY_COMMANDS.has(name)) {
     changeDirectory(name, args, ctx);
-    return { matches, writes };
+    return { matches, writes, files };
   }
+
+  // xargs appends more operands from stdin; the visible ones are still checked.
+  for (const path of fileOperands(name, args)) files.push({ program: name, path: fromDirectory(path, ctx) });
 
   if (SHELLS.has(name) || name === "eval") {
     const scriptIndex = name === "eval" ? 0 : args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
@@ -723,13 +866,14 @@ function classifySegment(rawArgv: string[], before: string, depth: number, ctx: 
       const nested = analyze(script, depth + 1, ctx);
       matches.push(...nested.matches);
       writes.push(...nested.writes);
+      files.push(...nested.files);
     } else if (before === "|") {
       matches.push({ kind: CommandKind.PRIVILEGED, reason: `piping into ${name} runs downloaded or generated code` });
     }
-    return { matches, writes };
+    return { matches, writes, files };
   }
 
-  if (TEXT_COMMANDS.has(name)) return { matches, writes };
+  if (TEXT_COMMANDS.has(name)) return { matches, writes, files };
 
   let match: CommandMatch | undefined;
   switch (name) {
@@ -753,7 +897,8 @@ function classifySegment(rawArgv: string[], before: string, depth: number, ctx: 
       match = { kind: CommandKind.DESTRUCTIVE, reason: `${name} destroys file contents` };
       break;
     case "dd":
-      if (args.some((a) => a.startsWith("of=/dev/"))) match = { kind: CommandKind.DESTRUCTIVE, reason: "dd writes to a device", hardDeny: true };
+      if (args.some((a) => a.startsWith("of=/dev/") && !HARMLESS_DEVICES.has(a.slice(3)))) match = { kind: CommandKind.DESTRUCTIVE, reason: "dd writes to a device", hardDeny: true };
+      else if (args.some((a) => a.startsWith("of=/dev/"))) break;
       else if (args.some((a) => a.startsWith("of="))) match = { kind: CommandKind.DESTRUCTIVE, reason: "dd overwrites a file" };
       break;
     case "diskutil":
@@ -822,22 +967,24 @@ function classifySegment(rawArgv: string[], before: string, depth: number, ctx: 
   const text = argv.join(" ");
   const sql = SQL_PATTERNS.find(([pattern]) => pattern.test(text));
   if (sql) matches.push({ kind: CommandKind.DESTRUCTIVE, reason: sql[1] });
-  return { matches, writes };
+  return { matches, writes, files };
 }
 
 /** A redirect target read from the folder the line has moved to. */
 const fromDirectory = (target: string, ctx: Context) => (ctx.dir === "" || isAbsolute(target) || /^[~$]/.test(target) ? target : join(ctx.dir, target));
 
 function analyze(command: string, depth: number, ctx: Context): CommandAnalysis {
-  if (depth > MAX_DEPTH) return { matches: [UNREADABLE], writes: [] };
-  const tokens = tokenize(blankConditionals(blankHeredocs(command)));
-  if (!tokens) return { matches: [UNREADABLE], writes: [] };
+  if (depth > MAX_DEPTH) return { matches: [UNREADABLE], writes: [], files: [] };
+  const tokens = tokenize(blankConditionals(blankComments(blankHeredocs(command))));
+  if (!tokens) return { matches: [UNREADABLE], writes: [], files: [] };
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
+  const files: FileWrite[] = [];
   for (const segment of tokens.segments) {
     const found = classifySegment(segment.argv, segment.before, depth, ctx);
     matches.push(...found.matches);
     writes.push(...found.writes);
+    files.push(...found.files);
     // `>&1`, `2>&-`: a descriptor, not a file.
     for (const { op, target } of segment.redirects) if (!(op.endsWith("&") && /^(\d+|-)$/.test(target))) writes.push(fromDirectory(target, ctx));
   }
@@ -845,8 +992,9 @@ function analyze(command: string, depth: number, ctx: Context): CommandAnalysis 
     const found = analyze(body, depth + 1, ctx);
     matches.push(...found.matches);
     writes.push(...found.writes);
+    files.push(...found.files);
   }
-  return { matches, writes };
+  return { matches, writes, files };
 }
 
 /** One simple command of a command line: its words as the shell would pass them (quotes removed), and whether it redirects output. */

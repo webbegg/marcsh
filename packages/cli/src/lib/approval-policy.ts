@@ -16,9 +16,10 @@
 // branch guard runs before this policy: a commit on the default branch stays denied in every mode.
 
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { CommandKind, analyzeCommand, isScratchPath } from "./command-classifier";
 import { type BranchSource, type BranchState, branchState, resolveBranch } from "./git-branch";
+import { realTarget } from "./real-path";
 
 export const APPROVAL_MODES = ["normal", "auto", "yolo"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
@@ -74,23 +75,6 @@ const SENSITIVE_PATTERNS = [
 const EXAMPLE_ENV = /(^|\/)\.env\.(example|sample|template)$/;
 const DEVICE_WRITES = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]);
 
-/** The real path `path` would have: symlinks resolved on the part that exists, the rest appended. */
-function realTarget(path: string): string {
-  let existing = path;
-  const missing: string[] = [];
-  while (!existsSync(existing)) {
-    const parent = dirname(existing);
-    if (parent === existing) break;
-    missing.unshift(existing.slice(parent.length + 1));
-    existing = parent;
-  }
-  try {
-    return join(realpathSync(existing), ...missing);
-  } catch {
-    return path;
-  }
-}
-
 /** The path relative to the project, or null when it is outside it (after symlinks) or cannot be resolved literally. */
 function insideProject(path: string, cwd: string): string | null {
   if (path === "" || /^~|\$|`/.test(path)) return null;
@@ -100,7 +84,9 @@ function insideProject(path: string, cwd: string): string | null {
   } catch {
     return null;
   }
-  const rel = relative(root, realTarget(resolve(cwd, path)));
+  const real = realTarget(resolve(cwd, path));
+  if (real === null) return null;
+  const rel = relative(root, real);
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel;
 }
 
@@ -119,7 +105,7 @@ function staysInCheckout(dir: string, cwd: string): boolean {
   return true;
 }
 
-/** Why a write to `path` (`what`: "an edit" or "a redirect") must ask, or null when it may run. */
+/** Why a write to `path` (`what`: "an edit", "a redirect" or "a write by <program>") must ask, or null when it may run. */
 function editProblem(path: string, cwd: string, what = "an edit"): string | null {
   const rel = insideProject(path, cwd);
   if (rel === null) return `${what} outside the project (${path})`;
@@ -129,10 +115,10 @@ function editProblem(path: string, cwd: string, what = "an edit"): string | null
   return null;
 }
 
-/** Why a shell redirect to `target` must ask, or null: a scratch path or a device such as /dev/null, or a file inside the project that is not secret-looking or in `.git`. */
-function writeProblem(target: string, cwd: string): string | null {
+/** Why a shell write to `target` must ask, or null: a scratch path or a device such as /dev/null, or a file inside the project that is not secret-looking or in `.git`. */
+function writeProblem(target: string, cwd: string, what: string): string | null {
   if (DEVICE_WRITES.has(target) || isScratchPath(target)) return null;
-  return editProblem(target, cwd, "a redirect");
+  return editProblem(target, cwd, what);
 }
 
 // The branch guard's asks read `marcsh: <action> needs your approval`. No mode skips one.
@@ -158,7 +144,7 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
     return problem ? askFor([problem]) : ALLOW;
   }
 
-  const { matches, writes } = analyzeCommand(call.command, { stays: (dir) => staysInCheckout(dir, cwd) });
+  const { matches, writes, files } = analyzeCommand(call.command, { stays: (dir) => staysInCheckout(dir, cwd) });
   const catastrophic = matches.find((match) => match.hardDeny);
   if (catastrophic) return { action: "block", reason: `marcsh: ${catastrophic.reason} is never allowed` };
   const effective = effectiveMode(mode, cwd, branch);
@@ -167,7 +153,11 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
   // Only a local commit is relaxed, and only in yolo.
   const reasons = matches.filter((match) => effective === "auto" || match.kind !== CommandKind.COMMIT).map((match) => match.reason);
   for (const target of writes) {
-    const problem = writeProblem(target, cwd);
+    const problem = writeProblem(target, cwd, "a redirect");
+    if (problem) reasons.push(problem);
+  }
+  for (const { program, path } of files) {
+    const problem = writeProblem(path, cwd, `a write by ${program}`);
     if (problem) reasons.push(problem);
   }
   return reasons.length > 0 ? askFor(reasons) : ALLOW;
