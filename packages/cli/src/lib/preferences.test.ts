@@ -5,11 +5,16 @@ import { join } from "node:path";
 import {
   getAgentId,
   getDefaultEngine,
+  getFavoriteModels,
+  getNotifyMode,
   getPiModel,
+  getRecentModels,
   preferencesPath,
   readPreferences,
+  recordRecentModel,
   setAgentId,
   setDefaultEngine,
+  setFavoriteModels,
   setLaunchEngine,
   setPiModel,
   updatePreferences,
@@ -177,5 +182,72 @@ describe("launch engine override", () => {
     setDefaultEngine("pi", path);
 
     expect(getDefaultEngine(path)).toBe("pi");
+  });
+});
+
+describe("favorite and recent models", () => {
+  test("are empty when there is no preferences file", () => {
+    expect(getFavoriteModels("claude", path)).toEqual([]);
+    expect(getRecentModels("pi", path)).toEqual([]);
+  });
+
+  test("favorites are kept per engine, next to the other preferences", () => {
+    setDefaultEngine("claude", path);
+    setFavoriteModels("claude", ["opus", "haiku"], path);
+    setFavoriteModels("pi", ["anthropic/claude-opus-5-5"], path);
+
+    expect(getFavoriteModels("claude", path)).toEqual(["opus", "haiku"]);
+    expect(getFavoriteModels("pi", path)).toEqual(["anthropic/claude-opus-5-5"]);
+    expect(getDefaultEngine(path)).toBe("claude");
+  });
+
+  test("a recorded model goes first, once, and only the last 5 stay, per engine", () => {
+    for (const model of ["a", "b", "c", "d", "e", "f"]) recordRecentModel("claude", model, path);
+    recordRecentModel("claude", "d", path);
+    recordRecentModel("pi", "x/y", path);
+
+    expect(getRecentModels("claude", path)).toEqual(["d", "f", "e", "c", "b"]);
+    expect(getRecentModels("pi", path)).toEqual(["x/y"]);
+  });
+
+  test("an older preferences file without them still loads", () => {
+    writeRaw(JSON.stringify({ themeName: "dark", defaultEngine: "claude", piModel: "a/b" }));
+    expect(getFavoriteModels("claude", path)).toEqual([]);
+    expect(getRecentModels("claude", path)).toEqual([]);
+    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getPiModel(path)).toBe("a/b");
+  });
+
+  test("stored values of the wrong shape are ignored; the good ones in the list stay", () => {
+    writeRaw(JSON.stringify({ favoriteModels: ["opus"], recentModels: { claude: ["opus", 3, null, "opus", "sonnet"], pi: "x/y", other: ["z"] } }));
+    expect(getFavoriteModels("claude", path)).toEqual([]);
+    expect(getRecentModels("claude", path)).toEqual(["opus", "sonnet"]);
+    expect(getRecentModels("pi", path)).toEqual([]);
+  });
+
+  test("setLaunchEngine keeps working next to them", () => {
+    setFavoriteModels("claude", ["opus"], path);
+    setLaunchEngine("claude");
+    expect(getDefaultEngine(path)).toBe("claude");
+    expect(getFavoriteModels("claude", path)).toEqual(["opus"]);
+    setLaunchEngine(undefined);
+  });
+});
+
+describe("notify preference", () => {
+  test("is the bell by default", () => {
+    expect(getNotifyMode(path)).toBe("bell");
+  });
+
+  test.each(["bell", "system", "off"] as const)("reads %s", (mode) => {
+    updatePreferences({ notify: mode }, path);
+    expect(getNotifyMode(path)).toBe(mode);
+  });
+
+  test("a value that is not one of them is the bell", () => {
+    writeRaw(JSON.stringify({ notify: "loud" }));
+    expect(getNotifyMode(path)).toBe("bell");
+    writeRaw(JSON.stringify({ notify: false }));
+    expect(getNotifyMode(path)).toBe("bell");
   });
 });
