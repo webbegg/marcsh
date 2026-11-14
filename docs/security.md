@@ -64,6 +64,8 @@ This is a safety net, not a wall:
 
 The permission mode sets how much runs without a prompt. It applies to both engines, and to the subagents that `Task` starts. Change it with [/permissions](commands.md#permissions). A change during a turn applies to the next tool call, in that turn too; what the agent was told about the mode is updated at the next turn. It is separate from the agent: Plan and Build still decide what an agent may do at all.
 
+On pi, `bg_start` follows the mode exactly like `bash` for the same command; in another folder (`working_dir`) it is judged as `cd <folder> && <command>` would be, on the session folder's branch. Background subagents use the session's mode as it is at each of their calls, also after the turn that started them.
+
 | Mode | Runs without asking | Still asks |
 | --- | --- | --- |
 | `normal` | Reads, as before | Everything else, as described above. Nothing changes, except that the worst commands are blocked (below). |

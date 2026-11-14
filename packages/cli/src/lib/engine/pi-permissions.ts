@@ -118,12 +118,22 @@ function guardVerdict(guard: Guard, cwd: string, call: Call, tools: readonly Too
 /** pi's own built-in `edit` and `write` write the file named by their `path` input. */
 const EDIT_TOOLS = ["edit", "write"];
 
-/** What the approval policy sees of a call: pi's own `bash` is a shell command, its own `edit`/`write` a file edit, any other tool is not classified. */
-function policyCall(call: Call, tools: readonly ToolSource[]): ToolCall {
+/** `dir` as one shell word, for the classifier to read. */
+const shellWord = (dir: string) => `'${dir.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * What the approval policy sees of a call: pi's own `bash` is a shell command, its own `edit`/`write` a file edit, any other tool is not
+ * classified. marcsh's `bg_start` is the shell command bash would run for it: in another folder (`runDir`) that is `cd <runDir> && <command>`,
+ * so every mode judges it exactly like that bash call from the session folder (a git command there leaves the branch, writes land there).
+ */
+function policyCall(call: Call, tools: readonly ToolSource[], cwd: string, runDir: string): ToolCall {
   const tool = tools.find((candidate) => candidate.name === call.toolName);
   if (!tool) return { kind: "other" };
   const { command, path } = call.input;
   if (isBuiltinBash(tool) && typeof command === "string") return { kind: "shell", command };
+  if (isMarcshBgStart(tool) && typeof command === "string") {
+    return { kind: "shell", command: resolve(runDir) === resolve(cwd) ? command : `cd ${shellWord(runDir)} && ${command}` };
+  }
   if (EDIT_TOOLS.includes(tool.name) && tool.sourceInfo.path === `builtin:${tool.name}` && typeof path === "string") return { kind: "edit", path };
   return { kind: "other" };
 }
@@ -162,7 +172,8 @@ export function createApprovalHandler({
     const elsewhere = resolve(runDir) !== resolve(cwd);
 
     // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
-    const seen = policyCall(call, tools());
+    // The branch is the session folder's, for `bg_start` in another folder too: the same command through bash is judged by it as well.
+    const seen = policyCall(call, tools(), cwd, runDir);
     const policy = decideApproval(currentApprovalMode ? currentApprovalMode() : approvalMode, seen, cwd, () => branchOf(cwd));
     if (policy.action === "block") return { block: true, reason: policy.reason };
     // A stored path rule ("allow `rm` under /tmp/x") runs a covered shell command in every mode, also past a floor ask; sudo and catastrophic commands never match.
