@@ -9,6 +9,31 @@ mkdirSync(join(cwd, ".git", "hooks"), { recursive: true });
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 const shell = (mode: ApprovalMode, command: string) => decideApproval(mode, { kind: "shell", command }, cwd).action;
 
+describe("a merge through gh api is a merge", () => {
+  test("merging a PR, a branch or moving a branch remotely asks in yolo", () => {
+    for (const command of [
+      "gh api -XPUT repos/o/r/pulls/1/merge",
+      "gh api --method=PUT /repos/o/r/pulls/2/merge -f merge_method=squash",
+      "gh api repos/o/r/merges -f base=main -f head=feat",
+      "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+      "gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{}){clientMutationId}}'",
+      "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc",
+      "gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA==",
+    ]) {
+      expect(shell("yolo", command)).toBe("ask");
+    }
+  });
+
+  test("other gh api writes stay delivery, reads stay ordinary", () => {
+    expect(shell("yolo", "gh api -X POST repos/o/r/issues/1/comments -f body=x")).toBe("allow");
+    expect(shell("yolo", "gh api repos/o/r/pulls/1")).toBe("allow");
+  });
+
+  test("a request body from a file is a write", () => {
+    expect(shell("auto", "gh api --input body.json repos/o/r/pulls")).toBe("ask");
+  });
+});
+
 describe("the floor reads combined short options", () => {
   test("a force push with -f in a group asks in yolo", () => {
     for (const command of ["git push -fu origin feat", "git push -uf origin feat"]) expect(shell("yolo", command)).toBe("ask");

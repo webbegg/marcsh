@@ -71,7 +71,7 @@ The permission mode sets how much runs without a prompt. It applies to both engi
 In every mode, these always ask. In `normal` the prompt is the one you already know, with "always allow" where it is offered today. In `auto` and `yolo` the prompt never offers "always allow" for them:
 
 - Destructive commands: `rm -rf` on a folder, `git reset --hard`, a force push, `DROP TABLE`, rewriting refs.
-- Publishing and merging: `npm publish`, `gh pr merge`, `gh release`.
+- Publishing and merging: `npm publish`, `gh pr merge`, `gh release`. A merge done through `gh api` counts too: merging a pull request or a branch, enabling auto-merge, moving a branch ref, or committing a file through the contents API.
 - Privileged commands: `sudo`, `curl … | sh`.
 - Dependency changes: `npm install`, `pip install` and the like.
 - Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`.

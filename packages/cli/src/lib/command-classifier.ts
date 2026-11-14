@@ -547,6 +547,16 @@ function ghApiMethod(args: string[]): string | undefined {
   return undefined;
 }
 
+// Ways `gh api` lands work on a branch other people use, the same as `gh pr merge`: merging a PR or a branch, enabling
+// auto-merge, moving a branch ref, or committing a file through the contents API.
+const GH_API_MERGES: Array<[RegExp, string]> = [
+  [/\/pulls\/[^/\s]+\/merge\b/, "gh api merges a pull request"],
+  [/(^|\/)repos\/[^/\s]+\/[^/\s]+\/merges\b/, "gh api merges a branch"],
+  [/\b(mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/, "gh api merges through GraphQL"],
+  [/\/git\/refs\b/, "gh api writes a branch ref"],
+  [/\/contents\//, "gh api commits a file"],
+];
+
 function classifyGh(args: string[]): CommandMatch | undefined {
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -565,8 +575,12 @@ function classifyGh(args: string[]): CommandMatch | undefined {
     const all = args.slice(args.indexOf("api") + 1);
     const method = ghApiMethod(all);
     if (method === "DELETE") return { kind: CommandKind.DESTRUCTIVE, reason: "gh api DELETE" };
-    if (method && method !== "GET") return { kind: CommandKind.DELIVERY, reason: `gh api ${method}` };
-    if (all.some((a) => /^-[fF]/.test(a)) || hasAny(all, "--field", "--raw-field")) return { kind: CommandKind.DELIVERY, reason: "gh api with fields (POST)" };
+    // A body (fields or a file) makes gh send a POST.
+    const writes = (method !== undefined && method !== "GET") || all.some((a) => /^-[fF]/.test(a)) || hasAny(all, "--field", "--raw-field", "--input");
+    if (!writes) return undefined;
+    const merge = GH_API_MERGES.find(([pattern]) => all.some((a) => pattern.test(a)));
+    if (merge) return { kind: CommandKind.PUBLISH, reason: merge[1] };
+    return { kind: CommandKind.DELIVERY, reason: method && method !== "GET" ? `gh api ${method}` : "gh api write (POST)" };
   }
   return undefined;
 }
