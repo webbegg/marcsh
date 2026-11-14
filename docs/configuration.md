@@ -6,7 +6,7 @@ marcsh keeps its files in one folder, `~/.marcsh`. This page lists what is in it
 
 | Path | What it holds |
 | --- | --- |
-| `preferences.json` | Your settings: theme, engine, pi model and selected agent. |
+| `preferences.json` | Your settings: theme, engine, pi model, selected agent and permission mode. |
 | `marcsh.db` | Your sessions, project trust decisions, the `/` menu command list and, for pi sessions, your "always allow" answers. On Claude, "always allow" is stored by Claude Code, not by marcsh. See [Sessions](sessions.md). |
 | `work/` | Feature docs made by [`/marcsh:feature`](commands.md#marcshfeature), one folder per project. An environment variable cannot move it. |
 | `agents/` | Your own agent files, one `.md` file per agent. See [Agents](agents.md). |
@@ -26,7 +26,8 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
   "themeName": "Nightfox",
   "defaultEngine": "pi",
   "piModel": "anthropic/claude-opus-5-5",
-  "agent": "build"
+  "agent": "build",
+  "approvalMode": "normal"
 }
 ```
 
@@ -36,10 +37,13 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
 | `defaultEngine` | The engine new sessions start on: `claude` or `pi`. Default: `pi`. | `/engine` |
 | `piModel` | The model pi uses, as `provider/model-id`. | `/models` on pi |
 | `agent` | The ID of the selected agent. | `Tab` or `/agents` |
+| `approvalMode` | The permission mode new sessions start in: `normal`, `auto` or `yolo`. Default: `normal`. | `/permissions default <mode>`, or "Use … for new sessions" in `/permissions` |
 
 A value marcsh does not understand is ignored, and the default is used. Use the commands above to change settings. If you edit the file by hand, do it while marcsh is closed.
 
 The Claude model (`opus`, `sonnet`, `haiku`) is not saved. Each launch starts on `opus`.
+
+A permission mode you choose with `/permissions` lasts for the app session. Only the default is saved. See [Security](security.md#permission-modes).
 
 ## MCP servers
 

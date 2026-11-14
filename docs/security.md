@@ -56,6 +56,40 @@ This is a safety net, not a wall:
 - It checks the built-in shell tool only.
 - If git cannot run, or the folder is not a repository, the guard decides nothing and the normal approval applies.
 
+### Permission modes
+
+The permission mode sets how much runs without a prompt. It applies to both engines, and to the subagents that `Task` starts. Change it with [/permissions](commands.md#permissions). It is separate from the agent: Plan and Build still decide what an agent may do at all.
+
+| Mode | Runs without asking | Still asks |
+| --- | --- | --- |
+| `normal` | Reads, as before | Everything else, as described above. Nothing changes. |
+| `auto` | File edits inside the project and ordinary shell commands | Commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, branch switches, and the list below |
+| `yolo` | Everything `auto` runs, plus commits, non-force pushes, `gh pr`, `gh issue` and `gh api` writes, and branch switches | The list below |
+
+`normal` is the mode every session starts in, unless you saved another one as the default.
+
+In every mode, these always ask, and the prompt never offers "always allow":
+
+- Destructive commands: `rm -rf` on a folder, `git reset --hard`, a force push, `DROP TABLE`, rewriting refs.
+- Publishing and merging: `npm publish`, `gh pr merge`, `gh release`.
+- Privileged commands: `sudo`, `curl … | sh`.
+- Dependency changes: `npm install`, `pip install` and the like.
+- Edits outside the project folder, to files that look secret (`.env` files other than examples, keys, `.ssh/`, credentials) and to `.git/`.
+- A command marcsh cannot read, such as one with an open quote.
+- Tools marcsh does not classify: MCP tools, web tools and tools from extensions.
+
+The worst commands are blocked, not asked: `rm -rf ~`, `rm -rf /`, `mkfs` and `dd` onto a device.
+
+Some rules do not change with the mode:
+
+- A commit on the default branch stays blocked in `auto` and `yolo`, as in [Git guard](#git-guard).
+- In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..` and paths with variables still ask.
+- On Claude, a request that your Claude settings say to ask about, and a request Claude flags as risky or protected, keeps asking.
+
+The agent is told the mode, so it runs what the mode allows instead of asking you in chat first.
+
+The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. Use `yolo` only in a project you can afford to lose work in.
+
 ### Plan is read-only
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
@@ -142,6 +176,7 @@ The `marcsh` command starts Bun so that it does **not** read a `.env` file or a 
 - **MCP servers you configure.** An MCP server is a program that runs with your permissions. Its tools ask like any other tool, but marcsh cannot tell you what the server does inside.
 - **A trusted project that you changed yourself.** Trust follows the files you reviewed. If you review carelessly, marcsh cannot help.
 - **The git guard on indirect commands.** It reads the command text. It cannot see what a script does.
+- **The permission modes.** In `auto` and `yolo`, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox.
 - **Your data going to the model provider.** What you and the model read and write is sent to the provider of the model you use.
 - **Other software on your computer.** marcsh does not defend against a program that already runs as you.
 

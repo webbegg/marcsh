@@ -9,12 +9,15 @@ import {
   fauxText,
   fauxThinking,
   fauxToolCall,
+  getCurrentSystemMessage,
   getCurrentTools,
+  getSystemMessageText,
   InMemoryCredentialStore,
   type FauxResponseStep,
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "../chat-types";
+import { approvalModeLine } from "../approval-policy";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
@@ -2221,5 +2224,108 @@ export default function (pi) {
     test("in an untrusted project the child ignores them, like its parent", async () => {
       expect(await childTools("untrusted")).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
     });
+  });
+});
+
+describe("pi engine approval modes (S5, S7, S9)", () => {
+  const made = () => join(cwd, "made.txt");
+  const taskCall = (description: string, prompt: string) =>
+    fauxAssistantMessage([fauxToolCall("Task", { description, prompt }, { id: "task-1" })], { stopReason: "toolUse" });
+  const systemOf = (messages: Message[]) => {
+    const system = getCurrentSystemMessage(messages);
+    return system ? getSystemMessageText(system) : "";
+  };
+  // The system prompt pi sent for the first model call.
+  function promptOf() {
+    const prompts: string[] = [];
+    const step: FauxResponseStep = (context) => {
+      prompts.push(systemOf(context.messages));
+      return fauxAssistantMessage([fauxText("ok")]);
+    };
+    return { prompts, step };
+  }
+
+  test("yolo runs an ordinary command without asking", async () => {
+    const { engine, model } = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+
+    const { reply, errors } = await runTurn(engine, model, { approvalMode: "yolo" }, host);
+
+    expect(errors).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(existsSync(made())).toBe(true);
+    expect(toolParts(reply)[0]?.state).toBe("done");
+  });
+
+  test("without a mode the same command asks, as before", async () => {
+    const { engine, model } = await setup([bashCall(`echo hi > ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, {}, host);
+
+    expect(asks).toEqual([{ toolName: "bash", input: { command: `echo hi > ${made()}` } }]);
+    expect(existsSync(made())).toBe(false);
+  });
+
+  test("a floor command asks with suppressAlwaysAllowRule in yolo, and a denial stops it", async () => {
+    const { engine, model } = await setup([bashCall(`npm install left-pad; touch ${made()}`), fauxAssistantMessage([fauxText("ok")])]);
+    const { asks, host } = answering("deny");
+
+    await runTurn(engine, model, { approvalMode: "yolo" }, host);
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ toolName: "bash", suppressAlwaysAllowRule: true });
+    expect(existsSync(made())).toBe(false);
+  });
+
+  test("a Task child inherits the mode: its ordinary command runs unasked, its floor command asks", async () => {
+    const { engine, model } = await setup([
+      taskCall("Work", "go"),
+      bashCall(`echo hi > ${made()}`, "child-1"),
+      bashCall("npm install left-pad", "child-2"),
+      fauxAssistantMessage([fauxText("child done")]),
+      fauxAssistantMessage([fauxText("parent done")]),
+    ]);
+    const { asks, host } = answering("deny");
+
+    const { errors } = await runTurn(engine, model, { approvalMode: "auto" }, host);
+
+    expect(errors).toEqual([]);
+    expect(existsSync(made())).toBe(true);
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ toolName: "bash", input: { command: "npm install left-pad" }, suppressAlwaysAllowRule: true });
+  });
+
+  test("auto and yolo add the mode line to the system prompt, after the agent prompt", async () => {
+    for (const approvalMode of ["auto", "yolo"] as const) {
+      const { prompts, step } = promptOf();
+      const { engine, model } = await setup([step]);
+
+      await runTurn(engine, model, { approvalMode, systemPromptAppend: "You are the FTD agent." });
+
+      const line = approvalModeLine(approvalMode)!;
+      expect(prompts[0]).toContain(`<addendum>\nYou are the FTD agent.\n\n${line}\n</addendum>`);
+    }
+  });
+
+  test("the mode line alone is appended when there is no agent prompt", async () => {
+    const { prompts, step } = promptOf();
+    const { engine, model } = await setup([step]);
+
+    await runTurn(engine, model, { approvalMode: "yolo" });
+
+    expect(prompts[0]).toContain(`<addendum>\n${approvalModeLine("yolo")}\n</addendum>`);
+  });
+
+  test("normal mode adds no mode line", async () => {
+    for (const approvalMode of [undefined, "normal"] as const) {
+      const { prompts, step } = promptOf();
+      const { engine, model } = await setup([step]);
+
+      await runTurn(engine, model, { approvalMode, systemPromptAppend: "You are the FTD agent." });
+
+      expect(prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
+      expect(prompts[0]).not.toContain("Approval mode");
+    }
   });
 });

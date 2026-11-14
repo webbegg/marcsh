@@ -2,10 +2,12 @@ import { query, type CanUseTool, type Options, type Query } from "@anthropic-ai/
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
+import { decideApproval, type ApprovalMode, type ToolCall } from "../approval-policy";
 import type { Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
+import { Mode } from "../modes";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import {
@@ -16,7 +18,7 @@ import {
   toPermissionMode,
   toPermissionResult,
 } from "../sdk-messages";
-import type { Engine, EngineTurn, TurnHost, TurnRequest } from "./types";
+import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
 function emitCommands(host: TurnHost, commands: unknown) {
@@ -31,12 +33,26 @@ async function refreshCommands(chat: Query, host: TurnHost) {
   } catch {}
 }
 
+/** Claude's edit tools and the input key that names the file each one writes. */
+const EDIT_PATH_KEYS: Record<string, string> = { Edit: "file_path", Write: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+
+/** What the approval policy sees of a call: `Bash` is a shell command, the edit tools a file edit, any other tool is not classified. */
+function policyCall(toolName: string, input: Record<string, unknown>): ToolCall {
+  if (toolName === "Bash" && typeof input.command === "string") return { kind: "shell", command: input.command };
+  const key = EDIT_PATH_KEYS[toolName];
+  const path = key ? input[key] : undefined;
+  return typeof path === "string" ? { kind: "edit", path } : { kind: "other" };
+}
+
 /**
  * The permission callback of a turn. A denied tool is refused here whoever calls it (the turn or a Task child), before anything is asked.
  * Backstop for `disallowedTools` (the SDK documents its MCP wildcard for agent definitions; this keeps a denied MCP call from ever
  * reaching the user as an approval). Never `allowedTools`: that would approve tools without asking.
+ *
+ * With an approval mode, the session's policy decides next, except for asks Claude forces itself (the user's ask rules, `defaultToNo`,
+ * a blocked path): those always ask. The mode never turns an ask into an always-allow rule: a policy ask suppresses it.
  */
-export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] | undefined): CanUseTool {
+export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] | undefined, policy?: { approvalMode: ApprovalMode; cwd: string }): CanUseTool {
   return async (toolName, input, options) => {
     if (deniedTools && isClaudeToolDenied(toolName, deniedTools)) return { behavior: "deny", message: notAvailableReason(toolName) };
 
@@ -46,49 +62,60 @@ export function createCanUseTool(host: TurnHost, deniedTools: readonly Group[] |
       return answers ? toAnswersResult(input, answers) : toDeclinedResult();
     }
 
+    const forced = options.matchedAskRule || options.defaultToNo || options.blockedPath;
+    const verdict = policy && !forced ? decideApproval(policy.approvalMode, policyCall(toolName, input), policy.cwd) : undefined;
+    if (verdict?.action === "block") return { behavior: "deny", message: verdict.reason };
+    if (verdict?.action === "allow") return { behavior: "allow", updatedInput: input };
+    const floor = verdict?.action === "ask" ? verdict : undefined;
+
     const decision = await host.askPermission(
       {
         toolName,
         input,
         title: options.title,
         description: options.description,
-        decisionReason: options.decisionReason,
+        decisionReason: floor ? floor.reason : options.decisionReason,
         blockedPath: options.blockedPath,
         defaultToNo: options.defaultToNo,
-        suppressAlwaysAllowRule: options.suppressAlwaysAllowRule,
+        suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule,
       },
       options.signal,
     );
     return toPermissionResult(decision, input, options.suggestions, {
-      suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || options.defaultToNo,
+      suppressAlwaysAllowRule: floor ? true : options.suppressAlwaysAllowRule || options.defaultToNo,
     });
   };
 }
 
-/** The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`. */
+/**
+ * The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`.
+ * The approval mode only adds its line to the appended system prompt: the permission mode stays default or plan, never bypassPermissions.
+ */
 export function claudeQueryOptions({
   cwd,
   mode,
   model,
   systemPromptAppend,
+  approvalMode,
   deniedTools,
   resumeRef,
   abortController,
   canUseTool,
   plugins,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "deniedTools" | "resumeRef"> & {
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "resumeRef"> & {
   abortController: AbortController;
   canUseTool: CanUseTool;
   plugins: readonly string[];
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
+  const append = systemPromptWithMode(systemPromptAppend, approvalMode);
   return {
     cwd,
     model,
     permissionMode: toPermissionMode(mode),
     resume: resumeRef,
     abortController,
-    systemPrompt: { type: "preset", preset: "claude_code", ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
+    systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
     settingSources: ["user", "project", "local"],
     canUseTool,
     ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
@@ -96,10 +123,11 @@ export function claudeQueryOptions({
   };
 }
 
-function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
-  const canUseTool = createCanUseTool(host, deniedTools);
+  // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
+  const canUseTool = createCanUseTool(host, deniedTools, { approvalMode: mode === Mode.PLAN ? "normal" : (approvalMode ?? "normal"), cwd });
 
   let chat: Query | null = null;
   const done = (async () => {
@@ -113,7 +141,7 @@ function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPat
     try {
       chat = query({
         prompt,
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, deniedTools, resumeRef, abortController, canUseTool, plugins }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, resumeRef, abortController, canUseTool, plugins }),
       });
 
       for await (const message of chat) {
