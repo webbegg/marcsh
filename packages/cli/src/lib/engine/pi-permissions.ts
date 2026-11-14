@@ -1,6 +1,7 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
+import { BG_PLAN_TOOLS, isMarcshBgStart, isMarcshBgTool } from "./pi-bg-tools";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
 import { isMarcshTask } from "./pi-subagent";
 import type { TurnHost } from "./types";
@@ -24,12 +25,17 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
 }
 
 /**
- * Tools that run without the approval prompt, and the only ones plan mode offers: pi's read-only built-ins,
- * marcsh's own `AskUserQuestion` (answering the question is the approval), and marcsh's own `Task` (the
- * subagent it starts asks for its own tool calls, and has only the read-only tools in plan mode).
+ * Tools that run without the approval prompt: pi's read-only built-ins, marcsh's own `AskUserQuestion` (answering the
+ * question is the approval), marcsh's own `Task` (the subagent it starts asks for its own tool calls, and has only the
+ * read-only tools in plan mode), and marcsh's own bg tools except `bg_start` (they read, or stop this session's terminals).
  */
 export function runsUnasked(tool: ToolSource): boolean {
-  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool) || isMarcshTask(tool);
+  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool) || isMarcshTask(tool) || (isMarcshBgTool(tool) && !isMarcshBgStart(tool));
+}
+
+/** The only tools plan mode offers: those that run unasked, without `bg_kill` (plan mode stops nothing). */
+export function offeredInPlan(tool: ToolSource): boolean {
+  return runsUnasked(tool) && (!isMarcshBgTool(tool) || (BG_PLAN_TOOLS as readonly string[]).includes(tool.name));
 }
 
 /** A tool that is not registered (or not one that runs unasked) asks. */
@@ -68,11 +74,22 @@ export type ApprovalOptions = {
   guard?: Guard;
 };
 
-/** The guard's verdict on a call, or null: only pi's own `bash` with a command string is guarded, and a guard that fails is no verdict (fail open, like the Claude hook). */
-function guardVerdict(guard: Guard, cwd: string, call: { toolName: string; input: Record<string, unknown> }, tools: readonly ToolSource[]): Decision | null {
+type Call = { toolName: string; input: Record<string, unknown> };
+
+/**
+ * The call as approval judges it: marcsh's `bg_start` is `bash` with the same command, so it gets bash's guard verdict and
+ * shares bash's exact-command rule (an "always" for one covers the other). The ask itself still shows the real call.
+ */
+function judgedAs(call: Call, tools: readonly ToolSource[]): Call {
+  const tool = tools.find((candidate) => candidate.name === call.toolName);
+  return tool && isMarcshBgStart(tool) ? { toolName: "bash", input: { command: call.input.command } } : call;
+}
+
+/** The guard's verdict on a call, or null: only pi's own `bash` (and marcsh's `bg_start`, judged as it) with a command string is guarded, and a guard that fails is no verdict (fail open, like the Claude hook). */
+function guardVerdict(guard: Guard, cwd: string, call: Call, tools: readonly ToolSource[]): Decision | null {
   const tool = tools.find((candidate) => candidate.name === call.toolName);
   const command = call.input.command;
-  if (!tool || !isBuiltinBash(tool) || typeof command !== "string") return null;
+  if (!tool || !(isBuiltinBash(tool) || isMarcshBgStart(tool)) || typeof command !== "string") return null;
   try {
     return guard(command, cwd);
   } catch {
@@ -82,15 +99,19 @@ function guardVerdict(guard: Guard, cwd: string, call: { toolName: string; input
 
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
 export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand }: ApprovalOptions) {
-  return async (call: { toolName: string; input: Record<string, unknown> }): Promise<ToolCallBlock | undefined> => {
+  return async (call: Call): Promise<ToolCallBlock | undefined> => {
+    if (planMode) {
+      const tool = tools().find((candidate) => candidate.name === call.toolName);
+      return tool && offeredInPlan(tool) ? undefined : { block: true, reason: PLAN_MODE_REASON };
+    }
     if (!needsApproval(call.toolName, tools())) return undefined;
-    if (planMode) return { block: true, reason: PLAN_MODE_REASON };
 
     const verdict = guardVerdict(guard, cwd, call, tools());
     if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
     // A guarded action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const guarded = verdict?.decision === "ask" ? verdict : undefined;
-    const rule = guarded ? undefined : ruleFor(cwd, call.toolName, call.input);
+    const judged = judgedAs(call, tools());
+    const rule = guarded ? undefined : ruleFor(cwd, judged.toolName, judged.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
@@ -124,7 +145,7 @@ export function createApprovalExtension(options: Omit<ApprovalOptions, "tools">)
     pi.on("tool_call", (event) => decide({ toolName: event.toolName, input: event.input }));
     if (!options.planMode) return;
     const keepReadOnly = () => {
-      pi.setActiveTools(pi.getAllTools().filter(runsUnasked).map((tool) => tool.name));
+      pi.setActiveTools(pi.getAllTools().filter(offeredInPlan).map((tool) => tool.name));
     };
     pi.on("before_agent_start", keepReadOnly);
     pi.on("turn_start", keepReadOnly);

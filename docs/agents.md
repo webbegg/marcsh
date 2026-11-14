@@ -141,7 +141,7 @@ Names are not case-sensitive. Naming one tool takes or keeps its whole group. Th
 | --- | --- | --- |
 | `read` | read, grep, glob, find, ls, list, notebookread | Reading and searching files. |
 | `edit` | edit, write, patch, multiedit, notebookedit | Changing files. |
-| `bash` | bash, shell, powershell | Running commands. |
+| `bash` | bash, shell, powershell | Running commands. On pi this also covers the background terminal tools `bg_start`, `bg_status`, `bg_list` and `bg_kill`. |
 | `web` | webfetch, websearch, web, fetch | Fetching pages and searching the web. |
 | `task` | task, agent, subagent | Starting subagents. On Claude this also covers the workflow tool. |
 | `ask` | askuserquestion, question, ask_user, ask | The question tool. Never removed. |

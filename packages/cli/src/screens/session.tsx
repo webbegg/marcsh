@@ -253,6 +253,7 @@ function SessionChat({
     compactModel: () => (session.engine === "pi" ? refreshPiModel() : Promise.resolve(model)),
     compactWithTurn: () => void send("/compact", agent, model),
     addNotice,
+    background: hub,
   });
 
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.

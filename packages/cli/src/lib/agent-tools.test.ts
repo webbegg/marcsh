@@ -222,6 +222,13 @@ describe("engine mappings", () => {
     expect(isPiToolDenied("unrelated_ext_tool", ["bash", "mcp"])).toBe(false);
   });
 
+  test("pi: a denied bash group takes the background terminal tools too (S1a)", () => {
+    for (const name of ["bg_start", "bg_status", "bg_list", "bg_kill"]) {
+      expect(isPiToolDenied(name, ["bash"]), name).toBe(true);
+      expect(isPiToolDenied(name, ["edit", "web", "task", "mcp"]), name).toBe(false);
+    }
+  });
+
   test("pi has no web tools of its own, so a web restriction cannot be applied there", () => {
     expect(unsupportedGroups(["bash", "web"], "pi")).toEqual(["web"]);
     expect(unsupportedGroups(["bash", "web"], "claude")).toEqual([]);

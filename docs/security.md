@@ -10,8 +10,10 @@ When the model wants to do something that is not a plain read, marcsh stops and 
 
 | Engine | Runs without asking | Asks |
 | --- | --- | --- |
-| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), and `Task` (the subagent it starts asks for its own tool calls) | Every other tool: running commands, writing and editing files, MCP tools, tools added by extensions |
+| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), and `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
 | Claude | What Claude Code's default permission mode allows without asking | The rest. marcsh shows Claude's question |
+
+On pi, `bg_start` runs a command in the background. It asks exactly like `bash` for the same command, and the prompt names `bg_start` so you can see it will keep running. The git guard and a pack's `Bash` hooks apply to it too. Background terminals stop when you leave the session or quit marcsh.
 
 On Claude, Claude Code's own settings still apply. marcsh lets it read your user, project and local settings, so permission rules in them count.
 
@@ -34,7 +36,7 @@ What `a` does depends on the engine.
 
 **On pi**, `a` is remembered per project folder:
 
-- For a command tool (`bash`), it covers **that exact command** only.
+- For a command tool (`bash`), it covers **that exact command** only. It covers the command in `bash` and `bg_start` alike.
 - For any other tool (for example editing files, or an MCP tool), it covers **that tool** in that project, for every future call.
 
 marcsh has no command to undo it. Think before you press `a` for a tool like that. It is a standing permission for the tool, not for one file.
@@ -53,14 +55,14 @@ For commands the model runs, marcsh adds a guard on both engines:
 This is a safety net, not a wall:
 
 - It does not follow indirection such as `bash -c "git push"`, `eval`, git aliases or scripts.
-- It checks the built-in shell tool only.
+- It checks the built-in shell tool and marcsh's `bg_start` only.
 - If git cannot run, or the folder is not a repository, the guard decides nothing and the normal approval applies.
 
 ### Plan is read-only
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
 
-- On pi it is only given the read tools, the question tool and `Task`, so it cannot write files or run commands. A saved "always allow" does not change this.
+- On pi it is only given the read tools, the question tool, `Task`, `bg_status` and `bg_list`, so it cannot write files, run commands or stop background terminals. A saved "always allow" does not change this.
 - On Claude it runs in Claude Code's plan mode.
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).

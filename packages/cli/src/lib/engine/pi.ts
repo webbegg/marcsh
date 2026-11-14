@@ -11,9 +11,10 @@ import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
+import { BG_PLAN_TOOLS, createBackgroundTerminalsExtension } from "./pi-bg-tools";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
-import { createApprovalExtension, isReadOnlyBuiltin, READ_ONLY_TOOLS, runsUnasked } from "./pi-permissions";
+import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
@@ -428,6 +429,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           createApprovalExtension(approval),
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
+          // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
+          ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd })] : []),
           // A child session has the parent turn's host, rules, guard and mode, so it asks the same way; in plan mode it only reads.
           createSubagentExtension({
             host,
@@ -459,11 +462,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL].filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) {
-        const planTools = session.getAllTools().filter(runsUnasked).map((tool) => tool.name);
+        const planTools = session.getAllTools().filter(offeredInPlan).map((tool) => tool.name);
         tools.narrow(session, planTools);
       } else {
         const freshTools = () => newSessionTools(pi, session!, { cwd, agentDir, models, model: resolved, projectTrusted });

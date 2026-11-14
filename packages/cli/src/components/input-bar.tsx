@@ -17,6 +17,8 @@ import { COMMANDS, COMMAND_NAMES } from "./command-menu/commands";
 import { loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
 import { CommandPalette } from "./command-palette";
 import { SessionCommandsContext } from "./command-menu/session-commands";
+import { useBackgroundHub } from "../lib/background/context";
+import { runningTerminalsText, useRunningTerminals } from "../lib/background/use-running-terminals";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
@@ -350,6 +352,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const toast = useToast();
   // What the commands on the open session act on; none on the home screen.
   const session = useContext(SessionCommandsContext);
+  const backgroundText = runningTerminalsText(useRunningTerminals(useBackgroundHub()));
   // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
   const agentIdRef = useRef(agent.id);
   agentIdRef.current = agent.id;
@@ -1023,7 +1026,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} messages={messages} cwd={cwd} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
+          <StatusBar engine={engineId} messages={messages} cwd={cwd} background={backgroundText} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>
