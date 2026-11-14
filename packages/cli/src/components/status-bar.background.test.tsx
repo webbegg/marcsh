@@ -14,6 +14,7 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { StatusBar } = await import("./status-bar");
 const { runningTerminalsText } = await import("../lib/background/use-running-terminals");
+const { runningBackgroundText } = await import("../lib/background/use-running-subagents");
 
 // S3: while background terminals run, the status line says so and points at /ps; it is the first segment dropped when narrow.
 
@@ -48,6 +49,20 @@ describe("StatusBar background segment", () => {
   test("says nothing when none runs", () => {
     expect(runningTerminalsText(0)).toBe("");
     expect(runningTerminalsText(1)).toBe("1 background terminal running · /ps");
+  });
+
+  test("counts background subagents too, and points at /subagents (S4a)", () => {
+    expect(runningBackgroundText(0, 0)).toBe("");
+    expect(runningBackgroundText(2, 0)).toBe("2 background terminals running · /ps");
+    expect(runningBackgroundText(0, 1)).toBe("1 background subagent running · /subagents");
+    expect(runningBackgroundText(0, 2)).toBe("2 background subagents running · /subagents");
+    expect(runningBackgroundText(1, 2)).toBe("1 terminal, 2 subagents running · /ps /subagents");
+    expect(runningBackgroundText(2, 1)).toBe("2 terminals, 1 subagent running · /ps /subagents");
+  });
+
+  test("shows terminals and subagents together", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={git} messages={[usage]} background={runningBackgroundText(1, 2)} hint="enter" />, 140);
+    expect(frame).toContain("3 files changed · 1 terminal, 2 subagents running · /ps /subagents · enter");
   });
 
   test("is dropped before the usage and git when the line is too narrow", async () => {

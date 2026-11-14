@@ -229,6 +229,13 @@ describe("engine mappings", () => {
     }
   });
 
+  test("pi: a denied task group takes the background subagent tools with Task (S4)", () => {
+    for (const name of ["Task", "task_wait", "task_check", "task_cancel", "task_list"]) {
+      expect(isPiToolDenied(name, ["task"]), name).toBe(true);
+      expect(isPiToolDenied(name, ["bash", "edit", "web", "mcp"]), name).toBe(false);
+    }
+  });
+
   test("pi has no web tools of its own, so a web restriction cannot be applied there", () => {
     expect(unsupportedGroups(["bash", "web"], "pi")).toEqual(["web"]);
     expect(unsupportedGroups(["bash", "web"], "claude")).toEqual([]);

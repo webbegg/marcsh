@@ -99,6 +99,14 @@ describe("pi tools by group", () => {
     expect(isPiToolDenied("my_extension_tool", [...TOOL_GROUPS])).toBe(false);
   });
 
+  test("marcsh's background subagent tools are in the task group, and only there (S4)", () => {
+    for (const name of ["task_wait", "task_check", "task_cancel", "task_list"]) {
+      expect(PI_TOOL_GROUPS[name]).toEqual(["task"]);
+      expect(isPiToolDenied(name, ["task"]), name).toBe(true);
+      expect(isPiToolDenied(name, TOOL_GROUPS.filter((group) => group !== "task")), name).toBe(false);
+    }
+  });
+
   test("marcsh's background terminal tools are in the bash group, and only there (S1a)", () => {
     for (const name of ["bg_start", "bg_status", "bg_list", "bg_kill"]) {
       expect(PI_TOOL_GROUPS[name]).toEqual(["bash"]);

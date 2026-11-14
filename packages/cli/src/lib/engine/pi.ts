@@ -18,7 +18,7 @@ import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TO
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
 import { createPiUiContext } from "./pi-ui";
-import { createSubagentExtension, runChildSession, TASK_TOOL } from "./pi-subagent";
+import { type BackgroundRunChild, createSubagentExtension, runChildSession, type RunChild, TASK_PLAN_TOOLS, TASK_TOOL } from "./pi-subagent";
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import { backgroundMessageText, type BackgroundBatch } from "../background/hub";
@@ -409,9 +409,37 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
-      const packHooks = packTurn?.hooks
-        ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: turnEnded.signal, notify: (message, level) => host.notify?.(message, level) })]
-        : [];
+      const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>) =>
+        packTurn?.hooks ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: hookSignal, notify })] : [];
+      const packHooks = packHooksFor(turnEnded.signal, (message, level) => host.notify?.(message, level));
+      // A child session has the parent turn's rules, guard, mode and agent narrowing; in plan mode it only reads. It never gets the
+      // background hub, so it has no bg tools, no task tools and cannot start background subagents.
+      const runChild = (request: Parameters<RunChild>[0], approvalAndHooks: ExtensionFactory[]) =>
+        runChildSession(pi, {
+          ...request,
+          cwd,
+          agentDir,
+          models,
+          model: resolved,
+          projectTrusted,
+          extensions: [...tools.childExtensions, ...approvalAndHooks, ...tools.childExtensions],
+          ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        });
+      // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
+      // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
+      const runBackgroundChild: BackgroundRunChild | undefined =
+        background &&
+        (({ description, prompt, signal: childSignal, onProgress, onEvent }) => {
+          const askHost: Pick<TurnHost, "askPermission"> = {
+            askPermission: (ask, askSignal) =>
+              background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
+          };
+          const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
+          return runChild({ prompt, signal: childSignal, onProgress, onEvent }, [
+            ...packHooksFor(childSignal, notify),
+            createApprovalExtension({ ...approval, host: askHost, signal: childSignal }),
+          ]);
+        });
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
         agentDir,
@@ -431,22 +459,13 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           createAskUserExtension({ host, signal: turnEnded.signal }),
           // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
           ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd })] : []),
-          // A child session has the parent turn's host, rules, guard and mode, so it asks the same way; in plan mode it only reads.
+          // A foreground child has the parent turn's host, so it asks the same way. A turn with a hub also offers the task tools; plan mode starts no background child.
           createSubagentExtension({
             host,
             signal: turnEnded.signal,
             timeoutMs: options.toolTimeoutMs,
-            runChild: (request) =>
-              runChildSession(pi, {
-                ...request,
-                cwd,
-                agentDir,
-                models,
-                model: resolved,
-                projectTrusted,
-                extensions: [...tools.childExtensions, ...packHooks, createApprovalExtension(approval), ...tools.childExtensions],
-                ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(tools.allowed) } : buildToolsOption(settingsManager)),
-              }),
+            runChild: (request) => runChild(request, [...packHooks, createApprovalExtension(approval)]),
+            ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),
           }),
         ],
       });
@@ -462,7 +481,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) {
