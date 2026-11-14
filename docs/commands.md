@@ -16,6 +16,8 @@ Picking a command that is not one of marcsh's own (for example one from the engi
 
 The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
 
+`Ctrl+P` opens the command palette, a searchable list of every command, and `Ctrl+X` followed by a key runs a command without it. Both can be changed. See [Keybinds](keybinds.md).
+
 Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to move, `Enter` to choose and `Esc` to close.
 
 ### How the menu filters
@@ -439,6 +441,8 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. |
 | `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
+| `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |
+| `Ctrl+X`, then a key | Run a command (`Ctrl+X` `n` is `/new`). The status line shows the leader is waiting; it ends after 2 seconds. See [Keybinds](keybinds.md). |
 | `@` | Mention a file or folder. See below. |
 | `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
 | `Ctrl+D` | In the `/sessions` dialog, delete the highlighted session after a confirmation. |

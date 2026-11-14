@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { createContext, useContext, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
+import { createContext, useContext, useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
 import { TextAttributes } from "@opentui/core";
 
@@ -13,8 +13,9 @@ import { EmptyBorder } from "./border";
 import { StatusBar } from "./status-bar";
 import { CommandMenu } from "./command-menu";
 import type { Command } from "./command-menu/types";
-import { COMMANDS } from "./command-menu/commands";
-import { useCommandMenu } from "./command-menu/use-command-menu";
+import { COMMANDS, COMMAND_NAMES } from "./command-menu/commands";
+import { loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
+import { CommandPalette } from "./command-palette";
 import { SessionCommandsContext } from "./command-menu/session-commands";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
@@ -28,6 +29,7 @@ import type { ChatMessage } from "../lib/chat-types";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
+import { formatBinding, isLeaderKey, leaderHint, loadKeybinds, resolveKey, takeKeybindWarnings, type KeyAction } from "../lib/keybinds";
 import { appendHistory, keepDraft, readHistory, recallDraft } from "../lib/prompt-history";
 import { attachInput, clearKeyActivity, handOffDraft, mergeGivenBack, noteKeyActivity, onGivenBack, setDraft, setInputTakesKeys, takeHandOffDraft } from "../lib/prompt-lock";
 
@@ -296,6 +298,9 @@ export const TurnInputContext = createContext<TurnInput>({ active: false, steer:
 
 const QUEUE_COMMAND = /^\/queue\s+([\s\S]+)$/;
 
+/** How long the leader key waits for the key that follows it. */
+const LEADER_TIMEOUT_MS = 2000;
+
 // Wordings of the hint, longest first: the status line shows the first that fits its width.
 function turnHint(turnInput: TurnInput, disabled: boolean): string[] | undefined {
   if (turnInput.closed) return ["turn ending · no more steers", "turn ending"];
@@ -354,6 +359,24 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
   const turnInput = useContext(TurnInputContext);
+  // Read once, when the first bar mounts; what was wrong in the file is said once, here, in a single toast.
+  const keybinds = useMemo(() => loadKeybinds(COMMAND_NAMES), []);
+  const runPaletteCommandRef = useRef<(command: Command) => void>(() => {});
+  const leaderRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [leaderPending, setLeaderPending] = useState(false);
+
+  useEffect(() => {
+    const warnings = takeKeybindWarnings();
+    if (warnings.length > 0) toast.show({ variant: "info", message: `Warning: ${warnings.join(" ")}`, duration: 8000 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
+  }, []);
+
+  const endLeader = useCallback(() => {
+    if (leaderRef.current) clearTimeout(leaderRef.current);
+    leaderRef.current = null;
+    setLeaderPending(false);
+  }, []);
+  useEffect(() => endLeader, [endLeader]);
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -546,14 +569,16 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     syncMentionMenu(textarea.plainText, textarea.cursorOffset);
   }, [syncMentionMenu]);
 
+  // `keepText`: the command was not typed (the palette, the leader), so the prompt holds the user's own text and is left alone.
   const handleCommand = useCallback((
     command: Command | undefined,
     args = "",
+    keepText = false,
   ) => {
     const textarea = textareaRef.current;
     if (!textarea || !command) return;
 
-    textarea.setText("");
+    if (!keepText) textarea.setText("");
 
     if (command.action) {
       command.action({
@@ -579,6 +604,46 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       textarea.insertText(command.value + " ");
     }
   }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, session]);
+
+  // The palette and the leader run a command the way a typed `/command` does. One that needs text after its name (`/rename`, a
+  // custom or engine command) puts `/name ` in the prompt for the user to finish, which needs the prompt to be empty.
+  const runPaletteCommand = useCallback((command: Command) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    if (command.action && !command.argumentHint) {
+      handleCommand(command, "", true);
+    } else if (textarea.plainText.length > 0) {
+      toast.show({ variant: "info", message: `Clear the prompt, then pick /${command.name} again: it needs text after its name.` });
+    } else {
+      textarea.insertText(`${command.value} `);
+    }
+  }, [handleCommand, toast]);
+  runPaletteCommandRef.current = runPaletteCommand;
+
+  const openPalette = useCallback(() => {
+    const keys: Record<string, string> = {};
+    for (const [name, bindings] of Object.entries(keybinds.commands)) {
+      if (bindings[0]) keys[name] = formatBinding(bindings[0], keybinds.leader);
+    }
+    dialog.open({
+      title: "Command Palette",
+      children: (
+        <CommandPalette
+          commands={loadMenuCommands(engineId, cwd, session !== null)}
+          keys={keys}
+          onSelect={(command) => {
+            dialog.close();
+            runPaletteCommandRef.current(command);
+          }}
+        />
+      ),
+    });
+  }, [dialog, keybinds, engineId, cwd, session]);
+
+  const runKeyAction = (action: KeyAction) => {
+    if (action.action === "palette") openPalette();
+    else runPaletteCommand(COMMANDS.find((command) => command.name === action.name)!);
+  };
 
   const handleCommandExecute = useCallback(
     (index: number) => {
@@ -744,6 +809,29 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   useKeyboard((key) => {
     if (disabled) return;
     if (!isTopLayer("base")) return;
+    // The palette and the leader work where a command can run: not on a screen that only takes keys. A key bound here is not typing.
+    if (!typeOnly) {
+      if (leaderRef.current) {
+        // The key after the leader runs its command; any other key (Esc included) only ends the wait, and none is typed.
+        endLeader();
+        key.preventDefault();
+        const hit = key.name === "escape" ? undefined : resolveKey(keybinds, key, true);
+        if (hit) runKeyAction(hit);
+        return;
+      }
+      if (isLeaderKey(keybinds, key)) {
+        key.preventDefault();
+        leaderRef.current = setTimeout(endLeader, LEADER_TIMEOUT_MS);
+        setLeaderPending(true);
+        return;
+      }
+      const hit = resolveKey(keybinds, key, false);
+      if (hit) {
+        key.preventDefault();
+        runKeyAction(hit);
+        return;
+      }
+    }
     // Keys typed here mean the user is composing; Enter sends, and Esc and Tab are not typing.
     const sends = (key.name === "return" || key.name === "enter") && !key.shift;
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
@@ -882,7 +970,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} messages={messages} hint={turnHint(turnInput, disabled)} />
+          <StatusBar engine={engineId} messages={messages} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>
