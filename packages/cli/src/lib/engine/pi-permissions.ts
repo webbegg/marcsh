@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { type ApprovalMode, decideApproval, type ToolCall } from "../approval-policy";
+import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
@@ -54,10 +55,13 @@ export function ruleFor(cwd: string, toolName: string, input: Record<string, unk
 
 export type ToolCallBlock = { block: true; reason: string };
 
+/** The rules the approval flow reads and writes. Without the path-rule methods, no folder choice is offered and none is applied. */
+export type RuleStore = Pick<Storage, "addPermissionRule" | "hasPermissionRule"> & Partial<PathRuleStore>;
+
 export type ApprovalOptions = {
   /** The session's project directory: rules apply per cwd. */
   cwd: string;
-  rules: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  rules: RuleStore;
   host: Pick<TurnHost, "askPermission">;
   /** Aborts when the turn ends; a pending ask is then declined and its call never runs. */
   signal: AbortSignal;
@@ -106,20 +110,29 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
     if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
 
     // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
-    const policy = decideApproval(approvalMode, policyCall(call, tools()), cwd);
+    const seen = policyCall(call, tools());
+    const policy = decideApproval(approvalMode, seen, cwd);
     if (policy.action === "block") return { block: true, reason: policy.reason };
+    // A stored path rule ("allow `rm` under /tmp/x") runs a covered shell command in every mode, also past a floor ask; sudo and catastrophic commands never match.
+    const command = seen.kind === "shell" ? seen.command : undefined;
+    const { pathRulesFor, addPathRule } = rules;
+    if (command !== undefined && pathRulesFor && hasMatchingPathRule({ pathRulesFor }, command, cwd)) return undefined;
     if (policy.action === "allow") return undefined;
     const floor = policy.action === "ask" ? { reason: policy.reason } : verdict?.decision === "ask" ? verdict : undefined;
     // A floor action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const rule = floor ? undefined : ruleFor(cwd, call.toolName, call.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
+    const candidate = command !== undefined && pathRulesFor && addPathRule ? pathRuleCandidate(command, cwd) : null;
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
     try {
       decision = await host.askPermission(
-        floor
-          ? { toolName: call.toolName, input: call.input, decisionReason: floor.reason, suppressAlwaysAllowRule: true }
-          : { toolName: call.toolName, input: call.input },
+        {
+          toolName: call.toolName,
+          input: call.input,
+          ...(floor ? { decisionReason: floor.reason, suppressAlwaysAllowRule: true } : {}),
+          ...(candidate ? { pathRule: candidate } : {}),
+        },
         signal,
       );
     } catch {
@@ -129,6 +142,8 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
     if (signal.aborted) return { block: true, reason: INTERRUPTED_REASON };
     if (decision === "deny") return { block: true, reason: DENIED_REASON };
     if (decision === "always" && rule) rules.addPermissionRule(rule);
+    const answered = answeredPathRule(decision, cwd, candidate);
+    if (answered) addPathRule?.(answered);
     return undefined;
   };
 }

@@ -11,6 +11,7 @@ import {
   toPermissionResult,
 } from "./sdk-messages";
 import type { ChatMessage } from "./chat-types";
+import { pathAnswer } from "./engine/types";
 
 const emptyReply = (): ChatMessage => ({
   id: "a1",
@@ -381,6 +382,13 @@ describe("toPermissionResult", () => {
       behavior: "allow",
       updatedInput: input,
     });
+  });
+
+  test("a folder answer allows once, without the suggested rules", () => {
+    const folder = pathAnswer("/tmp/x");
+
+    expect(toPermissionResult(folder, input, suggestions)).toEqual({ behavior: "allow", updatedInput: input });
+    expect(toPermissionResult(folder, input)).toEqual({ behavior: "allow", updatedInput: input });
   });
 
   test("denies with a message for Claude", () => {
