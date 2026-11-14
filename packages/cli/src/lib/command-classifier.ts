@@ -5,8 +5,12 @@
 // The command is split into simple commands on `;` `&&` `||` `|` `&` newlines, parentheses and backticks outside quotes.
 // Command substitutions inside double quotes (`"$(...)"`, "`...`") are read as commands of their own; `bash -c` and
 // `eval` scripts too. Heredoc bodies and the text of `[[ ]]` / `(( ))` are data.
+//
+// A `cd`, `pushd` or `popd` counts for the rest of the line, subshells and nested scripts included: relative redirect
+// targets are read from the folder it moves to, and a git command after one that leaves the checkout is run elsewhere.
 
 import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 export const CommandKind = {
   DESTRUCTIVE: "destructive",
@@ -14,7 +18,7 @@ export const CommandKind = {
   COMMIT: "commit",
   /** Reaches a remote: a push that is not destructive, `gh pr|issue` writes, `gh api` writes. */
   REMOTE: "remote",
-  /** Leaves the branch the session works on: a switch or checkout, git run in another directory, a new worktree. */
+  /** Leaves the branch the session works on or writes another one: a switch or checkout, git run in another directory, a new worktree, a fetch into or a forced move of a branch. */
   LEAVING: "leaving",
   PUBLISH: "publish",
   PRIVILEGED: "privileged",
@@ -40,6 +44,14 @@ export type CommandAnalysis = {
 
 type Redirect = { op: string; target: string };
 type Segment = { argv: string[]; before: string; redirects: Redirect[] };
+
+export type AnalyzeOptions = {
+  /** Whether a `cd` to `dir` (as written, or joined onto an earlier `cd`) stays in the checkout the session works in. Without it, every `cd` leaves. */
+  stays?: (dir: string) => boolean;
+};
+
+/** Where the line has moved to so far: `dir` is the folder relative targets are read from ("" for the session's), `left` the first `cd` that left the checkout. */
+type Context = AnalyzeOptions & { dir: string; left?: string };
 
 const SEPARATORS = new Set([";", "|", "&", "\n", "(", ")", "`"]);
 // Syntax words that can lead a segment (`then rm -rf x`, `{ git push; }`); the command follows them.
@@ -467,11 +479,12 @@ function classifyRm(args: string[], viaXargs: boolean): CommandMatch | undefined
 }
 
 /**
- * Reads git's global options: the subcommand index (-1 when there is none), and the first one that points git at another directory
- * (`-C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`), as the text to show.
+ * Reads git's global options: the subcommand index (-1 when there is none), the first one that points git at another directory
+ * (`-C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`), as the text to show, and the first alias set on the command line.
  */
-function gitGlobals(args: string[]): { index: number; elsewhere?: string } {
+function gitGlobals(args: string[]): { index: number; elsewhere?: string; alias?: string } {
   let elsewhere: string | undefined;
+  let alias: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "-C" || a === "--git-dir" || a === "--work-tree") {
@@ -480,29 +493,44 @@ function gitGlobals(args: string[]): { index: number; elsewhere?: string } {
     } else if (a.startsWith("--git-dir=") || a.startsWith("--work-tree=")) {
       elsewhere ??= a;
     } else if (a === "-c" || a === "--config-env") {
-      if (/^core\.worktree=/i.test(args[i + 1] ?? "")) elsewhere ??= `${a} ${args[i + 1]}`;
+      const setting = args[i + 1] ?? "";
+      if (/^core\.worktree=/i.test(setting)) elsewhere ??= `${a} ${setting}`;
+      if (/^alias\./i.test(setting)) alias ??= setting;
       i++;
     } else if (/^--config-env=core\.worktree=/i.test(a)) {
       elsewhere ??= a;
+    } else if (/^--config-env=alias\./i.test(a)) {
+      alias ??= a.slice("--config-env=".length);
     } else if (a === "--namespace" || a === "--super-prefix") {
       i++;
     } else if (!a.startsWith("-")) {
-      return { index: i, elsewhere };
+      return { index: i, elsewhere, alias };
     }
   }
-  return { index: -1, elsewhere };
+  return { index: -1, elsewhere, alias };
+}
+
+/** The first refspec among a fetch's or pull's words that writes a local ref (`main:main`, `+feat/x:main`); the first word is the repository. */
+function refspecWithDestination(rest: string[]): string | undefined {
+  const words = rest.filter((a) => !a.startsWith("-"));
+  return words.slice(1).find((word) => {
+    const colon = word.indexOf(":");
+    return colon !== -1 && colon < word.length - 1;
+  });
 }
 
 /**
- * What a git command does. Run in another directory (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`) it leaves the branch the session
- * works on, whatever the subcommand: a commit there is that, not a local commit.
+ * What a git command does. Run in another directory (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR=`, `GIT_WORK_TREE=`, or after a `cd` that left the checkout)
+ * it leaves the branch the session works on, whatever the subcommand: a commit there is that, not a local commit. An alias set on the command
+ * line (`-c alias.p=push`) can stand for any subcommand, so the command cannot be read.
  */
-function classifyGit(args: string[], assignments: string[]): CommandMatch[] {
-  const { index, elsewhere: viaOptions } = gitGlobals(args);
+function classifyGit(args: string[], assignments: string[], left: string | undefined): CommandMatch[] {
+  const { index, elsewhere: viaOptions, alias } = gitGlobals(args);
+  if (alias) return [{ kind: CommandKind.UNREADABLE, reason: `a git alias set on the command line (${alias})` }];
   if (index === -1) return [];
   const sub = args[index]!;
   const found = classifyGitSubcommand(sub, args.slice(index + 1));
-  const elsewhere = viaOptions ?? assignments.find((a) => GIT_LOCATION_VARIABLE.test(a));
+  const elsewhere = viaOptions ?? assignments.find((a) => GIT_LOCATION_VARIABLE.test(a)) ?? (left && `after ${left}`);
   if (!elsewhere) return found ? [found] : [];
   const away: CommandMatch = { kind: CommandKind.LEAVING, reason: `git ${sub} elsewhere (${elsewhere})` };
   return found && found.kind !== CommandKind.COMMIT && found.kind !== CommandKind.LEAVING ? [found, away] : [away];
@@ -531,6 +559,9 @@ function classifyGitSubcommand(sub: string, rest: string[]): CommandMatch | unde
       return rest.length > 0 ? leaving("switch") : undefined;
     case "branch": {
       if (hasAny(rest, "-D") || (hasAny(rest, "--delete", "-d") && hasAny(rest, "--force", "-f"))) return destructive("branch force-delete");
+      // `-f` and `-C` point an existing branch, possibly main, somewhere else.
+      if (hasAny(rest, "-f", "--force")) return leaving("branch --force moves a branch");
+      if (hasAny(rest, "-C")) return leaving("branch -C overwrites a branch");
       // One name renames the current branch, which may be main or master.
       const names = rest.filter((a) => !a.startsWith("-"));
       const renames = hasAny(rest, "--move") || hasShortFlag(rest, "m") || hasShortFlag(rest, "M");
@@ -566,6 +597,21 @@ function classifyGitSubcommand(sub: string, rest: string[]): CommandMatch | unde
     }
     case "commit":
       return { kind: CommandKind.COMMIT, reason: hasAny(rest, "--amend") ? "git commit --amend" : "git commit" };
+    case "fetch":
+    case "pull": {
+      const refspec = refspecWithDestination(rest);
+      return refspec ? leaving(`${sub} writes a local branch (${refspec})`) : undefined;
+    }
+    // Pushes under another name.
+    case "send-pack":
+    case "http-push":
+      return { kind: CommandKind.REMOTE, reason: `git ${sub}` };
+    case "subtree":
+      return rest.includes("push") ? { kind: CommandKind.REMOTE, reason: "git subtree push" } : undefined;
+    case "svn":
+      return rest[0] === "dcommit" ? { kind: CommandKind.REMOTE, reason: "git svn dcommit" } : undefined;
+    case "p4":
+      return rest[0] === "submit" ? { kind: CommandKind.REMOTE, reason: "git p4 submit" } : undefined;
     default:
       return undefined;
   }
@@ -628,13 +674,31 @@ const SQL_PATTERNS: Array<[RegExp, string]> = [
   [/\bFLUSH(ALL|DB)\b/i, "Redis flush"],
 ];
 
-function classifySegment(rawArgv: string[], before: string, depth: number): CommandAnalysis {
+const DIRECTORY_COMMANDS = new Set(["cd", "pushd", "popd"]);
+
+/**
+ * Follows a `cd`, `pushd` or `popd` in `ctx`. The folder it moves to is the one relative targets are read from; where it cannot be told
+ * (`cd` alone, `cd -`, `popd`, `pushd +1`) it is written as the shell would know it (`~`, `$OLDPWD`, `$DIRSTACK`), which is never inside the project.
+ */
+function changeDirectory(name: string, args: string[], ctx: Context): void {
+  const words = args.filter((a) => a === "-" || !a.startsWith("-") || /^-\d+$/.test(a));
+  const target = words[0];
+  let dir: string;
+  if (name === "popd" || (name === "pushd" && (target === undefined || /^[+-]\d+$/.test(target)))) dir = "$DIRSTACK";
+  else if (target === undefined) dir = "~";
+  else if (target === "-") dir = "$OLDPWD";
+  else dir = isAbsolute(target) || /^[~$]/.test(target) ? target : join(ctx.dir || ".", target);
+  ctx.dir = dir;
+  if (!ctx.left && !ctx.stays?.(dir)) ctx.left = [name, ...args].join(" ");
+}
+
+function classifySegment(rawArgv: string[], before: string, depth: number, ctx: Context): CommandAnalysis {
   const { argv, privileged, viaXargs, assignments, script: splitScript } = unwrap(rawArgv);
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
   if (privileged) matches.push({ kind: CommandKind.PRIVILEGED, reason: "elevated privileges (sudo)" });
   if (splitScript) {
-    const nested = analyze(splitScript, depth + 1);
+    const nested = analyze(splitScript, depth + 1, ctx);
     matches.push(...nested.matches);
     writes.push(...nested.writes);
   }
@@ -647,11 +711,16 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
   const name = basename(argv[0]!);
   const args = argv.slice(1);
 
+  if (DIRECTORY_COMMANDS.has(name)) {
+    changeDirectory(name, args, ctx);
+    return { matches, writes };
+  }
+
   if (SHELLS.has(name) || name === "eval") {
     const scriptIndex = name === "eval" ? 0 : args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a));
     const script = name === "eval" ? args.join(" ") : scriptIndex >= 0 ? args[scriptIndex + 1] : undefined;
     if (script) {
-      const nested = analyze(script, depth + 1);
+      const nested = analyze(script, depth + 1, ctx);
       matches.push(...nested.matches);
       writes.push(...nested.writes);
     } else if (before === "|") {
@@ -668,7 +737,7 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
       match = classifyRm(args, viaXargs);
       break;
     case "git":
-      matches.push(...classifyGit(args, assignments));
+      matches.push(...classifyGit(args, assignments, ctx.left));
       break;
     case "gh":
       match = classifyGh(args);
@@ -756,21 +825,24 @@ function classifySegment(rawArgv: string[], before: string, depth: number): Comm
   return { matches, writes };
 }
 
-function analyze(command: string, depth: number): CommandAnalysis {
+/** A redirect target read from the folder the line has moved to. */
+const fromDirectory = (target: string, ctx: Context) => (ctx.dir === "" || isAbsolute(target) || /^[~$]/.test(target) ? target : join(ctx.dir, target));
+
+function analyze(command: string, depth: number, ctx: Context): CommandAnalysis {
   if (depth > MAX_DEPTH) return { matches: [UNREADABLE], writes: [] };
   const tokens = tokenize(blankConditionals(blankHeredocs(command)));
   if (!tokens) return { matches: [UNREADABLE], writes: [] };
   const matches: CommandMatch[] = [];
   const writes: string[] = [];
   for (const segment of tokens.segments) {
-    const found = classifySegment(segment.argv, segment.before, depth);
+    const found = classifySegment(segment.argv, segment.before, depth, ctx);
     matches.push(...found.matches);
     writes.push(...found.writes);
     // `>&1`, `2>&-`: a descriptor, not a file.
-    for (const { op, target } of segment.redirects) if (!(op.endsWith("&") && /^(\d+|-)$/.test(target))) writes.push(target);
+    for (const { op, target } of segment.redirects) if (!(op.endsWith("&") && /^(\d+|-)$/.test(target))) writes.push(fromDirectory(target, ctx));
   }
   for (const body of tokens.nested) {
-    const found = analyze(body, depth + 1);
+    const found = analyze(body, depth + 1, ctx);
     matches.push(...found.matches);
     writes.push(...found.writes);
   }
@@ -789,7 +861,7 @@ export function simpleCommands(command: string): SimpleCommand[] | null {
   return tokens ? tokens.segments.map(({ argv, redirects }) => ({ argv, redirected: redirects.length > 0 })) : null;
 }
 
-/** The risky parts of a shell command and the files it redirects output to. */
-export function analyzeCommand(command: string): CommandAnalysis {
-  return analyze(command, 0);
+/** The risky parts of a shell command and the files it redirects output to (relative ones as seen from the session's folder). */
+export function analyzeCommand(command: string, options: AnalyzeOptions = {}): CommandAnalysis {
+  return analyze(command, 0, { ...options, dir: "" });
 }

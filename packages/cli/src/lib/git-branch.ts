@@ -29,10 +29,21 @@ export function gitSucceeds(cwd: string, ...args: string[]): boolean {
   return run(cwd, args)?.code === 0;
 }
 
+// Full ref names, not `--short`: when a tag shares the branch's name, `--short` disambiguates `main` to `heads/main`.
+const HEADS = "refs/heads/";
+const ORIGIN = "refs/remotes/origin/";
+
+/** The branch name of a full ref (`refs/heads/feat/x` is `feat/x`), or null when the ref is not under `prefix`. */
+const refName = (ref: string | null | undefined, prefix: string) => (ref?.startsWith(prefix) && ref.length > prefix.length ? ref.slice(prefix.length) : null);
+
 /** The branch `origin/HEAD` points at in the repository at `dir` (`origin/develop` is `develop`), or null when it is not set. */
 export function originDefaultBranch(dir: string): string | null {
-  const origin = git(dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
-  return origin ? origin.replace(/^origin\//, "") : null;
+  return refName(git(dir, "symbolic-ref", "refs/remotes/origin/HEAD"), ORIGIN);
+}
+
+/** The branch checked out at `dir`, or null on a detached HEAD, outside a repository or on any error. */
+export function currentBranch(dir: string): string | null {
+  return refName(git(dir, "symbolic-ref", "-q", "HEAD"), HEADS);
 }
 
 /**
@@ -42,13 +53,14 @@ export function originDefaultBranch(dir: string): string | null {
 export function branchState(cwd: string): BranchState {
   try {
     // `-q`: a detached HEAD exits 1 without a message; a fatal error (not a repository) exits 128.
-    const head = run(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    const head = run(cwd, ["symbolic-ref", "-q", "HEAD"]);
     if (!head) return { kind: "none", reason: "the branch cannot be read" };
     if (head.code === 1) return { kind: "none", reason: "detached HEAD" };
     if (head.code !== 0 || !head.out) {
       return { kind: "none", reason: /not a git repository/i.test(head.err) ? "not a git repository" : "the branch cannot be read" };
     }
-    const branch = head.out;
+    const branch = refName(head.out, HEADS);
+    if (!branch) return { kind: "none", reason: "the branch cannot be read" };
     const defaultBranch = originDefaultBranch(cwd);
     const isDefault = defaultBranch ? branch === defaultBranch : branch === "main" || branch === "master";
     return isDefault ? { kind: "default", branch } : { kind: "feature", branch };

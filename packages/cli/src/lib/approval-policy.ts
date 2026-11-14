@@ -104,6 +104,21 @@ function insideProject(path: string, cwd: string): string | null {
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel;
 }
 
+/**
+ * Whether a `cd` to `dir` stays in the checkout at `cwd`: a folder inside the project with no other checkout (a nested repository,
+ * submodule or worktree, which has its own `.git`) on the way down.
+ */
+function staysInCheckout(dir: string, cwd: string): boolean {
+  const rel = insideProject(dir, cwd);
+  if (rel === null) return false;
+  let current = realpathSync(cwd);
+  for (const segment of rel.split("/").filter(Boolean)) {
+    current = join(current, segment);
+    if (existsSync(join(current, ".git"))) return false;
+  }
+  return true;
+}
+
 /** Why a write to `path` (`what`: "an edit" or "a redirect") must ask, or null when it may run. */
 function editProblem(path: string, cwd: string, what = "an edit"): string | null {
   const rel = insideProject(path, cwd);
@@ -143,7 +158,7 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
     return problem ? askFor([problem]) : ALLOW;
   }
 
-  const { matches, writes } = analyzeCommand(call.command);
+  const { matches, writes } = analyzeCommand(call.command, { stays: (dir) => staysInCheckout(dir, cwd) });
   const catastrophic = matches.find((match) => match.hardDeny);
   if (catastrophic) return { action: "block", reason: `marcsh: ${catastrophic.reason} is never allowed` };
   const effective = effectiveMode(mode, cwd, branch);

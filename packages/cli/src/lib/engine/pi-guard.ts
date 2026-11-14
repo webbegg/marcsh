@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { decide, type BranchInfo, type Decision } from "../../../plugin/hooks/guard-lib";
-import { git, gitSucceeds, originDefaultBranch } from "../git-branch";
+import { currentBranch, gitSucceeds, originDefaultBranch } from "../git-branch";
 import type { ToolSource } from "./pi-permissions";
 
 export type { Decision };
@@ -11,7 +11,7 @@ export type Guard = (command: string, cwd: string) => Decision | null;
 // plugin/hooks/guard.ts is the Claude hook: it reads stdin when loaded, so its branch lookup cannot be imported and is repeated here (on the shared git helpers).
 function lookupBranch(cwd: string, dir: string | null): BranchInfo | null {
   const where = dir ? resolve(cwd, dir) : cwd;
-  const branch = git(where, "symbolic-ref", "--short", "HEAD");
+  const branch = currentBranch(where);
   if (!branch) return null;
   return {
     branch,

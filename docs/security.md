@@ -79,8 +79,9 @@ A worktree gives each feature its own folder and branch. Start one with `git wor
 On a feature branch:
 
 - Local commits: `auto` asks, `yolo` runs them.
-- Anything remote always asks, in both modes: any `git push`, `gh pr` and `gh issue` writes (`create`, `comment`, `review`, `edit`, `close`, `reopen`), and `gh api` writes.
-- Anything that leaves the branch always asks, in both modes: `git switch` and `git checkout` of a branch (also with `-c` or `-b`), git run in another directory (`git -C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`, or `GIT_DIR=` and `GIT_WORK_TREE=` set on the command), and `git worktree add` or `move`. A commit made in another directory counts as leaving the branch, not as a local commit.
+- Anything remote always asks, in both modes: any `git push` (also `git send-pack`, `git subtree push`, `git svn dcommit` and `git p4 submit`), `gh pr` and `gh issue` writes (`create`, `comment`, `review`, `edit`, `close`, `reopen`), and `gh api` writes.
+- Anything that leaves the branch always asks, in both modes: `git switch` and `git checkout` of a branch (also with `-c` or `-b`), git run in another directory (`git -C <dir>`, `--git-dir`, `--work-tree`, `-c core.worktree=…`, or `GIT_DIR=` and `GIT_WORK_TREE=` set on the command), `git worktree add` or `move`, and a `cd`, `pushd` or `popd` out of the checkout before a git command (into a nested repository or submodule too). Writing another branch counts as leaving it: a `git fetch` or `git pull` into a local branch (`git fetch origin main:main`), and `git branch -f` or `-C`. A commit made in another directory counts as leaving the branch, not as a local commit.
+- A git alias set on the command line (`git -c alias.p=push p`) asks, since it can stand for any command. Aliases from your git config are not read: `auto` and `yolo` judge such a command by its alias name.
 
 In every mode, these always ask. In `normal` the prompt is the one you already know, with "always allow" where it is offered today. In `auto` and `yolo` the prompt never offers "always allow" for them:
 
