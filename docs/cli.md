@@ -1,13 +1,18 @@
 # Command line
 
-marcsh starts the interface, or runs one turn without it. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`.
+marcsh starts the interface, runs one turn without it, or does one job and exits. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`. `marcsh <command> --help` prints the help of one command.
 
 ```
 marcsh [dir] [options]
 marcsh run [message...] [options]
+marcsh session list|delete|export ...
+marcsh models [--engine claude|pi]
+marcsh mcp list|add ...
+marcsh stats [--days N] [--json]
+marcsh upgrade [--version vX]
 ```
 
-A wrong option or value prints the error with the usage and exits with code `2`. `run` is a command only as the first word; to start the interface in a folder named `run`, write `marcsh ./run`. `--` ends the options, so what follows is plain words.
+A wrong option or value prints the error with the usage and exits with code `2`. `run`, `session`, `models`, `mcp`, `stats` and `upgrade` are commands only as the first word; to start the interface in a folder with one of these names, write `marcsh ./models`. `--` ends the options, so what follows is plain words.
 
 ## Start the interface
 
@@ -80,3 +85,78 @@ So a headless turn can read your project but cannot write files or run new comma
 | `1` | The turn failed (an error from the engine or the model, an unknown engine in the session, or the session could not be saved). |
 | `2` | Wrong usage: an unknown option or value, no message, an unknown session or agent. Nothing was started. |
 | `130` | `Ctrl+C` (or `SIGINT`) stopped the turn. marcsh saves what was said, with tools still running marked as interrupted, and prints no reply. `SIGTERM` and `SIGHUP` do the same with `143` and `129`. |
+
+## Sessions: `marcsh session`
+
+The saved sessions (the ones `/sessions` lists), from the shell. They use the same database as the interface, which `MARCSH_DB_PATH` moves (see [Configuration](configuration.md)).
+
+```
+marcsh session list [--json]
+marcsh session delete <id>
+marcsh session export <id> [--format md|json] [-o file] [--force]
+```
+
+- **`list`** prints one line per session, newest first: the id, the time of the last update, the project folder and the title. `--json` prints an array of `{ id, title, cwd, createdAt, updatedAt }` with ISO dates instead. With no session it prints `No sessions.` (or `[]`).
+- **`delete <id>`** deletes that one session for good, without asking. Its trust decisions and permission rules stay. An id nobody has prints `marcsh: no session with id "<id>"` and exits with `1`.
+- **`export <id>`** prints the session as a transcript on standard output: markdown by default, or `--format json`. It is the same transcript as `/export`: thinking is left out and tool calls are summarized. An unknown id exits with `1`.
+  - `-o <file>`, `--output <file>` writes it to a file and prints `Wrote <file>` instead. If the file exists, marcsh refuses and exits with `1`; `--force` replaces it. If `-o` names a folder, the file inside it is called `marcsh-<first 8 characters of the id>-<date>.<md|json>`.
+
+Ids must be written in full, as `list` prints them.
+
+## Models: `marcsh models`
+
+`marcsh models` lists the models you can choose, by engine.
+
+```
+marcsh models [--engine claude|pi]
+```
+
+- **Claude** has three aliases: `opus`, `sonnet` and `haiku`.
+- **pi** has the models of its catalogue and your `models.json`, as `provider/id` followed by the name. A `*` marks the models whose provider has credentials (a login made with `/login`, or an environment variable); the model dialog in the interface lists only those. See [Engines and models](engines-and-models.md).
+
+With `--engine` only that engine is listed, one model per line. Without it both are, under their names. If pi's models cannot be read, marcsh prints why on standard error, still lists the Claude models and exits with `1`.
+
+## MCP servers: `marcsh mcp`
+
+The MCP servers of the pi engine (see [Configuration](configuration.md#mcp-servers)). marcsh does not configure MCP servers for Claude.
+
+```
+marcsh mcp list
+marcsh mcp add <name> [--force] -- <command...>
+```
+
+- **`list`** prints the servers of `~/.marcsh/agent/mcp.json` (or `$MARCSH_AGENT_DIR/mcp.json`), then, when the current folder has a `.pi/mcp.json`, the servers of that file under the label `project`, with `trusted` or `not trusted: pi does not load it`: pi reads a project's file only for a project you trusted (see [Security](security.md)). Each server shows the command with its arguments, or its address, and `(disabled)` when it is turned off. Environment variables, headers, and the user name, password and query of an address are not shown. A file that cannot be read is reported on standard error and `list` exits with `1`.
+- **`add <name> -- <command...>`** adds a local server to the global file, creating the file and its folder when needed. Everything after `--` is the command and its arguments, so `marcsh mcp add fs -- npx -y @modelcontextprotocol/server-filesystem .` writes `{ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }`. The other servers and settings in the file are kept, and so are its indentation and permissions (a new file is readable by you only). The file is replaced in one step, so an interrupted `add` leaves the old file. The name takes letters, digits, `_` and `-`. A name that is already there prints an error and exits with `1`; `--force` replaces that server. A name that differs from another only in `-` and `_` is refused, because their tools would share a name. A file that is not valid JSON is not changed.
+
+The change applies from the next message in a pi session. To add a remote server or set `env`, `exposure` and the other settings, edit the file as described in [Configuration](configuration.md#mcp-servers).
+
+## Usage: `marcsh stats`
+
+`marcsh stats` adds up what your sessions used, per model.
+
+```
+marcsh stats [--days N] [--json]
+```
+
+It prints one row per model and a `Total` row: the sessions that used the model, the messages sent to it and its replies, the input and output tokens, the cache tokens (read and write) and the cost. A cost of `-` means no reply reported one. A message counts for the model it names, and messages that name none count as `unknown`. A session that used two models is in both rows and counted once in the total. Tokens and cost are what the engines reported, so sessions from before they were recorded show none.
+
+| Option | What it does |
+| --- | --- |
+| `--days <N>` | Only sessions updated in the last `N` days (a whole number above 0). Without it, every session. |
+| `--json` | Prints `{ "days", "models": [...], "totals": {...} }` instead of the table. Each row has `sessions`, `messages`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens` and `costUsd` (`null` when unknown); the model rows also have `model`. |
+
+## Update: `marcsh upgrade`
+
+`marcsh upgrade` runs the official installer again, which installs the latest release over the current one.
+
+```
+marcsh upgrade [--version vX]
+```
+
+marcsh downloads `https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh` to a temporary file, prints the address, and runs it with `bash` in your terminal, so you see its output. The installer's exit code is the exit code of `marcsh upgrade`. Nothing from the network is piped into a shell: the whole file is downloaded first and must start with `#!` and be under 1 MiB, and the file is removed afterwards. The installer is the same one the [getting started](getting-started.md) page describes; it checks the download of the release itself before it unpacks it.
+
+| Option | What it does |
+| --- | --- |
+| `--version <vX>` | Installs that release (for example `v0.2.0` or `0.2.0`) instead of the latest, by setting `MARCSH_VERSION` for the installer. Here `--version` takes a value; it does not print marcsh's version. |
+
+`MARCSH_INSTALLER_URL` replaces the address (for a mirror or a test). It must be `https://`; plain `http://` is accepted only for `127.0.0.1` and `localhost`. A download that fails (a network error, an HTTP error, something that is not a script) prints the reason and exits with `1` without running anything. `MARCSH_VERSION` and `MARCSH_INSTALL_BASE_URL` in your environment reach the installer too.

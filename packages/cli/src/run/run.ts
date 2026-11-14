@@ -1,4 +1,5 @@
 import type { RunArgs } from "../cli-args";
+import { processIo } from "../cli/io";
 import { agentModelFits, findAgent, loadAgents, type Agent } from "../lib/agents";
 import type { ChatMessage } from "../lib/chat-types";
 import { getEngine, getPiRuntime, unknownEngine } from "../lib/engine";
@@ -72,7 +73,8 @@ export function finalText(messages: readonly ChatMessage[]): string {
  * can be resumed there. Nobody is there to answer, so every ask is declined (see `docs/cli.md`).
  */
 export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = {}): Promise<number> {
-  const { io = { stdout: (text) => void process.stdout.write(text), stderr: (text) => void process.stderr.write(text) }, registerTurn = registerQuitTurn } = deps;
+  // processIo writes synchronously: the command ends with process.exit, which would cut a long reply still queued for a pipe.
+  const { io = processIo, registerTurn = registerQuitTurn } = deps;
   const cwd = options.cwd ?? process.cwd();
   const usage = (message: string) => {
     io.stderr(`marcsh: ${message}\n`);
