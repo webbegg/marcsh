@@ -23,9 +23,11 @@ import { usePromptConfig } from "../providers/prompt-config";
 import { Mode } from "../lib/modes";
 import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
+import type { ChatMessage } from "../lib/chat-types";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
+import { appendHistory, keepDraft, readHistory, recallDraft } from "../lib/prompt-history";
 import { attachInput, clearKeyActivity, handOffDraft, mergeGivenBack, noteKeyActivity, onGivenBack, setDraft, setInputTakesKeys, takeHandOffDraft } from "../lib/prompt-lock";
 
 const MAX_VISIBLE_MENTIONS = 8;
@@ -272,6 +274,10 @@ type Props = {
   engine?: string;
   /** Takes keys but never sends: Enter and the `/` commands do nothing, the text stays (the new-session screen, where there is no prompt yet). */
   typeOnly?: boolean;
+  /** Keeps the unsent text under this key (a session's ID) when the input unmounts and restores it when an input with the same key mounts. */
+  draftKey?: string;
+  /** The session's messages: the status line shows the usage their replies reported. */
+  messages?: ChatMessage[];
 };
 
 /**
@@ -304,7 +310,20 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false }: Props) {
+type HistoryWalk = {
+  /** The prompts sent before, oldest first, read when the walk starts. */
+  entries: string[];
+  /** The entry on show; -1 when not walking. */
+  index: number;
+  /** What was typed before the walk started: Down past the newest entry brings it back. */
+  draft: string;
+  /** The text the walk put in the textarea: it is the walk's own, not typing. */
+  shown: string | null;
+};
+
+const idleWalk = (): HistoryWalk => ({ entries: [], index: -1, draft: "", shown: null });
+
+export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages }: Props) {
   const { agent, mode, cycleAgent, selectAgent, reloadAgents, setModel, defaultEngine, setDefaultEngine, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const textareaRef = useRef<TextareaRenderable>(null);
@@ -313,6 +332,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const mentionScrollRef = useRef<ScrollBoxRenderable>(null);
   // What text the engine did not take put at the front of the input (see `mergeGivenBack`); forgotten once the input is empty.
   const givenBackRef = useRef("");
+  const historyWalkRef = useRef<HistoryWalk>(idleWalk());
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
 
   const renderer = useRenderer();
   const navigate = useNavigate();
@@ -351,7 +373,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     handleContentChange,
     resolveCommand,
     setSelectedIndex,
-  } = useCommandMenu(engineId);
+  } = useCommandMenu(engineId, cwd);
 
   const showMentionMenu = activeMention !== null;
 
@@ -398,6 +420,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     setDraft(renderer, text.length > 0);
     if (text.length === 0) givenBackRef.current = "";
+    // The text of a history walk is not typing: the menus stay closed, so Up and Down keep walking. Any other change ends the walk.
+    const walk = historyWalkRef.current;
+    if (walk.shown !== null && text === walk.shown) return;
+    historyWalkRef.current = idleWalk();
     handleContentChange(textarea.plainText);
     syncMentionMenu(text, textarea.cursorOffset);
   }, [handleContentChange, syncMentionMenu, renderer]);
@@ -405,8 +431,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   // A screen stays mounted a few ms after it navigates (the home screen after Enter, the new-session screen), and keys typed in that
   // gap land in its bar. Every bar hands the text it still holds over when it unmounts (a layout cleanup, while the textarea is still
   // there), and the next bar takes it on mount. A bar empties its textarea when it sends, so a sent message is never handed over.
+  // A bar with a draft key keeps its text under that key instead (it belongs to that session, not to the next screen).
   useLayoutEffect(() => {
     return () => {
+      if (draftKeyRef.current !== undefined) return;
       try {
         handOffDraft(renderer, textareaRef.current?.plainText ?? "");
       } catch {
@@ -421,13 +449,39 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const textarea = textareaRef.current;
     if (!textarea) return;
     const held = textarea.plainText;
-    const text = takeHandOffDraft(renderer) + held;
+    const text = (draftKey === undefined ? "" : recallDraft(draftKey)) + takeHandOffDraft(renderer) + held;
     if (text === held) return;
     textarea.setText(text);
     textarea.cursorOffset = text.length;
     setDraft(renderer, text.length > 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
   }, []);
+
+  // The unsent text of a keyed bar is kept when the bar unmounts, or when its key changes (the same bar moving to another session).
+  useLayoutEffect(() => {
+    if (draftKey === undefined) return;
+    return () => {
+      try {
+        keepDraft(draftKey, textareaRef.current?.plainText ?? "");
+      } catch {
+        // The whole screen is going away (the renderer destroyed the textarea first): the text is lost with it.
+      }
+    };
+  }, [draftKey]);
+
+  // A bar that moves to another key shows that key's draft (the first run is the mount, which took it above).
+  const shownDraftKeyRef = useRef(draftKey);
+  useLayoutEffect(() => {
+    if (shownDraftKeyRef.current === draftKey) return;
+    shownDraftKeyRef.current = draftKey;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const text = draftKey === undefined ? "" : recallDraft(draftKey);
+    historyWalkRef.current = idleWalk();
+    textarea.setText(text);
+    textarea.cursorOffset = text.length;
+    setDraft(renderer, text.length > 0);
+  }, [draftKey, renderer]);
 
   // A prompt that opens while the user is composing here opens locked (see prompt-lock). Keys can reach a new bar before this runs
   // (the hand-off from the home screen), so it takes the draft from the textarea and keeps the recent keys.
@@ -484,6 +538,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const handleTextareaCursorChange = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
+    if (historyWalkRef.current.shown === textarea.plainText) return;
 
     syncMentionMenu(textarea.plainText, textarea.cursorOffset);
   }, [syncMentionMenu]);
@@ -530,6 +585,54 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     [resolveCommand, handleCommand, typeOnly],
   );
 
+  // Up on the first line goes to an older prompt, Down on the last line to a newer one (the typed text is the newest). Returns
+  // whether the key was used: elsewhere in the text the arrows move the cursor as usual.
+  const walkHistory = useCallback((direction: "up" | "down"): boolean => {
+    const textarea = textareaRef.current;
+    if (!textarea) return false;
+    const walk = historyWalkRef.current;
+
+    const show = (text: string, cursor: "start" | "end") => {
+      walk.shown = text;
+      textarea.setText(text);
+      textarea.cursorOffset = cursor === "start" ? 0 : text.length;
+    };
+
+    if (direction === "up") {
+      if (textarea.visualCursor.visualRow > 0) return false;
+      if (walk.index < 0) {
+        const entries = readHistory().map((entry) => entry.text);
+        if (entries.length === 0) return false;
+        walk.entries = entries;
+        walk.draft = textarea.plainText;
+        walk.index = entries.length;
+      }
+      if (walk.index > 0) {
+        walk.index -= 1;
+        show(walk.entries[walk.index]!, "start");
+      }
+      return true;
+    }
+
+    if (walk.index < 0 || textarea.visualCursor.visualRow < textarea.virtualLineCount - 1) return false;
+    walk.index += 1;
+    if (walk.index < walk.entries.length) {
+      show(walk.entries[walk.index]!, "end");
+    } else {
+      const draft = walk.draft;
+      historyWalkRef.current = idleWalk();
+      textarea.setText(draft);
+      textarea.cursorOffset = draft.length;
+    }
+    return true;
+  }, []);
+
+  // A prompt the engine or a command took goes into the history, and ends any walk.
+  const rememberPrompt = useCallback((text: string) => {
+    historyWalkRef.current = idleWalk();
+    appendHistory({ text, cwd });
+  }, [cwd]);
+
   const handleSubmit = useCallback((queue = false) => {
     if (disabled || typeOnly) return;
 
@@ -543,6 +646,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const queuedByCommand = turnInput.active || turnInput.starting ? QUEUE_COMMAND.exec(text) : null;
     if (queuedByCommand) {
       if (!turnInput.starting && turnInput.queue(queuedByCommand[1]!.trim())) {
+        rememberPrompt(text);
         clearKeyActivity(renderer);
         textarea.setText("");
       }
@@ -553,6 +657,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const ownNames = COMMANDS.map((command) => command.name);
     if (slashInputKind(text, ownNames) === "marcsh") {
       const name = text.split(/\s/)[0]!;
+      rememberPrompt(text);
       handleCommand(COMMANDS.find((command) => command.value === name), text.slice(name.length).trim());
       return;
     }
@@ -561,15 +666,17 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (turnInput.starting) return;
     if (turnInput.active) {
       if (!(queue ? turnInput.queue(text) : turnInput.steer(text))) return;
+      rememberPrompt(text);
       clearKeyActivity(renderer);
       textarea.setText("");
       return;
     }
     // The text is gone from the input before anything can navigate away: what the bar hands over on unmount is only what is typed after.
+    rememberPrompt(text);
     clearKeyActivity(renderer);
     textarea.setText("");
     onSubmit(text);
-  }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer])
+  }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer, rememberPrompt])
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {
@@ -639,6 +746,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (key.name === "tab") {
       key.preventDefault();
       if (!typeOnly) void warnAboutAgent(cycleAgent());
+    } else if (!typeOnly && (key.name === "up" || key.name === "down") && !key.shift && !key.ctrl && !key.meta && !key.option && !key.super && !key.hyper) {
+      // Only here, on the base layer: while a menu is open, Up and Down belong to the menu.
+      if (walkHistory(key.name)) key.preventDefault();
     } else if ((turnInput.active || turnInput.starting) && (key.name === "return" || key.name === "enter") && (key.meta || key.option) && !key.shift) {
       key.preventDefault();
       handleSubmit(true);
@@ -768,7 +878,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} hint={turnHint(turnInput, disabled)} />
+          <StatusBar engine={engineId} messages={messages} hint={turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>

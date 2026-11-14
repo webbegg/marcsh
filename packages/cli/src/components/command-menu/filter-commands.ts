@@ -1,10 +1,16 @@
 import type { Command } from "./types";
 import { COMMANDS } from "./commands";
 import { mergeCommands, type ClaudeCommand } from "../../lib/claude-commands";
+import type { UserCommand } from "../../lib/user-commands";
 
-/** Marcsh's commands, then the given engine's commands (marcsh wins name clashes). Commands without a source are Claude's. */
-export function getMenuCommands(claude: ClaudeCommand[]): Command[] {
-  return mergeCommands(COMMANDS, claude, (command) => ({
+/**
+ * Marcsh's commands, then the user's and the given engine's commands (marcsh wins name clashes, then the user's own).
+ * Commands without a source are Claude's.
+ */
+export function getMenuCommands(claude: ClaudeCommand[], user: UserCommand[] = []): Command[] {
+  const own = new Set(user.map((command) => command.name));
+  const fromUser = user.map((command) => ({ name: command.name, description: command.description, argumentHint: "", source: command.source }));
+  return mergeCommands(COMMANDS, [...fromUser, ...claude.filter((command) => !own.has(command.name))], (command) => ({
     name: command.name,
     description: command.description,
     value: `/${command.name}`,

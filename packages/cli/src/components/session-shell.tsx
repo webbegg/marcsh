@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { InputBar } from "./input-bar";
 import { Spinner } from "./spinner";
 import { usePromptConfig } from "../providers/prompt-config";
+import type { ChatMessage } from "../lib/chat-types";
 
 type Props = {
   children?: ReactNode;
@@ -16,6 +17,10 @@ type Props = {
   engine?: string;
   /** The input takes keys but never sends (see InputBar). */
   inputTypeOnly?: boolean;
+  /** Keeps the input's unsent text under this key (see InputBar). */
+  draftKey?: string;
+  /** The session's messages, for the usage in the status line. */
+  messages?: ChatMessage[];
 };
 
 export function SessionShell({
@@ -27,6 +32,8 @@ export function SessionShell({
   cwd,
   engine,
   inputTypeOnly = false,
+  draftKey,
+  messages,
 }: Props) {
   const { mode } = usePromptConfig();
 
@@ -50,6 +57,8 @@ export function SessionShell({
           cwd={cwd}
           engine={engine}
           typeOnly={inputTypeOnly}
+          draftKey={draftKey}
+          messages={messages}
         />
       </box>
       <box

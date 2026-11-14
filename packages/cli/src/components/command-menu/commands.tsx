@@ -192,3 +192,6 @@ export const COMMANDS: Command[] = [
     },
   },
 ];
+
+/** Marcsh's own command names: a user's command never takes one. */
+export const COMMAND_NAMES = COMMANDS.map((command) => command.name);
