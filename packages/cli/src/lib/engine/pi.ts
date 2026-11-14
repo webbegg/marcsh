@@ -266,7 +266,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
@@ -385,6 +385,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         planMode: mode === Mode.PLAN,
         guard: options.guard,
         approvalMode,
+        currentApprovalMode,
       };
       // Plan mode stays read-only whatever the approval mode, so it gets no mode line. The line says whether the mode is active or paused on the branch the turn starts on; each call reads the branch again.
       const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, () => branchState(cwd));

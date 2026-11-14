@@ -109,6 +109,9 @@ const NOTHING_QUEUED: QueuedInput = { steering: [], followUp: [] };
 export function useChat(session: StoredSession, engine: Engine = claudeEngine, options: ChatOptions = {}) {
   // The mode in force when a turn starts; outside a provider (tests) it is normal.
   const approvalMode = useApprovalMode();
+  // Read by the engine when each tool call is decided, so a /permissions switch during a turn applies to the next call.
+  const approvalModeRef = useRef(approvalMode);
+  approvalModeRef.current = approvalMode;
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages);
   const [status, setStatus] = useState<ChatStatus>("ready");
   const [error, setError] = useState<string | null>(null);
@@ -286,7 +289,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             prompt: userText,
             cwd: session.cwd,
             mode,
-            approvalMode,
+            approvalMode: approvalModeRef.current,
+            currentApprovalMode: () => approvalModeRef.current,
             model,
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
@@ -324,7 +328,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         finishTurn();
       }
     },
-    [session.id, session.cwd, session.engine, engine, approvalMode, updateMessages, updateStatus],
+    [session.id, session.cwd, session.engine, engine, updateMessages, updateStatus],
   );
 
   const interrupt = useCallback(() => {

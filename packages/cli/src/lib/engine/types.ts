@@ -71,6 +71,11 @@ export type TurnRequest = {
    * engine's own flow exactly as before (only catastrophic commands are blocked).
    */
   approvalMode?: ApprovalMode;
+  /**
+   * Reads the session's approval mode at the moment a tool call is decided, so a switch with /permissions during the turn applies to every
+   * later call (also in Task children). Absent: `approvalMode` for the whole turn. `approvalMode` still feeds the system-prompt mode line.
+   */
+  currentApprovalMode?: () => ApprovalMode;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
   /**

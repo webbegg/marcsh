@@ -751,6 +751,12 @@ function readOptions(args: string[], spec: ValueSpec): { words: string[]; values
   return { words, values, flags };
 }
 
+/** `<dest>/<basename(source)>` for every source: where a copy or move lands when `dest` is a folder (and that name may be a link). */
+function intoFolder(dest: string, sources: string[]): string[] {
+  const folder = dest.endsWith("/") ? dest : `${dest}/`;
+  return sources.map((source) => `${folder}${baseName(source)}`);
+}
+
 /** The files a program writes, moves or deletes because it was given them; empty for programs it does not know. */
 function fileOperands(name: string, args: string[]): string[] {
   switch (name) {
@@ -759,15 +765,17 @@ function fileOperands(name: string, args: string[]): string[] {
     case "install": {
       const { words, values, flags } = readOptions(args, { short: "tSmogT", long: ["--target-directory", "--suffix", "--mode", "--owner", "--group"] });
       const target = [...(values.get("t") ?? []), ...(values.get("--target-directory") ?? [])];
-      if (target.length > 0) return target;
+      if (target.length > 0) return [...target, ...target.slice(-1).flatMap((dest) => intoFolder(dest, words))];
       if (name === "install" && flags.some((f) => f === "-d" || f === "--directory" || (/^-[^-]/.test(f) && f.includes("d")))) return words;
       // `ln -s target` alone makes the link in the current folder, under the target's name.
       if (name === "ln" && words.length === 1) return [baseName(words[0]!)];
-      return words.length >= 2 ? [words.at(-1)!] : [];
+      return words.length >= 2 ? [words.at(-1)!, ...intoFolder(words.at(-1)!, words.slice(0, -1))] : [];
     }
     case "mv": {
       const { words, values } = readOptions(args, { short: "tS", long: ["--target-directory", "--suffix"] });
-      return [...words, ...(values.get("t") ?? []), ...(values.get("--target-directory") ?? [])];
+      const target = [...(values.get("t") ?? []), ...(values.get("--target-directory") ?? [])];
+      const landing = target.length > 0 ? intoFolder(target.at(-1)!, words) : words.length >= 2 ? intoFolder(words.at(-1)!, words.slice(0, -1)) : [];
+      return [...words, ...target, ...landing];
     }
     case "tee":
       return readOptions(args, { long: ["--output-error"] }).words;
