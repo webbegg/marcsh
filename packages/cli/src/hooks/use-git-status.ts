@@ -9,13 +9,17 @@ type Options = {
   intervalMs?: number;
 };
 
+/** git's answer, or none while `MARCSH_GIT_STATUS=off` (the test preload sets it, so screens tested without a reader never spawn git). */
+const defaultRead = (cwd: string): Promise<GitStatus | null> =>
+  process.env.MARCSH_GIT_STATUS?.trim().toLowerCase() === "off" ? Promise.resolve(null) : readGitStatus(cwd);
+
 const same = (a: GitStatus | null, b: GitStatus | null) => a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed);
 
 /**
  * The git state of `cwd`, read on mount, every `intervalMs` and whenever `trigger` changes; null until known, outside a repo
  * and without a folder. One read runs at a time: asking during a read runs one more read after it, however often it was asked.
  */
-export function useGitStatus(cwd: string | undefined, { read = readGitStatus, trigger, intervalMs = 3000 }: Options = {}): GitStatus | null {
+export function useGitStatus(cwd: string | undefined, { read = defaultRead, trigger, intervalMs = 3000 }: Options = {}): GitStatus | null {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const readRef = useRef(read);
   readRef.current = read;

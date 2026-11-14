@@ -107,7 +107,8 @@ describe("/ps (S3)", () => {
     expect(list).toMatch(/running dev server echo OUT-LINE; echo ERR-LINE .* \ds 1 running of 1/);
 
     await press("RETURN");
-    const stdout = await frameWhere((current) => current.includes("OUT-LINE") && current.includes("full log"));
+    // The output can reach the view after its header (a slow machine): wait for the line itself, not only the command line.
+    const stdout = await frameWhere((current) => current.split("OUT-LINE").length === 3 && current.includes("full log"));
     expect(stdout).toContain("$ echo OUT-LINE");
     expect(stdout.split("OUT-LINE").length).toBe(3); // the command line and the output line
 
