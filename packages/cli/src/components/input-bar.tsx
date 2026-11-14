@@ -1023,7 +1023,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} messages={messages} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
+          <StatusBar engine={engineId} messages={messages} cwd={cwd} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>
