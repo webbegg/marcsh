@@ -159,14 +159,20 @@ describe("createBashTimeoutExtension", () => {
     expect(longer.executed).toEqual({ command: "sleep 30", timeout: 600 });
   });
 
-  test("a background call and other tools are left alone", () => {
+  test("a bash call that says background: true still gets the timeout: only bg_start and Task run in the background (S5)", () => {
     const { call } = loadBashExtension(500);
 
     const background = call({ command: "sleep 30", background: true });
+
+    expect(background.executed).toEqual({ command: "sleep 30", background: true, timeout: 0.5 });
+    expect(background.later).toEqual({ command: "sleep 30", background: true });
+  });
+
+  test("other tools are left alone", () => {
+    const { call } = loadBashExtension(500);
+
     const read = call({ path: "a.txt" }, "call-2", "read");
 
-    expect(background.executed).toEqual({ command: "sleep 30", background: true });
-    expect(background.later).toBe(background.executed);
     expect(read.executed).toEqual({ path: "a.txt" });
   });
 

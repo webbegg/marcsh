@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { compileMatcher, type HookCommand, type HooksConfig } from "../pack-hooks";
 import { claudeToolName, claudeToolNames } from "../tool-names";
+import { bgStartDir, hasWorkingDir, workingDirError } from "./pi-bg-tools";
 import type { NoticeLevel } from "./types";
 
 // Pack hooks on pi, which has none: marcsh runs an enabled pack's tool-call events itself, with Claude's hook contract (see the agent-workflows skill).
@@ -24,6 +25,16 @@ function toolInput(piName: string, input: Record<string, unknown>): Record<strin
 const BG_START = "bg_start";
 const hookName = (piName: string) => (piName === BG_START ? "Bash" : claudeToolName(piName));
 const hookNames = (piName: string) => (piName === BG_START ? ["Bash"] : claudeToolNames(piName));
+
+/**
+ * The directory the call's command runs in, where its hooks run and which their payload names as `cwd`: a `bg_start`'s
+ * `working_dir` (resolved like `bg_start` resolves it), the session's folder for anything else.
+ */
+function runDirOf(piName: string, input: Record<string, unknown>, cwd: string): { dir: string; error?: string } {
+  if (piName !== BG_START || !hasWorkingDir(input)) return { dir: cwd };
+  const dir = bgStartDir(cwd, input);
+  return { dir, error: workingDirError(dir) };
+}
 
 export type HookOutcome =
   | { kind: "exit"; code: number | null; stdout: string; stderr: string }
@@ -219,13 +230,14 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
   const post = plan(config, "PostToolUse");
   const failure = plan(config, "PostToolUseFailure");
   return (pi) => {
-    const execute = (hooks: HookCommand[], payload: Json) => {
+    // The hooks run where the call's command runs; the payload's `cwd` says so. CLAUDE_PROJECT_DIR stays the session's folder.
+    const execute = (hooks: HookCommand[], payload: Json & { cwd: string }) => {
       const input = JSON.stringify(payload);
       const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd };
       return Promise.all(
         hooks.map(async (hook) => ({
           hook,
-          outcome: await runHookCommand({ command: hook.command, cwd, env, input, timeoutMs: (hook.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS) * 1000, signal }),
+          outcome: await runHookCommand({ command: hook.command, cwd: payload.cwd, env, input, timeoutMs: (hook.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS) * 1000, signal }),
         })),
       );
     };
@@ -243,10 +255,13 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
         const name = hookName(event.toolName);
         const hooks = selected(pre, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
+        const run = runDirOf(event.toolName, event.input, cwd);
+        // The call cannot run there, so there is nothing to check: it is an error before anything runs.
+        if (run.error) return { block: true, reason: run.error };
         try {
           const results = await execute(hooks, {
             session_id: sessionId(ctx),
-            cwd,
+            cwd: run.dir,
             hook_event_name: "PreToolUse",
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),
@@ -272,10 +287,11 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify }: 
         const name = hookName(event.toolName);
         const hooks = selected(event.isError ? failure : post, hookNames(event.toolName));
         if (hooks.length === 0) return undefined;
+        const run = runDirOf(event.toolName, event.input, cwd);
         try {
           const results = await execute(hooks, {
             session_id: sessionId(ctx),
-            cwd,
+            cwd: run.error ? cwd : run.dir,
             hook_event_name: eventName,
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),

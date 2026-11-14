@@ -1,8 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
+
+// Each test runs several turns with real git snapshots: up to ~5 s on a busy machine. A test that times out keeps running with its
+// act() open, and every act() after it in the process (the rest of the suite) then fails as overlapping.
+setDefaultTimeout(60_000);
 
 process.env.MARCSH_DB_PATH = ":memory:";
 // Never the real ~/.marcsh: not the preferences, and above all not the shadow repos, which hold copies of project files. The variables

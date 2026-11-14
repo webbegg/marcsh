@@ -75,7 +75,7 @@ It shows, from left to right:
 - The model. On Claude it is `opus`, `sonnet` or `haiku`. On pi it is `provider/model-id`.
 - The engine: `claude`, or `pi` with its version.
 - The usage, once the engine reports it: tokens in context, the share of the context window, the session cost, and the speed of the latest reply, for example `42.1k/200k (21%) · $0.34 · 42 tok/s`. The speed is the reply's average, so time spent in tools counts too.
-- The git branch and how many files changed, for example `main · 3 files changed`. A detached HEAD shows its short commit SHA. marcsh checks about every 3 seconds and after each tool call. Outside a git repo nothing is shown.
+- The git branch and how many files changed, for example `main · 3 files changed`. A detached HEAD shows its short commit SHA. marcsh checks about every 3 seconds and after each tool call. Outside a git repo nothing is shown, and `MARCSH_GIT_STATUS=off` turns it off.
 - On pi, while background terminals or subagents run, how many, for example `2 background terminals running · /ps`, `1 background subagent running · /subagents`, or `1 terminal, 2 subagents running · /ps /subagents`.
 - A hint, when the keys do something unusual right now.
 

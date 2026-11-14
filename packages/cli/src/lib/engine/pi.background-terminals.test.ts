@@ -9,6 +9,7 @@ import { terminalsFor } from "../background/session-terminals";
 import { Mode } from "../modes";
 import { openStorage } from "../storage";
 import { createPiEngine } from "./pi";
+import { createBackgroundTools } from "./pi-bg-tools";
 import { trustEveryProject } from "./test-trust";
 import type { PermissionAsk, TurnHost, TurnRequest } from "./types";
 
@@ -149,6 +150,48 @@ describe("background terminals in a pi turn (S1, S1a)", () => {
     await run(engine, model, { background: newHub().hub, deniedTools: ["bash"] }).turn.done;
     expect(names).toEqual([["bg_start", "bg_status", "bg_list", "bg_kill"], [], ["bg_status", "bg_list"], []]);
   }, 30000);
+
+  test("a bg_start into another repository on main is denied there, though a bash rule for the command is saved in the session folder (B1)", async () => {
+    const gitInit = (at: string, branch: string) => {
+      mkdirSync(at, { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "-q", "-b", branch], { cwd: at, stdout: "ignore", stderr: "ignore" }).exitCode).toBe(0);
+    };
+    gitInit(cwd, "feat/x");
+    const other = join(dir, "other");
+    gitInit(other, "main");
+    const command = "git -c user.email=a@b -c user.name=a commit --allow-empty -m PROBE";
+    const { hub } = newHub();
+    const rules = openStorage(":memory:");
+    rules.addPermissionRule({ cwd, toolName: "bash", command });
+    const results: string[][] = [];
+    const faux = fauxProvider({ models: [{ id: "faux-1" }], tokensPerSecond: 2000, tokenSize: { min: 1, max: 1 } });
+    const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
+    modelRuntime.registerNativeProvider(faux.provider);
+    faux.setResponses([
+      call("bg_start", { command, title: "c", working_dir: other }),
+      (context) => (results.push(toolResultTexts(context.messages)), fauxAssistantMessage([fauxText("ok")])),
+    ]);
+    const engine = createPiEngine({ agentDir, modelRuntime, permissionRules: rules, projectTrust: trustEveryProject });
+    const { turn, asks } = run(engine, "faux/faux-1", { background: hub });
+    await turn.done;
+    expect(asks).toEqual([]);
+    expect(results[0]![0]).toContain("marcsh: commits on main are blocked");
+    expect(terminalsFor(hub).list()).toEqual([]);
+    expect(Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: other, stdout: "ignore", stderr: "ignore" }).exitCode).not.toBe(0);
+  }, 20000);
+
+  test("bg_kill and bg_status of a terminal whose result the hub already handed on still show its output (V-A2: a duplicate, never a loss)", async () => {
+    const { hub, idle } = newHub();
+    const snapshot = terminalsFor(hub).start({ command: "echo TAIL-OUT", title: "tail", cwd });
+    await until(() => idle.length === 1);
+    const tools = createBackgroundTools({ hub, cwd });
+    const execute = (name: string, params: unknown) => tools.find((tool) => tool.name === name)!.execute("t1", params as never, undefined, undefined, undefined as never);
+    const texts = async (name: string, params: unknown) => ((await execute(name, params)) as { content: { text: string }[] }).content.map((block) => block.text).join("");
+    const killed = await texts("bg_kill", { ids: [snapshot.id] });
+    expect(killed).toContain("was already done");
+    expect(killed).toContain("TAIL-OUT");
+    expect(await texts("bg_status", { id: snapshot.id })).toContain("TAIL-OUT");
+  }, 20000);
 
   test("a bg_start a stored bash rule allows runs without asking", async () => {
     const { hub } = newHub();

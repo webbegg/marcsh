@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act, useState } from "react";
 import type { GitStatus } from "../lib/git-status";
 
@@ -134,5 +137,44 @@ describe("useGitStatus", () => {
     expect(counted).toEqual({ branch: "main", changed: 0 });
     expect(fake.calls.length).toBe(2);
     expect(latest).toBeNull();
+  });
+});
+
+function DefaultProbe(props: { cwd: string }) {
+  latest = useGitStatus(props.cwd, { intervalMs: 60_000 });
+  return <text>probe</text>;
+}
+
+// Screen tests render the status line in real folders (the home screen uses the process's own); they must not spawn git.
+describe("useGitStatus without a reader", () => {
+  const saved = process.env.MARCSH_GIT_STATUS;
+  let repo: string;
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), "marcsh-use-git-status-"));
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "trunk", repo]).exitCode).toBe(0);
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.MARCSH_GIT_STATUS;
+    else process.env.MARCSH_GIT_STATUS = saved;
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("the test preload turns git reading off", () => {
+    expect(saved).toBe("off");
+  });
+
+  test("MARCSH_GIT_STATUS=off reads nothing", async () => {
+    process.env.MARCSH_GIT_STATUS = "off";
+    await mount(<DefaultProbe cwd={repo} />);
+    await settle(300);
+    expect(latest).toBeNull();
+  });
+
+  test("otherwise it reads the folder with git", async () => {
+    delete process.env.MARCSH_GIT_STATUS;
+    await mount(<DefaultProbe cwd={repo} />);
+    const start = Date.now();
+    while (latest === null && Date.now() - start < 3000) await settle(25);
+    expect(latest).toEqual({ branch: "trunk", changed: 0 });
   });
 });
