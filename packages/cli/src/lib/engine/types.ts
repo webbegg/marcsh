@@ -1,3 +1,5 @@
+import { approvalModeLine, type ApprovalMode } from "../approval-policy";
+import { type BranchSource, resolveBranch } from "../git-branch";
 import type { AskQuestion } from "../ask-user-question";
 import type { Attachment } from "../attachments";
 import type { BackgroundHub } from "../background/hub";
@@ -7,7 +9,18 @@ import type { ClaudeCommand } from "../claude-commands";
 import type { ModeType } from "../modes";
 import type { ProjectTrustAsk, TrustAnswer } from "./pi-trust";
 
-export type PermissionDecision = "allow" | "always" | "deny";
+/**
+ * "Allow this program under this folder": allows the call, and every later one with the same program whose targets are inside the
+ * folder (a path rule, per project). Written `path:<dir>`, so a decision stays a plain string.
+ */
+export type PathAnswer = `path:${string}`;
+
+export type PermissionDecision = "allow" | "always" | "deny" | PathAnswer;
+
+export const pathAnswer = (dir: string): PathAnswer => `path:${dir}`;
+
+/** The folder of a path answer, or null for any other decision. */
+export const pathAnswerDir = (decision: PermissionDecision): string | null => (decision.startsWith("path:") ? decision.slice("path:".length) : null);
 
 /** A tool call the engine wants the user to approve. */
 export type PermissionAsk = {
@@ -20,6 +33,8 @@ export type PermissionAsk = {
   /** The ask must not be approvable by one keystroke: no one-key approve, no always-allow. */
   defaultToNo?: boolean;
   suppressAlwaysAllowRule?: boolean;
+  /** A shell command made of one path program: the folders (narrowest first) the user may allow it under. Offered even when `suppressAlwaysAllowRule` is set. */
+  pathRule?: { program: string; dirs: string[] };
 };
 
 export type EngineEvent =
@@ -61,6 +76,16 @@ export type TurnRequest = {
   model: string;
   /** The selected agent's prompt: added to the engine's own system prompt for this turn, never in place of it. */
   systemPromptAppend?: string;
+  /**
+   * The session's approval mode: what runs without asking, for the turn and the Task children it starts. Absent: normal, the
+   * engine's own flow exactly as before (only catastrophic commands are blocked).
+   */
+  approvalMode?: ApprovalMode;
+  /**
+   * Reads the session's approval mode at the moment a tool call is decided, so a switch with /permissions during the turn applies to every
+   * later call (also in Task children). Absent: `approvalMode` for the whole turn. `approvalMode` still feeds the system-prompt mode line.
+   */
+  currentApprovalMode?: () => ApprovalMode;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
   /**
@@ -96,6 +121,15 @@ export type CompactRequest = {
 
 /** What the engine reports of a compaction, each when it knows it. */
 export type CompactResult = { tokensBefore?: number; tokensAfter?: number };
+
+/**
+ * The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent.
+ * The line says whether auto and yolo are active or paused on `branch`; it is read only when there is a mode to describe.
+ */
+export function systemPromptWithMode(agentPrompt: string | undefined, approvalMode: ApprovalMode | undefined, branch: BranchSource): string | undefined {
+  const line = approvalMode && approvalMode !== "normal" ? approvalModeLine(approvalMode, resolveBranch(branch)) : undefined;
+  return [agentPrompt, line].filter(Boolean).join("\n\n") || undefined;
+}
 
 export type NoticeLevel = "info" | "warning" | "error";
 

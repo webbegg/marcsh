@@ -8,6 +8,7 @@ const { useChat } = await import("./use-chat");
 const { getStorage } = await import("../lib/storage");
 const { quitApp, quitEnv, resetQuit } = await import("../lib/quit");
 import type { Engine, TurnHost, TurnRequest } from "../lib/engine/types";
+import type { SnapshotStore, SnapshotStoreResult } from "../lib/snapshot";
 
 let latest: ReturnType<typeof useChat>;
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
@@ -50,14 +51,14 @@ function engineWithCleanup(cleanupMs: number) {
   return { engine, seen };
 }
 
-function Probe({ engine, id }: { engine: Engine; id: string }) {
-  latest = useChat(getStorage().getSession(id)!, engine);
+function Probe({ engine, id, snapshots }: { engine: Engine; id: string; snapshots?: SnapshotStoreResult }) {
+  latest = useChat(getStorage().getSession(id)!, engine, { snapshots });
   return <text>probe</text>;
 }
 
-async function open(engine: Engine) {
+async function open(engine: Engine, snapshots?: SnapshotStoreResult) {
   const session = getStorage().createSession({ title: "t", cwd: "/tmp/x" });
-  screen = await testRender(<Probe engine={engine} id={session.id} />, { width: 40, height: 5 });
+  screen = await testRender(<Probe engine={engine} id={session.id} snapshots={snapshots} />, { width: 40, height: 5 });
   await settle();
   return session;
 }
@@ -84,6 +85,29 @@ describe("useChat and quit (S20)", () => {
     expect(seen.exitsAtCleanup).toBe(0);
     expect(exits).toEqual([0]);
     // The reply made so far was saved before the exit.
+    expect(getStorage().getSession(session.id)!.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("a slow snapshot of the files after the turn neither holds the exit up nor keeps the turn's messages from being stored", async () => {
+    let calls = 0;
+    const slowAfter = {
+      available: true,
+      store: { track: () => (++calls === 1 ? Promise.resolve("a".repeat(40)) : new Promise<string>(() => {})) } as unknown as SnapshotStore,
+    } as const;
+    const { engine } = engineWithCleanup(0);
+    const session = await open(engine, slowAfter);
+    void latest.submit({ userText: "go", mode: "BUILD", model: "opus" });
+    await settle();
+    expect(latest.pendingRequest?.kind).toBe("permission");
+
+    const started = Date.now();
+    const quitting = quitApp({ destroy() {} });
+    await act(() => quitting);
+
+    // The after-turn snapshot (limited to 3 s for an aborted turn) is still pending when the turn is stored and the exit happens.
+    expect(calls).toBe(2);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(exits).toEqual([0]);
     expect(getStorage().getSession(session.id)!.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 

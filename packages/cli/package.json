@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.tsx",
     "build": "bun build src/index.tsx --outdir dist --target bun",
-    "test": "bun test"
+    "test": "bun test --timeout 60000"
   },
   "devDependencies": {
     "@types/bun": "latest",

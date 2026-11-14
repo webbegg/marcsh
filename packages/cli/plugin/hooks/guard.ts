@@ -21,14 +21,18 @@ function gitSucceeds(cwd: string, ...args: string[]): boolean {
   }
 }
 
+// Full ref names, not `--short`: when a tag shares the branch's name, `--short` disambiguates `main` to `heads/main`.
+function refName(ref: string | null, prefix: string): string | null {
+  return ref?.startsWith(prefix) && ref.length > prefix.length ? ref.slice(prefix.length) : null;
+}
+
 function lookupBranch(cwd: string, dir: string | null): BranchInfo | null {
   const where = dir ? resolve(cwd, dir) : cwd;
-  const branch = git(where, "symbolic-ref", "--short", "HEAD");
+  const branch = refName(git(where, "symbolic-ref", "-q", "HEAD"), "refs/heads/");
   if (!branch) return null;
-  const origin = git(where, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
   return {
     branch,
-    defaultBranch: origin ? origin.replace(/^origin\//, "") : null,
+    defaultBranch: refName(git(where, "symbolic-ref", "refs/remotes/origin/HEAD"), "refs/remotes/origin/"),
     isLocalBranch: (name) => gitSucceeds(where, "show-ref", "--verify", "--quiet", `refs/heads/${name}`),
   };
 }

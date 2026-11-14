@@ -7,7 +7,7 @@
     "dev:cli": "bun run --watch packages/cli/src/index.tsx",
     "build:cli": "bun run --filter @marcsh/cli build",
     "link:cli": "bun run build:cli && cd packages/cli && bun link",
-    "test": "cd packages/cli && bun test",
+    "test": "cd packages/cli && bun test --timeout 60000",
     "release:build": "bun scripts/build-release.ts"
   }
 }

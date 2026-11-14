@@ -1,5 +1,8 @@
 import { resolve } from "node:path";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { type ApprovalMode, decideApproval, type ToolCall } from "../approval-policy";
+import { type BranchState, branchState } from "../git-branch";
+import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { BG_PLAN_TOOLS, bgStartDir, hasWorkingDir, isMarcshBgStart, isMarcshBgTool, workingDirError } from "./pi-bg-tools";
@@ -64,10 +67,13 @@ export function ruleFor(cwd: string, toolName: string, input: Record<string, unk
 
 export type ToolCallBlock = { block: true; reason: string };
 
+/** The rules the approval flow reads and writes. Without the path-rule methods, no folder choice is offered and none is applied. */
+export type RuleStore = Pick<Storage, "addPermissionRule" | "hasPermissionRule"> & Partial<PathRuleStore>;
+
 export type ApprovalOptions = {
   /** The session's project directory: rules apply per cwd. */
   cwd: string;
-  rules: Pick<Storage, "addPermissionRule" | "hasPermissionRule">;
+  rules: RuleStore;
   host: Pick<TurnHost, "askPermission">;
   /** Aborts when the turn ends; a pending ask is then declined and its call never runs. */
   signal: AbortSignal;
@@ -77,6 +83,12 @@ export type ApprovalOptions = {
   tools: () => readonly ToolSource[];
   /** The branch/ship guard for pi's built-in `bash`. Default: the same decision Claude's PreToolUse hook makes. */
   guard?: Guard;
+  /** The session's approval mode (absent = normal). Decides after the plan-mode block and the guard's deny, so neither is ever loosened. */
+  approvalMode?: ApprovalMode;
+  /** Reads the mode when each call is decided (a mid-turn switch applies to the next call). Absent: `approvalMode`. */
+  currentApprovalMode?: () => ApprovalMode;
+  /** Reads the branch the project is on, for every call that needs it (auto and yolo count only on a feature branch). Default: `branchState`. */
+  branchOf?: (cwd: string) => BranchState;
 };
 
 type Call = { toolName: string; input: Record<string, unknown> };
@@ -103,8 +115,32 @@ function guardVerdict(guard: Guard, cwd: string, call: Call, tools: readonly Too
   }
 }
 
+/** pi's own built-in `edit` and `write` write the file named by their `path` input. */
+const EDIT_TOOLS = ["edit", "write"];
+
+/** What the approval policy sees of a call: pi's own `bash` is a shell command, its own `edit`/`write` a file edit, any other tool is not classified. */
+function policyCall(call: Call, tools: readonly ToolSource[]): ToolCall {
+  const tool = tools.find((candidate) => candidate.name === call.toolName);
+  if (!tool) return { kind: "other" };
+  const { command, path } = call.input;
+  if (isBuiltinBash(tool) && typeof command === "string") return { kind: "shell", command };
+  if (EDIT_TOOLS.includes(tool.name) && tool.sourceInfo.path === `builtin:${tool.name}` && typeof path === "string") return { kind: "edit", path };
+  return { kind: "other" };
+}
+
 /** Decides one tool call: `undefined` lets it run, a block stops it with a reason pi shows the model. */
-export function createApprovalHandler({ cwd, rules, host, signal, planMode = false, tools, guard = guardBashCommand }: ApprovalOptions) {
+export function createApprovalHandler({
+  cwd,
+  rules,
+  host,
+  signal,
+  planMode = false,
+  tools,
+  guard = guardBashCommand,
+  approvalMode = "normal",
+  currentApprovalMode,
+  branchOf = branchState,
+}: ApprovalOptions) {
   return async (call: Call): Promise<ToolCallBlock | undefined> => {
     if (planMode) {
       const tool = tools().find((candidate) => candidate.name === call.toolName);
@@ -120,28 +156,44 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
 
     const verdict = guardVerdict(guard, runDir, call, tools());
     if (verdict?.decision === "deny") return { block: true, reason: verdict.reason };
-    // A guarded action always asks and can never be always-allowed: no rule is matched, and none is stored.
-    const guarded = verdict?.decision === "ask" ? verdict : undefined;
+
     // Rules are kept per session folder: one saved there does not cover a command run in another folder, and an "always" for
-    // it could only be saved for the session folder, so it is not offered.
+    // it could only be saved for the session folder, so it is not offered (neither is a folder rule).
     const elsewhere = resolve(runDir) !== resolve(cwd);
+
+    // The mode only loosens what the existing flow would ask. A policy ask is like a guarded one: it can never be always-allowed.
+    const seen = policyCall(call, tools());
+    const policy = decideApproval(currentApprovalMode ? currentApprovalMode() : approvalMode, seen, cwd, () => branchOf(cwd));
+    if (policy.action === "block") return { block: true, reason: policy.reason };
+    // A stored path rule ("allow `rm` under /tmp/x") runs a covered shell command in every mode, also past a floor ask; sudo and catastrophic commands never match.
+    const command = seen.kind === "shell" && !elsewhere ? seen.command : undefined;
+    const { pathRulesFor, addPathRule } = rules;
+    if (command !== undefined && pathRulesFor && hasMatchingPathRule({ pathRulesFor }, command, cwd)) return undefined;
+    // No mode skips the guard's ask (push, PR, merge, publish): it keeps asking, as a floor ask.
+    if (policy.action === "allow" && verdict?.decision !== "ask") return undefined;
+    const floor = policy.action === "ask" ? { reason: policy.reason } : verdict?.decision === "ask" ? verdict : undefined;
+    // A floor action always asks and can never be always-allowed: no rule is matched, and none is stored.
     const judged = judgedAs(call, tools());
-    const rule = guarded || elsewhere ? undefined : ruleFor(cwd, judged.toolName, judged.input);
+    const rule = floor || elsewhere ? undefined : ruleFor(cwd, judged.toolName, judged.input);
     if (rule && rules.hasPermissionRule(rule)) return undefined;
 
+    const candidate = command !== undefined && pathRulesFor && addPathRule ? pathRuleCandidate(command, cwd) : null;
     let decision: Awaited<ReturnType<TurnHost["askPermission"]>>;
     try {
       decision = await host.askPermission(
-        guarded
-          ? { toolName: call.toolName, input: call.input, decisionReason: guarded.reason, suppressAlwaysAllowRule: true }
-          : elsewhere
-            ? {
-                toolName: call.toolName,
-                input: call.input,
-                decisionReason: `This runs in ${runDir}, outside the session folder: rules saved for the session folder do not cover it.`,
-                suppressAlwaysAllowRule: true,
-              }
-            : { toolName: call.toolName, input: call.input },
+        {
+          toolName: call.toolName,
+          input: call.input,
+          ...(floor
+            ? { decisionReason: floor.reason, suppressAlwaysAllowRule: true }
+            : elsewhere
+              ? {
+                  decisionReason: `This runs in ${runDir}, outside the session folder: rules saved for the session folder do not cover it.`,
+                  suppressAlwaysAllowRule: true,
+                }
+              : {}),
+          ...(candidate ? { pathRule: candidate } : {}),
+        },
         signal,
       );
     } catch {
@@ -151,6 +203,8 @@ export function createApprovalHandler({ cwd, rules, host, signal, planMode = fal
     if (signal.aborted) return { block: true, reason: INTERRUPTED_REASON };
     if (decision === "deny") return { block: true, reason: DENIED_REASON };
     if (decision === "always" && rule) rules.addPermissionRule(rule);
+    const answered = answeredPathRule(decision, cwd, candidate);
+    if (answered) addPathRule?.(answered);
     return undefined;
   };
 }

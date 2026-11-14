@@ -23,6 +23,7 @@ import {
   noStepReason,
   parseUnifiedDiff,
   planStep,
+  SNAPSHOT_TIMEOUT_MS,
   type Direction,
   type StepPlan,
 } from "../lib/session-snapshots";
@@ -32,6 +33,9 @@ import { defaultExportPath, renderTranscript, type TranscriptFormat } from "../l
 import type { CompactOutcome } from "./use-chat";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Why a read of the project's files failed: the deadline, or git's own message. */
+const failure = (error: unknown, deadline: AbortSignal) => (deadline.aborted ? `the snapshot took longer than ${Math.round(SNAPSHOT_TIMEOUT_MS / 1000)} s` : message(error));
 
 /** `[md|json] [path]`: the format is optional (markdown), and what is left is the path, if any. */
 export function parseExportArgs(args: string): { format: TranscriptFormat; path?: string } {
@@ -166,16 +170,20 @@ export function useSessionCommands(params: Params): SessionCommands {
       const messages = chat.getMessages();
       if (!snapshots.available) return info(noStepReason(direction, { kind: "none", skipped: 0 }, snapshots, messages, undefined));
 
+      // Reading the project's files (to see what changed since the turn) must not hang the command on a huge folder.
+      const deadline = AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS);
       let plan;
       try {
-        plan = await planStep(snapshots.store, messages, direction);
+        plan = await planStep(snapshots.store, messages, direction, deadline);
       } catch (error) {
-        return fail(`Could not ${verb}: ${message(error)}`);
+        return fail(`Could not ${verb}: ${failure(error, deadline)}`);
       }
       if (plan.kind === "none") return info(noStepReason(direction, plan, snapshots, messages, chat.snapshotIssue()));
 
       const run = async (ready: StepPlan) => {
         const { chat: latestChat, addNotice } = current();
+        // A message sent while the plan waited for git, or while the question was open, has started a turn that is writing files now.
+        if (latestChat.busy) return info(`A turn is running; try /${verb} again when it ends`);
         try {
           const result = await applyStep(snapshots.store, latestChat.getMessages(), ready);
           const saveFailure = latestChat.editMessages((prev) => markStep(prev, ready));
@@ -215,12 +223,13 @@ export function useSessionCommands(params: Params): SessionCommands {
         const issue = chat.snapshotIssue();
         return info(issue ? `File diff is unavailable: ${issue}.` : "No turn in this session has a file snapshot, so there is nothing to diff.");
       }
+      const deadline = AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS);
       try {
-        const files = parseUnifiedDiff(await snapshots.store.diff(first));
+        const files = parseUnifiedDiff(await snapshots.store.diff(first, undefined, deadline));
         if (files.length === 0) return info("No file changes since this session's first turn.");
         ui.current.dialog.open({ title: `Changes since the first turn · ${files.length} file${files.length === 1 ? "" : "s"}`, children: <DiffDialogContent files={files} /> });
       } catch (error) {
-        fail(`Could not read the changes: ${message(error)}`);
+        fail(`Could not read the changes: ${failure(error, deadline)}`);
       }
     };
 

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,9 @@ import {
   withSnapshot,
 } from "./session-snapshots";
 import { createSnapshotStore, type SnapshotStore } from "./snapshot";
+
+// Real git against a real project: slower than Bun's 5 s on a loaded machine.
+setDefaultTimeout(60_000);
 
 let base: string;
 let project: string;

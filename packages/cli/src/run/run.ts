@@ -8,7 +8,11 @@ import type { EngineEvent, PermissionDecision, TurnHost } from "../lib/engine/ty
 import { DEFAULT_CHAT_MODEL_ID, modelForEngine, PI_DEFAULT_MODEL } from "../lib/models";
 import { getAgentId, getDefaultEngine, getPiModel } from "../lib/preferences";
 import { registerTurn as registerQuitTurn } from "../lib/quit";
+import { escapeTranscriptText } from "../lib/display-text";
+import { printable } from "../lib/safe-text";
 import { finishReply } from "../lib/reply";
+import { primeWithTranscript } from "../hooks/transcript-primer";
+import { priorCumulativeCost } from "../hooks/use-chat";
 import { getStorage, type Storage, type StoredSession } from "../lib/storage";
 import { latestSessionForCwd } from "../startup/launch";
 
@@ -26,6 +30,12 @@ export const EXIT = { ok: 0, failed: 1, usage: 2, interrupted: 130 } as const;
 
 /** Why a permission ask is denied: nobody is there to answer. */
 const NO_APPROVER = "headless runs cannot ask for approval";
+
+/**
+ * Text from a model, a tool or an engine as it may reach the terminal: its escape sequences (CSI, OSC such as the clipboard write
+ * or the title) are removed and any other control character shows as a visible escape. Newlines and tabs stay.
+ */
+const plain = (text: string): string => escapeTranscriptText(Bun.stripANSI(text));
 
 /** The message and the standard input as one prompt: the input follows the message after a blank line. */
 function joinMessage(message: string, stdin: string | undefined): string {
@@ -76,8 +86,10 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   // processIo writes synchronously: the command ends with process.exit, which would cut a long reply still queued for a pipe.
   const { io = processIo, registerTurn = registerQuitTurn } = deps;
   const cwd = options.cwd ?? process.cwd();
+  // Every stderr line is cleaned: it may carry an engine's message or a tool's name.
+  const note = (message: string) => io.stderr(`marcsh: ${plain(message)}\n`);
   const usage = (message: string) => {
-    io.stderr(`marcsh: ${message}\n`);
+    note(message);
     return EXIT.usage;
   };
 
@@ -102,10 +114,10 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     // A new session is created as the new-session screen creates it.
     session = found ?? storage.createSession({ title: prompt.slice(0, 100), cwd, engine: options.engine ?? getDefaultEngine() });
     if (found && options.engine && options.engine !== found.engine) {
-      io.stderr(`marcsh: the session uses the ${found.engine} engine, so --engine ${options.engine} is ignored\n`);
+      note(`the session uses the ${found.engine} engine, so --engine ${options.engine} is ignored`);
     }
   } catch (err) {
-    io.stderr(`marcsh: ${err instanceof Error ? err.message : String(err)}\n`);
+    note(err instanceof Error ? err.message : String(err));
     return EXIT.failed;
   }
 
@@ -124,6 +136,10 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     { id: replyId, role: "assistant", parts: [], metadata },
   ];
   let resumeRef = session.engineSessionRef ?? undefined;
+  // A session with messages but no engine conversation (a fork) starts one primed with what was said; what is saved is what was typed.
+  const enginePrompt = !resumeRef && session.messages.length > 0 ? primeWithTranscript(prompt, session, session.messages) : prompt;
+  // A resumed Claude conversation reports its running total: the turn subtracts what the session had cost already.
+  const priorCostUsd = resumeRef ? priorCumulativeCost(session.messages) : undefined;
   const errors: string[] = [];
   let aborted = false;
 
@@ -153,7 +169,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
       case "error":
         if (!aborted) {
           errors.push(event.message);
-          io.stderr(`marcsh: ${event.message}\n`);
+          note(event.message);
         }
         break;
       case "delivered": {
@@ -177,7 +193,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   const host: TurnHost = {
     emit: onEvent,
     askPermission: async (ask): Promise<PermissionDecision> => {
-      io.stderr(`marcsh: denied ${ask.toolName} (${NO_APPROVER})\n`);
+      note(`denied ${printable(Bun.stripANSI(ask.toolName))} (${NO_APPROVER})`);
       return "deny";
     },
     askQuestions: decline(null),
@@ -186,20 +202,24 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     input: decline(undefined),
     editor: decline(undefined),
     askProjectTrust: decline("skip" as const),
-    notify: (message) => io.stderr(`marcsh: ${message}\n`),
+    notify: (message) => note(message),
   };
 
   try {
     const turn = engine.startTurn(
       {
-        prompt,
+        prompt: enginePrompt,
         cwd: session.cwd,
         mode: agent.mode,
         model,
         systemPromptAppend: agent.prompt,
+        // Always normal: nobody is there to approve, so every ask is denied (above), and the user's saved `approvalMode` (auto, yolo) is
+        // never read here, so an unattended run cannot edit files or commit without approval.
+        approvalMode: "normal",
         ...(agent.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
         ...(agent.tools && agent.tools.deny.length > 0 ? { deniedTools: agent.tools.deny } : {}),
         resumeRef,
+        ...(resumeRef ? { priorCostUsd } : {}),
         signal: abortController.signal,
       },
       host,
@@ -209,7 +229,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     if (!aborted) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push(message);
-      io.stderr(`marcsh: ${message}\n`);
+      note(message);
     }
   } finally {
     // Tools still running will never get a result: they are saved as interrupted.
@@ -218,7 +238,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
       storage.saveMessages(session.id, messages, resumeRef);
     } catch (err) {
       errors.push(`Could not save session: ${err instanceof Error ? err.message : String(err)}`);
-      io.stderr(`marcsh: ${errors.at(-1)}\n`);
+      note(errors.at(-1)!);
     }
     unregisterTurn();
     finishTurn();
@@ -229,7 +249,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   if (json) {
     writeJson({ type: "result", ok: code === EXIT.ok, exitCode: code, sessionId: session.id, text, ...(errors.length > 0 ? { error: errors.join("\n") } : {}) });
   } else if (!aborted && text) {
-    io.stdout(`${text}\n`);
+    io.stdout(`${plain(text)}\n`);
   }
   return code;
 }

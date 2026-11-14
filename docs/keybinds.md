@@ -27,6 +27,7 @@ Press `Ctrl+X`, then within 2 seconds press one more key to run its command. The
 | `s` | `/sessions` |
 | `t` | `/theme` |
 | `e` | `/engine` |
+| `p` | `/permissions` |
 | `u` | `/undo` |
 | `r` | `/redo` |
 | `d` | `/diff` |
@@ -59,7 +60,7 @@ Each name is an action, and its value is a key or a list of keys.
 | --- | --- | --- |
 | `palette` | Opens the command palette. | `ctrl+p` |
 | `leader` | Starts the leader wait. Keys pressed on their own only. | `ctrl+x` |
-| a command name: `new`, `agents`, `models`, `login`, `logout`, `trust`, `engine`, `sessions`, `rename`, `fork`, `export`, `undo`, `redo`, `diff`, `compact`, `copy`, `theme`, `exit` | Runs that command. | the table above |
+| a command name: `new`, `agents`, `models`, `login`, `logout`, `trust`, `engine`, `permissions`, `sessions`, `rename`, `fork`, `export`, `undo`, `redo`, `diff`, `compact`, `copy`, `theme`, `exit` | Runs that command. | the table above |
 
 Only marcsh's own commands can be bound. Custom and engine commands are in the palette, and are not bindable.
 
