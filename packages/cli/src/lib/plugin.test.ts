@@ -132,7 +132,9 @@ describe("plugin contents", () => {
   test("plugin.json names the plugin marcsh", () => {
     const manifest = JSON.parse(readFileSync(join(path, ".claude-plugin", "plugin.json"), "utf8"));
     expect(manifest.name).toBe("marcsh");
-    expect(manifest.version).toBe("0.1.0");
+    // The plugin ships inside marcsh, so it carries marcsh's version.
+    const cli = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "package.json"), "utf8"));
+    expect(manifest.version).toBe(cli.version);
     expect(typeof manifest.description).toBe("string");
     expect(manifest.description.length).toBeGreaterThan(0);
   });
