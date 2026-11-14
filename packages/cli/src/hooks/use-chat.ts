@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import type { AgentTools } from "../lib/agent-tools";
 import type { ModeType } from "../lib/modes";
-import type { ChatMessage } from "../lib/chat-types";
+import { loadAttachments, referenceText, type Attachment } from "../lib/attachments";
+import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 import type { AskQuestion } from "../lib/ask-user-question";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
@@ -126,7 +127,8 @@ function decline(request: PendingRequest) {
 
 /** The agent answering a turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
 export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools };
-export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent };
+/** `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts. */
+export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent; attachments?: MessageAttachment[] };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -179,7 +181,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   }, []);
 
   const submit = useCallback(
-    async ({ userText, mode, model, turnAgent }: SubmitParams) => {
+    async ({ userText, mode, model, turnAgent, attachments }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
@@ -201,7 +203,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
       updateMessages((prev) => [
         // A new turn ends every redo: what an undo took back stays gone.
         ...dropRedo(prev),
-        { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata },
+        { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: userText }], metadata: attachments?.length ? { ...metadata, attachments } : metadata },
         { id: replyId, role: "assistant", parts: [], metadata },
       ]);
 
@@ -340,10 +342,21 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         // Esc or leaving the session while the files were being captured: the turn never starts.
         if (interruptedRef.current || abortController.signal.aborted) return;
 
+        // The files are read now, not when they were attached. One that cannot be read any more is mentioned as `@path` instead.
+        let loaded: Attachment[] | undefined;
+        if (attachments?.length) {
+          const result = await loadAttachments(attachments);
+          loaded = result.loaded;
+          for (const { reason } of result.failed) notifyRef.current?.(`${reason} It goes as an @path reference.`, "warning");
+          enginePrompt = referenceText(enginePrompt, result.failed.map((failure) => failure.attachment), session.cwd);
+          if (interruptedRef.current || abortController.signal.aborted) return;
+        }
+
         started = true;
         const turn = engine.startTurn(
           {
             prompt: enginePrompt,
+            ...(loaded ? { attachments: loaded } : {}),
             cwd: session.cwd,
             mode,
             model,

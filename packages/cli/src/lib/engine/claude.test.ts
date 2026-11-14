@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { Mode } from "../modes";
-import { applyClaudeMessage, claudeQueryOptions, createCanUseTool } from "./claude";
+import { applyClaudeMessage, claudePrompt, claudeQueryOptions, createCanUseTool } from "./claude";
 import type { PermissionAsk, TurnHost, TurnRequest } from "./types";
 
 // The names are spelled out on purpose: this pins what the SDK is sent, so a renamed or dropped entry in the tool table fails here.
@@ -126,5 +126,62 @@ describe("the cost of a resumed turn", () => {
   test("messages that are not the result pass through untouched", () => {
     const message = { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, parent_tool_use_id: null } as never;
     expect(applyClaudeMessage(empty, message, 0.5).parts).toEqual([{ type: "text", text: "hi" }]);
+  });
+});
+
+describe("the prompt of a Claude turn with attachments (S6)", () => {
+  const png = { path: "/tmp/marcsh-cwd/shot.png", mime: "image/png", kind: "image" as const, bytes: new Uint8Array([1, 2, 3]) };
+  const pdf = { path: "/tmp/marcsh-cwd/spec.pdf", mime: "application/pdf", kind: "pdf" as const, bytes: new Uint8Array([4, 5]) };
+  const note = { path: "/tmp/marcsh-cwd/notes.txt", mime: "text/plain", kind: "file" as const };
+  const collect = async (prompt: string | AsyncIterable<unknown>) => {
+    if (typeof prompt === "string") return prompt;
+    const messages: unknown[] = [];
+    for await (const message of prompt) messages.push(message);
+    return messages;
+  };
+
+  test("a turn without attachments sends the prompt as the plain string, as before", () => {
+    expect(claudePrompt("hello", undefined, "/tmp/marcsh-cwd")).toBe("hello");
+    expect(claudePrompt("hello", [], "/tmp/marcsh-cwd")).toBe("hello");
+  });
+
+  test("images and PDFs go as one user message: the text first, then image and document blocks in base64", async () => {
+    const sent = await collect(claudePrompt("what is this?", [png, pdf], "/tmp/marcsh-cwd"));
+
+    expect(sent).toEqual([
+      {
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from([1, 2, 3]).toString("base64") } },
+            { type: "document", source: { type: "base64", media_type: "application/pdf", data: Buffer.from([4, 5]).toString("base64") } },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("another file is an @path mention in the text, relative to the project", async () => {
+    const sent = (await collect(claudePrompt("read this", [png, note], "/tmp/marcsh-cwd"))) as any[];
+
+    expect(sent[0].message.content[0]).toEqual({ type: "text", text: "read this\n@notes.txt" });
+    expect(sent[0].message.content).toHaveLength(2);
+  });
+
+  test("only files to mention keep the prompt a plain string", () => {
+    expect(claudePrompt("read this", [note], "/tmp/marcsh-cwd")).toBe("read this\n@notes.txt");
+  });
+
+  test("an image whose bytes were not read is mentioned instead of sent", () => {
+    const { bytes: _bytes, ...unread } = png;
+    expect(claudePrompt("look", [unread], "/tmp/marcsh-cwd")).toBe("look\n@shot.png");
+  });
+
+  test("no text means no text block (the API refuses an empty one)", async () => {
+    const sent = (await collect(claudePrompt("", [png], "/tmp/marcsh-cwd"))) as any[];
+    expect(sent[0].message.content.map((block: { type: string }) => block.type)).toEqual(["image"]);
   });
 });

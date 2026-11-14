@@ -20,7 +20,7 @@ import { useToast } from "../providers/toast";
 import { useChat } from "../hooks/use-chat";
 import { useSessionCommands } from "../hooks/use-session-commands";
 import { usePromptConfig } from "../providers/prompt-config";
-import type { ChatMessage as ChatMessageData } from "../lib/chat-types";
+import type { ChatMessage as ChatMessageData, MessageAttachment } from "../lib/chat-types";
 import { getStorage, type StoredSession } from "../lib/storage";
 import { getEngine, getPiRuntime, unknownEngine, warmUpEngineCommands } from "../lib/engine";
 import { listAvailablePiModels } from "../lib/engine/pi-models";
@@ -67,7 +67,7 @@ function ChatMessage(
       .map((p) => p.text)
       .join("");
 
-    return <UserMessage message={text} mode={msg.metadata?.mode ?? "BUILD"} marker={msg.metadata?.steered ? "↳ steer" : undefined} />;
+    return <UserMessage message={text} mode={msg.metadata?.mode ?? "BUILD"} marker={msg.metadata?.steered ? "↳ steer" : undefined} attachments={msg.metadata?.attachments} />;
   }
 
   return (
@@ -181,8 +181,8 @@ function SessionChat({
   // Starts a turn for `turnAgent` on the model this session's engine uses: `modelOverride` (a custom command's, already checked against
   // the engine), else the agent's own when this engine can use it, else the session's (a pi session sends the pi model that has credentials now).
   const send = useCallback(
-    (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string) => {
-      const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools } };
+    (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string, attachments?: MessageAttachment[]) => {
+      const turn = { userText, mode: turnAgent.mode, turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools }, ...(attachments?.length ? { attachments } : {}) };
       const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
         const used = agentModel ?? modelForEngine(session.engine, claudeModel);
@@ -215,11 +215,11 @@ function SessionChat({
 
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
   const sendTyped = useCallback(
-    (text: string) => {
+    (text: string, attachments?: MessageAttachment[]) => {
       const turn = userCommandTurn(text, { cwd: session.cwd, engine: session.engine, agents, builtinNames: COMMAND_NAMES });
-      if (!turn) return send(text, agent, model);
+      if (!turn) return send(text, agent, model, undefined, attachments);
       if (turn.warning) toast.show({ variant: "info", message: turn.warning });
-      send(turn.text, turn.agent ?? agent, model, turn.model);
+      send(turn.text, turn.agent ?? agent, model, turn.model, attachments);
     },
     [session.cwd, session.engine, agents, agent, model, send, toast],
   );

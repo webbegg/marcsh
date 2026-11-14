@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Mode } from "../modes";
+import { referenceText, splitAttachments } from "../attachments";
 import { prepareViewForTurn } from "../packs";
 import { marcshPluginPath } from "../plugin";
 import { getStorage, type Storage } from "../storage";
@@ -265,7 +266,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
     return runtime;
   };
 
-  function startTurn({ prompt, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
+  function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, packPluginPath, deniedTools, resumeRef, signal }: TurnRequest, host: TurnHost): EngineTurn {
     const startedAt = Date.now();
     // The groups the selected agent does not get: they narrow the mode's tools (plan mode can only get narrower), never widen them.
     const denied = deniedTools ?? [];
@@ -496,7 +497,16 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
         const expanded = expandPluginInvocation(prompt, pluginPath, pi.stripFrontmatter);
-        const sending = session.prompt(expanded, expanded === prompt ? undefined : { expandPromptTemplates: false });
+        // An image goes as image input when the model takes images; pi has no PDF input. What does not go inline is mentioned as `@path`.
+        const split = splitAttachments(attachments ?? [], { image: resolved.input?.includes("image") === true, pdf: false });
+        const images = split.inline.filter((attachment) => attachment.bytes);
+        const mentioned = [...split.references, ...split.inline.filter((attachment) => !attachment.bytes)];
+        for (const notice of split.notices) host.notify?.(notice, "warning");
+        const options = {
+          ...(expanded === prompt ? {} : { expandPromptTemplates: false }),
+          ...(images.length > 0 ? { images: images.map((image) => ({ type: "image" as const, data: Buffer.from(image.bytes!).toString("base64"), mimeType: image.mime })) } : {}),
+        };
+        const sending = session.prompt(referenceText(expanded, mentioned, cwd), Object.keys(options).length > 0 ? options : undefined);
         promptSent = true;
         for (const entry of early.splice(0)) {
           queueInput(entry.kind, entry.text).then(entry.resolve, (error: unknown) => {

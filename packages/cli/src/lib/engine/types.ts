@@ -1,4 +1,5 @@
 import type { AskQuestion } from "../ask-user-question";
+import type { Attachment } from "../attachments";
 import type { Group } from "../tool-names";
 import type { ChatMessage } from "../chat-types";
 import type { ClaudeCommand } from "../claude-commands";
@@ -46,6 +47,11 @@ export class TurnClosedError extends Error {
 
 export type TurnRequest = {
   prompt: string;
+  /**
+   * Files attached to the prompt. Images and PDFs carry their bytes; an engine sends what it can take as input and the rest as `@path`
+   * mentions in the prompt, and says so (`host.notify`) when a file it was given goes the second way.
+   */
+  attachments?: Attachment[];
   cwd: string;
   mode: ModeType;
   model: string;
