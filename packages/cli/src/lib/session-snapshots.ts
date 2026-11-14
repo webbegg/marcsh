@@ -100,9 +100,9 @@ export type NoStep = { kind: "none"; skipped: number };
 /**
  * The turn `/undo` (the newest reply with a snapshot that is not undone) or `/redo` (the oldest reply that is undone and not abandoned:
  * undo works backwards, so that is the one undone last) would act on. A turn that changed no files is passed over for the next one.
- * Writes nothing.
+ * Writes nothing. Aborting `signal` stops the git work that reads the project's current files.
  */
-export async function planStep(store: SnapshotStore, messages: ChatMessage[], direction: Direction): Promise<StepPlan | NoStep> {
+export async function planStep(store: SnapshotStore, messages: ChatMessage[], direction: Direction, signal?: AbortSignal): Promise<StepPlan | NoStep> {
   const turns = messages.flatMap((message) => {
     const snapshot = snapshotOf(message);
     return snapshot ? [{ id: message.id, snapshot }] : [];
@@ -114,7 +114,7 @@ export async function planStep(store: SnapshotStore, messages: ChatMessage[], di
 
   let skipped = 0;
   for (const { id, snapshot } of candidates) {
-    const files = await store.changedFiles(snapshot.before, snapshot.after);
+    const files = await store.changedFiles(snapshot.before, snapshot.after, signal);
     if (files.length === 0) {
       skipped += 1;
       continue;
@@ -126,7 +126,7 @@ export async function planStep(store: SnapshotStore, messages: ChatMessage[], di
       direction,
       messageId: id,
       files,
-      modified: await store.modifiedSince(expected, files),
+      modified: await store.modifiedSince(expected, files, signal),
       target: direction === "undo" ? snapshot.before : snapshot.after,
       skipped,
     };
