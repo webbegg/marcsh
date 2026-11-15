@@ -38,10 +38,10 @@ const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
-const { preferencesPath, setAgentId, setDefaultEngine } = await import("../lib/preferences");
+const { preferencesPath, setAgentId, setDefaultApprovalMode, setDefaultEngine } = await import("../lib/preferences");
 const { disablePackHooks, enablePackHooks, inspectPackHooks, installPack, packPluginDir } = await import("../lib/packs");
 const { marcshPluginPath } = await import("../lib/plugin");
-const { NORMAL_MODE_LINE } = await import("../lib/approval-policy");
+const { NORMAL_MODE_LINE, PLAN_MODE_LINE } = await import("../lib/approval-policy");
 const { loadMenuCommands } = await import("../components/command-menu/use-command-menu");
 
 beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} }));
@@ -140,8 +140,10 @@ describe("a pack command that names its agent (M2)", () => {
     ]);
     // The pack's agent prompt, then the mode line: the model is told it runs in normal mode.
     expect(calls[0]!.options.systemPrompt.append).toBe(`Spec first.\n\n${NORMAL_MODE_LINE}`);
-    // The selected agent is still Build.
+    // The selected agent is still Build, and the turn may change files: no plan, no read-only notice.
     expect(frameText()).toContain("Build ›");
+    expect(calls[0]!.options.permissionMode).not.toBe("plan");
+    expect(frameText()).not.toContain("read-only");
 
     await type("again");
     await enter();
@@ -222,6 +224,41 @@ describe("a pack command that names its agent (M2)", () => {
     } finally {
       getStorage().saveCommands("pi", []);
     }
+  });
+
+  test("from Plan, /spec runs as ASDD with its prompt and pack view but read-only, and says so (T8 c, L6)", async () => {
+    await openIdle("plan");
+
+    await type("/spec offline mode");
+    await enter();
+    await until(() => calls.length > 0, "the /spec turn");
+    await settle(60);
+
+    expect(calls[0]!.prompt).toBe("Load the specify skill for: offline mode");
+    expect(calls[0]!.options.plugins).toEqual([
+      { type: "local", path: marcshPluginPath() },
+      { type: "local", path: packPluginDir("acme/flows") },
+    ]);
+    // Claude's own plan mode: nothing is written; the model is told plan, not an approval mode.
+    expect(calls[0]!.options.permissionMode).toBe("plan");
+    expect(calls[0]!.options.systemPrompt.append).toBe(`Spec first.\n\n${PLAN_MODE_LINE}`);
+    expect(frameText()).toContain("/spec runs as ASDD in Plan (read-only): switch to Build to let it change files.");
+    expect(frameText()).toContain("Plan ›");
+  });
+
+  test("auto paused off a feature branch: the hooks are told normal, the mode marcsh enforces (T8)", async () => {
+    const info = await inspectPackHooks("acme/flows");
+    if (info.state !== "off") throw new Error(`hooks are ${info.state}`);
+    await enablePackHooks("acme/flows", { reviewed: { commit: info.commit, digest: info.digest } });
+    setDefaultApprovalMode("auto");
+    await openIdle("build");
+
+    await type("/spec x");
+    await enter();
+    await until(() => calls.length > 0, "the /spec turn");
+
+    // /tmp/marcsh-cwd is no feature branch: auto acts as normal there.
+    expect(calls[0]!.options.env).toMatchObject({ MARCSH_APPROVAL_MODE: "normal", MARCSH_AGENT: "acme/flows/asdd" });
   });
 
   test("a Build turn has no hook environment", async () => {

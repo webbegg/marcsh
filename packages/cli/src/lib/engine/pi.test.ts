@@ -17,7 +17,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "../chat-types";
-import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine } from "../approval-policy";
+import { HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine } from "../approval-policy";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
@@ -2361,6 +2361,30 @@ describe("pi engine approval modes (S5, S7, S9, S13)", () => {
     await runTurn(second.engine, second.model, { systemPromptAppend: "You are the FTD agent." });
     expect(none.prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
     expect(none.prompts[0]).not.toContain("Approval mode");
+  });
+
+  test("a plain Task child (no named subagent) gets the mode line too: the turn's, or plan's in a plan turn (T8 f)", async () => {
+    for (const [mode, line] of [
+      [Mode.BUILD, approvalModeLine("auto", feature)],
+      [Mode.PLAN, PLAN_MODE_LINE],
+    ] as const) {
+      const child = promptOf();
+      const { engine, model } = await setup([taskCall("Look", "go"), child.step, fauxAssistantMessage([fauxText("parent done")])]);
+      await runTurn(engine, model, { mode, approvalMode: "auto" });
+      expect(child.prompts[0], mode).toContain(`<addendum>\n${line}\n</addendum>`);
+    }
+  });
+
+  test("with nobody to approve (headless run), normal's line says asks are denied, for the turn and its children (T8 f)", async () => {
+    const parent = promptOf();
+    const first = await setup([parent.step]);
+    await runTurn(first.engine, first.model, { approvalMode: "normal", noApprover: true, systemPromptAppend: "You are the FTD agent." });
+    expect(parent.prompts[0]).toContain(`<addendum>\nYou are the FTD agent.\n\n${HEADLESS_NORMAL_MODE_LINE}\n</addendum>`);
+
+    const child = promptOf();
+    const second = await setup([taskCall("Look", "go"), child.step, fauxAssistantMessage([fauxText("parent done")])]);
+    await runTurn(second.engine, second.model, { approvalMode: "normal", noApprover: true });
+    expect(child.prompts[0]).toContain(`<addendum>\n${HEADLESS_NORMAL_MODE_LINE}\n</addendum>`);
   });
 
   test("a plan turn gets the plan line and no approval mode line, whatever the session's approval mode", async () => {

@@ -51,6 +51,11 @@ const isAlive = (pid: number) => {
     return false;
   }
 };
+/** Makes the project a repository on `branch` (`main` is its default branch). */
+const gitInit = (branch: string) => {
+  const result = Bun.spawnSync(["git", "init", "-q", "-b", branch], { cwd, stdout: "ignore", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+};
 const hooksJson = (hooks: unknown) => JSON.stringify({ hooks });
 const sh = (script: string) => `sh "\${CLAUDE_PLUGIN_ROOT}/hooks/${script}"`;
 const preBash = (script: string, extra: Record<string, unknown> = {}) =>
@@ -225,6 +230,8 @@ describe("PreToolUse hooks on pi", () => {
       "hooks.json": hooksJson({ PreToolUse: [{ matcher: "Bash|Read", hooks: [{ type: "command", command: sh("see.sh") }] }] }),
       "see.sh": `cat > ${marker("stdin.json")}\nprintf '%s|%s' "$MARCSH_APPROVAL_MODE" "$MARCSH_AGENT" > ${marker("env.txt")}\n`,
     });
+    // Auto and yolo are only in force on a feature branch.
+    gitInit("feat/x");
     const build = await setup([bashCall("echo seen"), done()]);
 
     await build.turn({ packPluginPath: view, approvalMode: "auto", currentApprovalMode: () => "yolo", agentId: "acme/flows/asdd" });
@@ -237,6 +244,23 @@ describe("PreToolUse hooks on pi", () => {
     await plan.turn({ packPluginPath: view, mode: Mode.PLAN, approvalMode: "yolo", agentId: "acme/flows/asdd" });
     expect(JSON.parse(readFileSync(marker("stdin.json"), "utf8"))).toMatchObject({ tool_name: "Read", permission_mode: "plan", agent: "acme/flows/asdd" });
     expect(readFileSync(marker("env.txt"), "utf8")).toBe("plan|acme/flows/asdd");
+  });
+
+  test("auto or yolo paused (the default branch, or no repository) is told normal: the mode marcsh enforces there, never a freer one (T8)", async () => {
+    const view = await installFake("acme/flows", {
+      "hooks.json": preBash("see.sh"),
+      "see.sh": `cat > ${marker("stdin.json")}\nprintf '%s' "$MARCSH_APPROVAL_MODE" > ${marker("env.txt")}\n`,
+    });
+    const noRepo = await setup([bashCall("echo seen"), done()]);
+    await noRepo.turn({ packPluginPath: view, approvalMode: "yolo", agentId: "acme/flows/asdd" });
+    expect(JSON.parse(readFileSync(marker("stdin.json"), "utf8"))).toMatchObject({ permission_mode: "normal" });
+    expect(readFileSync(marker("env.txt"), "utf8")).toBe("normal");
+
+    gitInit("main");
+    const onMain = await setup([bashCall("echo seen"), done()]);
+    await onMain.turn({ packPluginPath: view, approvalMode: "auto", currentApprovalMode: () => "yolo", agentId: "acme/flows/asdd" });
+    expect(JSON.parse(readFileSync(marker("stdin.json"), "utf8"))).toMatchObject({ permission_mode: "normal" });
+    expect(readFileSync(marker("env.txt"), "utf8")).toBe("normal");
   });
 
   test("a hook that times out blocks the call and its whole process group is killed", async () => {

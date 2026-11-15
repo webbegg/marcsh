@@ -117,7 +117,9 @@ A hook gets the call as JSON on its input, as Claude sends it: `session_id`, `cw
 | `MARCSH_APPROVAL_MODE` in the environment | yes, as the turn started | yes, at the time of the call |
 | `MARCSH_AGENT` in the environment | yes | yes |
 
-On pi, a change with [`/permissions`](commands.md#permissions) during a turn is what the next call's hooks are told. On Claude, the hooks run inside Claude's own process, which gets the values once, when the turn starts. A hook that must work on both engines should read the environment variables.
+The approval mode is the one marcsh enforces, never a freer one. Auto and yolo only apply on a feature branch: while they are paused (on the default branch, a detached HEAD, or outside a repository), marcsh asks as in normal mode, and the hooks are told `normal`.
+
+On pi, a change with [`/permissions`](commands.md#permissions) during a turn is what the next call's hooks are told, and so is the branch at the time of the call. On Claude, the hooks run inside Claude's own process, which gets the values once, when the turn starts. A hook that must work on both engines should read the environment variables.
 
 ### What blocks and what times out
 

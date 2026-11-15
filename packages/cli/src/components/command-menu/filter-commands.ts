@@ -8,11 +8,15 @@ const userSource = (command: UserCommand) => (command.pack ? (command.pack.split
 
 /**
  * Marcsh's commands, then the user's (packs' included) and the given engine's commands (marcsh wins name clashes, then the user's own).
- * The engine's copy of a pack command marcsh runs (Claude's `<plugin>:<name>`) is not listed a second time.
- * Commands without a source are Claude's. The commands on the open session (`scope: "session"`) are left out with `inSession` false.
+ * The engine's copy of a pack command marcsh runs (Claude's `<plugin>:<name>`) is not listed a second time, nor that of a pack command
+ * hidden by a clash (`hidden`). Commands without a source are Claude's. The commands on the open session (`scope: "session"`) are left
+ * out with `inSession` false.
  */
-export function getMenuCommands(claude: ClaudeCommand[], user: UserCommand[] = [], inSession = true): Command[] {
-  const own = new Set(user.flatMap((command) => (command.engineName ? [command.name, command.engineName] : [command.name])));
+export function getMenuCommands(claude: ClaudeCommand[], user: UserCommand[] = [], inSession = true, hidden: readonly UserCommand[] = []): Command[] {
+  const own = new Set([
+    ...user.flatMap((command) => (command.engineName ? [command.name, command.engineName] : [command.name])),
+    ...hidden.flatMap((command) => (command.engineName ? [command.engineName] : [])),
+  ]);
   const fromUser = user.map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint ?? "", source: userSource(command) }));
   const merged = mergeCommands(COMMANDS, [...fromUser, ...claude.filter((command) => !own.has(command.name))], (command) => ({
     name: command.name,

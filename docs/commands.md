@@ -443,14 +443,16 @@ With that file as `commands/spec.md` in the pack, typing `/spec offline mode` wh
 - The turn runs as the pack's ASDD agent, with that agent's prompt, tools, pack skills, subagents and enabled hooks. This works because the turn's agent belongs to the pack.
 - The next message runs as the selected agent again, which is Build here.
 
-The `agent` field names the file of one of the pack's own agents (`asdd` for `agents/asdd.md`, in any letter case), that agent's `name`, or `build` or `plan`. If the agent is another pack's, one of yours, a subagent or unknown, marcsh warns and runs the turn as the selected agent.
+The `agent` field names the file of one of the pack's own agents (`asdd` for `agents/asdd.md`, in any letter case), that agent's `name`, or `build` or `plan`. If the agent is another pack's, one of yours, a subagent or unknown, or if `agent:` is empty, marcsh warns and runs the turn as the selected agent.
+
+A pack command never lifts Plan. If Plan (or another read-only agent) is selected and the command's agent can change files, the turn still runs as that agent, with its prompt, skills, subagents and enabled hooks, but read-only, under Plan's rules: nothing is written, and the model is told it is in plan mode. marcsh says so, for example `/build runs as ASDD in Plan (read-only): switch to Build to let it change files.` From Build or another agent that can change files, the command's agent runs as usual.
 
 Where they show and which one wins:
 
 - They appear in the `/` menu and the command palette while the pack is installed, whichever agent is selected. They are tagged with the pack's repository name and show their `argument-hint`.
 - A pack command never takes a name from another command. The order is: marcsh's own commands, then the engine's (Claude's or pi's built-in, plugin and template commands), then your project and personal commands, then pack commands. If two packs have a command with the same name, the pack whose ID sorts first keeps it.
 - A pack command that loses a clash is listed and run as `/<repo>:<name>` instead, tagged with the pack's repository name. For example, a `review` command in `webbegg/marcsh-rsc` is `/marcsh-rsc:review` on Claude, because Claude has its own `/review`. Typing `/review` runs Claude's.
-- If `/<repo>:<name>` is taken as well, the pack command is hidden. marcsh says so once, in a warning when the `/` menu opens.
+- If `/<repo>:<name>` is taken as well, the pack command is hidden. marcsh says so once, in a warning when the `/` menu opens. Claude's own copy of it (`/<owner>-<repo>:<name>`) is not listed either; typing that name still runs marcsh's command, as its agent, never the raw file.
 - marcsh knows the engine's commands from the list the engine last reported (after a turn, or when marcsh starts). Until it has one, a pack command keeps its name.
 - On Claude, the pack's view also has its own copy of the command, named `<owner>-<repo>:<name>`. That copy is not listed again, and typing its name runs marcsh's version.
 - A pack command without `agent` works as before: the engine runs it, and only while one of the pack's agents is selected.

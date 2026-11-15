@@ -2,7 +2,7 @@ import { query, type AgentDefinition, type CanUseTool, type Options, type Query,
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
-import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { decideApproval, effectiveApprovalMode, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
 import { type BranchSource, type BranchState, branchState, resolveBranch } from "../git-branch";
 import { agentModelFits } from "../agents";
 import { claudeGroupTools, type Group } from "../tool-names";
@@ -26,7 +26,7 @@ import {
   toPermissionResult,
 } from "../sdk-messages";
 import { getStorage } from "../storage";
-import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
+import { approvalLineMode, systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
 function emitCommands(host: TurnHost, commands: unknown) {
@@ -135,7 +135,13 @@ function subagentModel(model: string | undefined): string {
  */
 export function claudeAgents(
   subagents: readonly TurnSubagent[],
-  { deniedTools = [], mode, approvalMode, branch }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"]; approvalMode?: TurnRequest["approvalMode"]; branch?: BranchSource },
+  {
+    deniedTools = [],
+    mode,
+    approvalMode,
+    noApprover,
+    branch,
+  }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"]; approvalMode?: TurnRequest["approvalMode"]; noApprover?: boolean; branch?: BranchSource },
 ): Record<string, AgentDefinition> {
   const agents: Record<string, AgentDefinition> = {};
   for (const sub of subagents) {
@@ -145,7 +151,7 @@ export function claudeAgents(
     const readOnly = sub.readOnly || mode === Mode.PLAN;
     agents[sub.name] = {
       description: sub.description || `The ${sub.name} subagent.`,
-      prompt: systemPromptWithMode(sub.prompt, readOnly ? "plan" : approvalMode, branch ?? UNKNOWN_BRANCH) ?? "",
+      prompt: systemPromptWithMode(sub.prompt, readOnly ? "plan" : approvalLineMode(approvalMode, noApprover), branch ?? UNKNOWN_BRANCH) ?? "",
       ...(readOnly ? { tools: claudeGroupTools("read").filter((name) => !disallowed.includes(name)) } : {}),
       ...(disallowed.length > 0 ? { disallowedTools: disallowed } : {}),
       model: subagentModel(sub.model),
@@ -164,6 +170,7 @@ export function claudeQueryOptions({
   model,
   systemPromptAppend,
   approvalMode,
+  noApprover,
   branch,
   deniedTools,
   subagents,
@@ -172,7 +179,7 @@ export function claudeQueryOptions({
   canUseTool,
   plugins,
   hookEnv,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "subagents" | "resumeRef"> & {
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "noApprover" | "deniedTools" | "subagents" | "resumeRef"> & {
   /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
   branch?: BranchSource;
   abortController: AbortController;
@@ -186,9 +193,11 @@ export function claudeQueryOptions({
   // Read once (and only when a mode line needs it) for the session's line and its subagents'.
   let known: BranchState | undefined;
   const branchOnce = () => (known ??= resolveBranch(branch ?? (() => branchState(cwd))));
-  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalMode, branchOnce);
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalLineMode(approvalMode, noApprover), branchOnce);
   const agents =
-    subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode, approvalMode, branch: branchOnce }) : {};
+    subagents && subagents.length > 0
+      ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode, approvalMode, ...(noApprover ? { noApprover } : {}), branch: branchOnce })
+      : {};
   return {
     cwd,
     model,
@@ -248,7 +257,7 @@ export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, prio
 }
 
 function startTurn(
-  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, agentId, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest,
+  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, noApprover, packPluginPath, agentId, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest,
   host: TurnHost,
 ): EngineTurn {
   const abortController = new AbortController();
@@ -271,12 +280,14 @@ function startTurn(
     const packView = packTurn?.view;
     const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])];
-    // Enabled pack hooks run in the Claude process (through marcsh's filter): they are told the mode and agent the turn started with, as on pi.
-    const hookEnv = packPath && packTurn?.hooks ? packHookEnv(mode === Mode.PLAN ? "plan" : (approvalMode ?? "normal"), agentId) : undefined;
+    // Enabled pack hooks run in the Claude process (through marcsh's filter): they are told the mode and agent the turn started with, as on pi,
+    // the mode as enforced then (normal while auto or yolo is paused off a feature branch).
+    const hookEnv =
+      packPath && packTurn?.hooks ? packHookEnv(mode === Mode.PLAN ? "plan" : effectiveApprovalMode(approvalMode ?? "normal", cwd), agentId) : undefined;
     try {
       chat = query({
         prompt: claudePrompt(prompt, attachments, cwd),
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, subagents, resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, ...(noApprover ? { noApprover } : {}), deniedTools, subagents, resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
       });
 
       for await (const message of chat) {

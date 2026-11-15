@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine } from "../approval-policy";
+import { HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine } from "../approval-policy";
 import { Mode } from "../modes";
 import { applyClaudeMessage, claudeAgents, claudePrompt, claudeQueryOptions, createCanUseTool } from "./claude";
 import type { PermissionAsk, TurnHost, TurnRequest, TurnSubagent } from "./types";
@@ -79,6 +79,13 @@ describe("named subagents on Claude: the SDK's agents option (M1)", () => {
     expect(plan.agents!.developer!.prompt).toBe(`You build.\n\n${PLAN_MODE_LINE}`);
     // A subagent without a prompt still gets the line.
     expect(claudeQueryOptions({ ...base, approvalMode: "normal", subagents: [{ name: "helper", readOnly: false }], canUseTool: noAsk }).agents!.helper!.prompt).toBe(NORMAL_MODE_LINE);
+  });
+
+  test("with nobody to approve (headless run), normal's line says asks are denied, for the session and its subagents (T8 f)", () => {
+    const sent = claudeQueryOptions({ ...base, approvalMode: "normal", noApprover: true, systemPromptAppend: "You are FTD.", subagents: [DEVELOPER, REFUTER], canUseTool: noAsk });
+    expect((sent.systemPrompt as { append?: string }).append).toBe(`You are FTD.\n\n${HEADLESS_NORMAL_MODE_LINE}`);
+    expect(sent.agents!.developer!.prompt).toBe(`You build.\n\n${HEADLESS_NORMAL_MODE_LINE}`);
+    expect(sent.agents!.refuter!.prompt).toBe(`You refute.\n\n${PLAN_MODE_LINE}`);
   });
 
   test("its tools only narrow the session's: the session's denied groups and its own are both disallowed", () => {

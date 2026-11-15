@@ -8,15 +8,15 @@ import { getStorage } from "../../lib/storage";
 import { combineClaudeCommands, type ClaudeCommand } from "../../lib/claude-commands";
 import { marcshPluginPath, readPluginCommands } from "../../lib/plugin";
 import { bundledPiCommands } from "../../lib/engine/pi-commands";
-import { loadUserCommands } from "../../lib/user-commands";
+import { loadCommandSet } from "../../lib/user-commands";
 import { COMMAND_NAMES } from "./commands";
 
 // Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
 // The plugin's own commands are read from disk, so they are listed even with an empty cache. So are the user's: a file added since start is listed.
 export function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
   const known = loadEngineCommands(engine);
-  const user = loadUserCommands({ cwd, builtinNames: COMMAND_NAMES, engineNames: known.map((command) => command.name) });
-  return getMenuCommands(known, user, inSession);
+  const { commands, hidden } = loadCommandSet({ cwd, builtinNames: COMMAND_NAMES, engineNames: known.map((command) => command.name) });
+  return getMenuCommands(known, commands, inSession, hidden);
 }
 
 /** The engine's commands as marcsh knows them: the list its last turn or warm-up cached, plus the bundled plugin's. */

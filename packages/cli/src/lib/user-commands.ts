@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentModelFits, type Agent } from "./agents";
+import { Mode } from "./modes";
 import { MAX_AGENT_BYTES, agentFileSlug, readFrontmatter } from "./agent-file";
 import { listPacks, packPluginDir, packPluginName, packsRoot } from "./pack-lock";
 import { printable } from "./safe-text";
@@ -17,7 +18,7 @@ export type UserCommand = {
   description: string;
   /** The prompt, with `$ARGUMENTS` and `$1`..`$9` still in it. */
   template: string;
-  /** The agent (ID or name) the turn runs as; the selected agent when absent. */
+  /** The agent (ID or name) the turn runs as; the selected agent when absent. A pack command's empty `agent:` is "" (it warns). */
   agent?: string;
   /** The model the turn runs on; the session's when absent or unusable on the engine. */
   model?: string;
@@ -63,8 +64,9 @@ function readCommandDir(dir: string, source: UserCommand["source"], pack?: strin
         const value = fields.get(key)?.trim() || undefined;
         return value && pack ? printable(value) : value;
       };
-      const agent = field("agent");
-      if (pack && !agent) continue;
+      // A pack command with an empty `agent:` stays marcsh's (it warns when run) rather than going back to the engine's copy unnoticed.
+      const agent = field("agent") ?? (pack && fields.has("agent") ? "" : undefined);
+      if (pack && agent === undefined) continue;
       const argumentHint = field("argument-hint");
       commands.push({
         name,
@@ -149,7 +151,15 @@ const prefixedName = (command: UserCommand) => `${(command.pack!.split("/")[1] ?
  * the user's, or an earlier pack's (by ID). One that loses is listed as `<repo>:<name>` instead, and is hidden, with a notice (see
  * `takePackCommandNotices`), when that name is taken too.
  */
-export function loadUserCommands({ cwd, builtinNames = [], engineNames = [], trusted, packsDir = packsRoot() }: LoadOptions): UserCommand[] {
+export function loadUserCommands(options: LoadOptions): UserCommand[] {
+  return loadCommandSet(options).commands;
+}
+
+/**
+ * The listed commands (`loadUserCommands`) and the pack commands hidden by a clash. A hidden command's engine copy (Claude's
+ * `<plugin name>:<name>`) is not listed in the menu either, and typing that name runs marcsh's command, never the raw copy.
+ */
+export function loadCommandSet({ cwd, builtinNames = [], engineNames = [], trusted, packsDir = packsRoot() }: LoadOptions): { commands: UserCommand[]; hidden: UserCommand[] } {
   const byName = new Map<string, UserCommand>();
   const project = (trusted ?? isTrusted(cwd)) ? readCommandDir(join(cwd, ".marcsh", "commands"), "project") : [];
   for (const command of [...readCommandDir(userCommandsDir(), "personal"), ...project]) byName.set(command.name, command);
@@ -160,6 +170,7 @@ export function loadUserCommands({ cwd, builtinNames = [], engineNames = [], tru
   const taken = new Set([...builtinNames, ...engineNames].map((name) => name.toLowerCase()).filter((name) => !copies.has(name)));
   for (const name of byName.keys()) taken.add(name);
   const lost: UserCommand[] = [];
+  const hidden: UserCommand[] = [];
   for (const command of packCommands) {
     if (taken.has(command.name)) lost.push(command);
     else {
@@ -174,13 +185,14 @@ export function loadUserCommands({ cwd, builtinNames = [], engineNames = [], tru
       byName.set(name, { ...command, name });
       continue;
     }
+    hidden.push(command);
     const clash = `${command.pack}'s /${command.name} is hidden: /${command.name} and /${name} are already other commands.`;
     if (!noticedClashes.has(clash)) {
       noticedClashes.add(clash);
       pendingNotices.push(clash);
     }
   }
-  return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return { commands: [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)), hidden };
 }
 
 /** Fills the template: `$ARGUMENTS` is all of `args`, `$1`..`$9` its whitespace-separated words (empty when missing). */
@@ -206,11 +218,15 @@ export type CommandTurn = {
   model?: string;
   /** Something in the command's frontmatter that was not applied. */
   warning?: string;
+  /** What the turn does differently from what the command asks, to tell the user (a pack command kept read-only by the selected agent). */
+  notice?: string;
 };
 
 export type TurnOptions = LoadOptions & {
   engine: string;
   agents: readonly Agent[];
+  /** The selected agent. A read-only one (Plan) keeps a pack command's build agent read-only for the turn. */
+  selected?: Agent;
 };
 
 /** A user's command may name any agent, by ID or by name (any case). */
@@ -233,18 +249,27 @@ function packCommandAgent(wanted: string, pack: string, agents: readonly Agent[]
 }
 
 /** The turn for `input` when it is one of the user's commands (`/name args`); null when it is not, so it is sent as typed. */
-export function userCommandTurn(input: string, { engine, agents, ...load }: TurnOptions): CommandTurn | null {
+export function userCommandTurn(input: string, { engine, agents, selected, ...load }: TurnOptions): CommandTurn | null {
   const invocation = parseInvocation(input.trim());
   if (!invocation) return null;
-  // A pack command answers to the name of the engine's copy too, so typing that never runs the copy as the selected agent.
-  const command = loadUserCommands(load).find((candidate) => candidate.name === invocation.name || candidate.engineName === invocation.name);
+  // A pack command answers to the name of the engine's copy too (also when the command itself is hidden), so typing that never runs the
+  // copy as the selected agent.
+  const { commands, hidden } = loadCommandSet(load);
+  const command =
+    commands.find((candidate) => candidate.name === invocation.name || candidate.engineName === invocation.name) ??
+    hidden.find((candidate) => candidate.engineName === invocation.name);
   if (!command) return null;
 
   const turn: CommandTurn = { text: expandCommand(command.template, invocation.args) };
   const warnings: string[] = [];
-  if (command.agent) {
+  if (command.agent === "") warnings.push(`/${command.name}: ${command.pack} names no agent (its agent: is empty); the selected agent is used.`);
+  else if (command.agent) {
     const agent = command.pack ? packCommandAgent(command.agent, command.pack, agents) : namedAgent(command.agent, agents);
-    if (agent) turn.agent = agent;
+    // L6: a pack command never relaxes a read-only selected agent. Its agent's prompt, skills and subagents answer, under plan's rules.
+    if (agent && command.pack && selected?.mode === Mode.PLAN && agent.mode !== Mode.PLAN) {
+      turn.agent = { ...agent, mode: Mode.PLAN };
+      turn.notice = `/${command.name} runs as ${agent.name} in ${selected.name} (read-only): switch to Build to let it change files.`;
+    } else if (agent) turn.agent = agent;
     else if (command.pack) warnings.push(`/${command.name}: ${command.pack} has no agent “${command.agent}”; the selected agent is used.`);
     else warnings.push(`/${command.name}: no agent named “${command.agent}”; the selected agent is used.`);
   }

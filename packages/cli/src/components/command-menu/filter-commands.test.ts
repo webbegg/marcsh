@@ -33,6 +33,14 @@ describe("pack commands in the menu (M2)", () => {
     expect(getMenuCommands(pi, [spec]).filter((command) => command.name === "spec")).toEqual([expect.objectContaining({ source: "flows" })]);
   });
 
+  test("a hidden pack command's engine copy is not listed either (T8 d)", () => {
+    const hidden: UserCommand = { ...spec, name: "review", engineName: "zed-flows:review", pack: "zed/flows" };
+    const claude = [{ name: "zed-flows:review", description: "Review", argumentHint: "" }, { name: "zed-flows:ship", description: "Ship", argumentHint: "" }];
+    const listed = getMenuCommands(claude, [spec], true, [hidden]).map((command) => command.name);
+    expect(listed).not.toContain("zed-flows:review");
+    expect(listed).toContain("zed-flows:ship");
+  });
+
   test("a user's own command keeps an empty hint unless its file gives one", () => {
     const own: UserCommand = { name: "mine", description: "d", template: "x", source: "personal" };
     expect(getMenuCommands([], [own]).find((command) => command.name === "mine")).toMatchObject({ argumentHint: "", source: "personal" });

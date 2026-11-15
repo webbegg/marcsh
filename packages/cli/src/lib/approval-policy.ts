@@ -38,6 +38,10 @@ function pausedReason(branch: Exclude<BranchState, { kind: "feature" }>): string
 export const NORMAL_MODE_LINE =
   "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.";
 
+/** Normal's line when nobody is there to approve (headless `marcsh run`): every ask is denied, so nothing that would ask runs. */
+export const HEADLESS_NORMAL_MODE_LINE =
+  "Approval mode NORMAL (headless run): nobody is there to approve, so any file edit or shell command that would ask the user is denied and does not run; reads run.";
+
 /** The system-prompt line of a plan turn (and of a read-only subagent), in place of any approval mode line: nothing runs that changes anything. */
 export const PLAN_MODE_LINE = "Plan mode: read-only; file edits and shell commands are blocked, so read, plan and ask, and change nothing.";
 
@@ -54,8 +58,11 @@ export function approvalModeLine(mode: ApprovalMode, branch: BranchState): strin
   return `Approval mode YOLO on feature branch ${branch.branch}: file edits inside this folder, ordinary shell commands and local commits run without asking, so they need no confirmation in chat; anything remote (push, PR/issue, gh api writes), leaving the branch, and destructive, publish or merge, privileged, and dependency commands still ask the user through marcsh.`;
 }
 
-/** The mode that applies to a call: auto and yolo only on a feature branch, normal anywhere else (a branch that cannot be read is not a feature branch). */
-function effectiveMode(mode: ApprovalMode, cwd: string, branch: BranchSource | undefined): ApprovalMode {
+/**
+ * The mode that applies to a call: auto and yolo only on a feature branch, normal anywhere else (a branch that cannot be read is not a
+ * feature branch). It is also what a pack's hooks are told (`permission_mode`, MARCSH_APPROVAL_MODE): never a mode freer than the one enforced.
+ */
+export function effectiveApprovalMode(mode: ApprovalMode, cwd: string, branch?: BranchSource): ApprovalMode {
   if (mode === "normal") return mode;
   return resolveBranch(branch ?? (() => branchState(cwd))).kind === "feature" ? mode : "normal";
 }
@@ -173,7 +180,7 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
   if (call.kind === "other") return UNCHANGED;
 
   if (call.kind === "edit") {
-    if (effectiveMode(mode, cwd, branch) === "normal") return UNCHANGED;
+    if (effectiveApprovalMode(mode, cwd, branch) === "normal") return UNCHANGED;
     const problem = editProblem(call.path, cwd);
     return problem ? askFor([problem]) : ALLOW;
   }
@@ -181,7 +188,7 @@ export function decideApproval(mode: ApprovalMode, call: ToolCall, cwd: string, 
   const { matches, writes, files } = analyzeCommand(call.command, { stays: (dir) => staysInCheckout(dir, cwd) });
   const catastrophic = matches.find((match) => match.hardDeny);
   if (catastrophic) return { action: "block", reason: `marcsh: ${catastrophic.reason} is never allowed` };
-  const effective = effectiveMode(mode, cwd, branch);
+  const effective = effectiveApprovalMode(mode, cwd, branch);
   if (effective === "normal") return UNCHANGED;
 
   // Only a local commit is relaxed, and only in yolo.

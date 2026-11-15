@@ -6,7 +6,7 @@ import { join } from "node:path";
 process.env.MARCSH_DB_PATH = ":memory:";
 
 const { BUILTIN_AGENTS, loadAgents } = await import("./agents");
-const { loadUserCommands, takePackCommandNotices, userCommandTurn } = await import("./user-commands");
+const { loadCommandSet, loadUserCommands, takePackCommandNotices, userCommandTurn } = await import("./user-commands");
 
 // M2: a pack's `commands/*.md` that names an `agent` is marcsh's to run: listed while the pack is installed, expanded by marcsh, and
 // run for one turn as that agent of the same pack (or a built-in).
@@ -181,6 +181,16 @@ describe("engine commands beat pack commands (L5)", () => {
     withEngine(["review", "flows:review"]);
     expect(takePackCommandNotices()).toEqual([]);
   });
+
+  // After the notice test: a clash is said once per run.
+  test("a hidden command's engine copy is not listed by its name and typing that name runs marcsh's command, never the raw copy (T8 d)", () => {
+    const { commands, hidden } = loadCommandSet({ cwd: project, trusted: false, builtinNames: ["new", "agents"], engineNames: ["review", "flows:review"], packsDir: packs });
+    expect(commands.map((command) => command.name)).not.toContain("acme-flows:review");
+    expect(hidden.map((command) => command.engineName)).toEqual(["acme-flows:review"]);
+    const turn = userCommandTurn("/acme-flows:review x", turnOptions("claude", ["review", "flows:review"]))!;
+    expect(turn.text).toBe("Review: x");
+    expect(turn.agent?.id).toBe("acme/flows/asdd");
+  });
 });
 
 describe("userCommandTurn: pack commands run as their pack's agent (M2)", () => {
@@ -224,6 +234,38 @@ describe("userCommandTurn: pack commands run as their pack's agent (M2)", () => 
   test("a pack command without an agent is not marcsh's: it goes to the engine as typed", () => {
     expect(userCommandTurn("/plain x", base())).toBeNull();
     expect(userCommandTurn("/new", base())).toBeNull();
+  });
+
+  test("an empty agent (`agent:` or `agent: \"\"`) warns and stays marcsh's command, run as the selected agent (T8 a)", () => {
+    write(join(packs, "acme", "flows", "plugin", "commands", "blank.md"), "---\nagent:\n---\nBlank: $ARGUMENTS");
+    write(join(packs, "acme", "flows", "plugin", "commands", "quoted.md"), '---\nagent: ""\n---\nQuoted: $ARGUMENTS');
+    for (const name of ["blank", "quoted"]) {
+      expect(load().find((command) => command.name === name), name).toMatchObject({ pack: "acme/flows", agent: "" });
+      const turn = userCommandTurn(`/${name} it`, base())!;
+      expect(turn.agent, name).toBeUndefined();
+      expect(turn.text).toContain("it");
+      expect(turn.warning).toBe(`/${name}: acme/flows names no agent (its agent: is empty); the selected agent is used.`);
+    }
+  });
+
+  test("with a read-only agent selected, a pack command naming a build agent runs as that agent in plan, with a notice (T8 c, L6)", () => {
+    const plan = BUILTIN_AGENTS.find((agent) => agent.id === "plan")!;
+    const turn = userCommandTurn("/spec x", { ...base(), selected: plan })!;
+    expect(turn.agent).toMatchObject({ id: "acme/flows/asdd", mode: "PLAN", prompt: "Spec first." });
+    expect(turn.notice).toBe("/spec runs as ASDD in Plan (read-only): switch to Build to let it change files.");
+    expect(turn.warning).toBeUndefined();
+
+    // A read-only pack agent selected is read-only too.
+    const reviewer = { ...plan, id: "acme/flows/reviewer", name: "Reviewer" };
+    expect(userCommandTurn("/spec x", { ...base(), selected: reviewer })!.agent?.mode).toBe("PLAN");
+
+    // From a build agent, nothing changes.
+    const build = BUILTIN_AGENTS.find((agent) => agent.id === "build")!;
+    const fromBuild = userCommandTurn("/spec x", { ...base(), selected: build })!;
+    expect(fromBuild.agent).toMatchObject({ id: "acme/flows/asdd", mode: "BUILD" });
+    expect(fromBuild.notice).toBeUndefined();
+    // A command that names Plan from Plan says nothing.
+    expect(userCommandTurn("/plan x", { ...base(), selected: plan })!.notice).toBeUndefined();
   });
 
   test("the agents list without the pack's agents (none loaded) warns rather than guessing", () => {

@@ -220,8 +220,9 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
         model,
         systemPromptAppend: agent.prompt,
         // Always normal: nobody is there to approve, so every ask is denied (above), and the user's saved `approvalMode` (auto, yolo) is
-        // never read here, so an unattended run cannot edit files or commit without approval.
+        // never read here, so an unattended run cannot edit files or commit without approval. The mode line says asks are denied.
         approvalMode: "normal",
+        noApprover: true,
         ...(agent.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
         agentId: agent.id,
         ...(agent.tools && agent.tools.deny.length > 0 ? { deniedTools: agent.tools.deny } : {}),

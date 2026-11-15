@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, decideApproval, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
+import { APPROVAL_MODES, HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, decideApproval, effectiveApprovalMode, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
 import type { BranchState } from "./git-branch";
 
 const project = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-policy-")));
@@ -35,6 +35,12 @@ describe("approval modes", () => {
     for (const branch of [feature, onMain, detached]) expect(approvalModeLine("normal", branch)).toBe(NORMAL_MODE_LINE);
     expect(NORMAL_MODE_LINE).toBe(
       "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.",
+    );
+  });
+
+  test("a headless run's normal line says every ask is denied (exact line)", () => {
+    expect(HEADLESS_NORMAL_MODE_LINE).toBe(
+      "Approval mode NORMAL (headless run): nobody is there to approve, so any file edit or shell command that would ask the user is denied and does not run; reads run.",
     );
   });
 
@@ -233,6 +239,13 @@ describe("auto and yolo are paused off a feature branch", () => {
     ["a detached HEAD", detached],
     ["a folder that is not a repository", noRepo],
   ];
+
+  test("the effective mode (what a pack's hooks are told) is normal there, and the mode itself on a feature branch", () => {
+    for (const [, branch] of paused) {
+      for (const mode of APPROVAL_MODES) expect(effectiveApprovalMode(mode, project, branch)).toBe("normal");
+    }
+    for (const mode of APPROVAL_MODES) expect(effectiveApprovalMode(mode, project, feature)).toBe(mode);
+  });
 
   test("edits and ordinary commands are left to the existing flow, as in normal", () => {
     for (const [, branch] of paused) {
