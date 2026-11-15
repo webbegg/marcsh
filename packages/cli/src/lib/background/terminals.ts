@@ -152,6 +152,12 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals) {
   } catch {}
 }
 
+/** The process groups of the running terminals of every session in this process: `/ps` lists them, so they are no leftovers (see `leftovers.ts`). */
+const runningGroups = new Set<number>();
+
+/** The process groups (the shells' pids) of the background terminals running now. */
+export const runningTerminalGroups = (): number[] => [...runningGroups];
+
 /** Bases already swept for the logs of a marcsh that did not exit normally: once per process is enough. */
 const swept = new Set<string>();
 
@@ -240,6 +246,7 @@ export function createTerminals({
     if (snapshot.status !== "running") return;
     snapshot.settledAt = Date.now();
     snapshot.status = entry.killSignaled ? "killed" : entry.processErrored ? "failed" : snapshot.exitCode === 0 ? "done" : "failed";
+    if (entry.child.pid) runningGroups.delete(entry.child.pid);
     for (const timer of entry.timers) clearTimeout(timer);
     entry.timers.clear();
     // Settled while a descendant still holds the pipes: stop reading them.
@@ -288,14 +295,16 @@ export function createTerminals({
       throw new Error(`At most ${MAX_RUNNING} background terminals can run at once. Stop one with bg_kill before starting another.`);
     }
     let child: ChildProcess;
+    const id = `bt-${counter + 1}`;
     try {
-      // No stdin, ever: a process that reads it gets EOF. Its own process group, so a kill takes what it started.
-      child = spawn("/bin/sh", ["-c", command], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      // No stdin, ever: a process that reads it gets EOF. Its own process group, so a kill takes what it started. What it starts carries
+      // marcsh's environment (with this run's MARCSH_SESSION) and the terminal's id, so a process it leaves behind is found (see `leftovers.ts`).
+      child = spawn("/bin/sh", ["-c", command], { cwd, env: { ...process.env, MARCSH_BG: id }, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (error) {
       throw new Error(`The command could not be started: ${bounded(error)}`);
     }
-
-    const id = `bt-${++counter}`;
+    counter++;
+    if (child.pid) runningGroups.add(child.pid);
     const log = (stream: "stdout" | "stderr") => {
       const path = logDir.file(`${id}.${stream}.log`);
       return path ? openLog(path, { maxBytes: maxLogBytes, onDrain: () => child[stream]?.resume() }) : undefined;

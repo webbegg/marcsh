@@ -7,6 +7,7 @@ import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { BG_PLAN_TOOLS, bgStartDir, hasWorkingDir, isMarcshBgStart, isMarcshBgTool, workingDirError } from "./pi-bg-tools";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
+import { isMarcshProcTool, PROC_PLAN_TOOLS } from "./pi-proc-tools";
 import { isMarcshTask, isMarcshTaskTool, TASK_PLAN_TOOLS } from "./pi-subagent";
 import type { TurnHost } from "./types";
 
@@ -32,10 +33,18 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
  * Tools that run without the approval prompt: pi's read-only built-ins, marcsh's own `AskUserQuestion` (answering the
  * question is the approval), marcsh's own `Task` (the subagent it starts asks for its own tool calls, and has only the
  * read-only tools in plan mode), marcsh's own bg tools except `bg_start` (they read, or stop this session's terminals), and
- * marcsh's own task tools (they read, wait for, or stop this session's background subagents).
+ * marcsh's own task tools (they read, wait for, or stop this session's background subagents), and marcsh's own proc tools (they
+ * read the process table, or stop only what this marcsh run's tools left running; see `pi-proc-tools.ts`).
  */
 export function runsUnasked(tool: ToolSource): boolean {
-  return isReadOnlyBuiltin(tool) || isMarcshAskUser(tool) || isMarcshTask(tool) || isMarcshTaskTool(tool) || (isMarcshBgTool(tool) && !isMarcshBgStart(tool));
+  return (
+    isReadOnlyBuiltin(tool) ||
+    isMarcshAskUser(tool) ||
+    isMarcshTask(tool) ||
+    isMarcshTaskTool(tool) ||
+    (isMarcshBgTool(tool) && !isMarcshBgStart(tool)) ||
+    isMarcshProcTool(tool)
+  );
 }
 
 /** The only tools plan mode offers: those that run unasked, without `bg_kill` and `task_cancel` (plan mode stops nothing). */
@@ -43,6 +52,7 @@ export function offeredInPlan(tool: ToolSource): boolean {
   if (!runsUnasked(tool)) return false;
   if (isMarcshBgTool(tool)) return (BG_PLAN_TOOLS as readonly string[]).includes(tool.name);
   if (isMarcshTaskTool(tool)) return (TASK_PLAN_TOOLS as readonly string[]).includes(tool.name);
+  if (isMarcshProcTool(tool)) return (PROC_PLAN_TOOLS as readonly string[]).includes(tool.name);
   return true;
 }
 

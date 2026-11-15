@@ -240,7 +240,8 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify, pe
       const mode = permissionMode?.();
       const payload = { ...call, ...(mode ? { permission_mode: mode } : {}), ...(agent ? { agent } : {}) };
       const input = JSON.stringify(payload);
-      const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd, ...(mode ? packHookEnv(mode, agent) : agent ? { MARCSH_AGENT: agent } : {}) };
+      // MARCSH_INFRA: a hook is marcsh's own process, so what it leaves running is never listed as a leftover of the agent's tools (see `leftovers.ts`).
+      const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd, MARCSH_INFRA: "1", ...(mode ? packHookEnv(mode, agent) : agent ? { MARCSH_AGENT: agent } : {}) };
       return Promise.all(
         hooks.map(async (hook) => ({
           hook,

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createQuit, type QuitTurn } from "../quit";
 import { createBackgroundHub } from "./hub";
 import { terminalsFor } from "./session-terminals";
-import { createTerminals, MAX_RUNNING, MAX_TRACKED, type BackgroundTerminals, type TerminalSnapshot } from "./terminals";
+import { createTerminals, MAX_RUNNING, MAX_TRACKED, runningTerminalGroups, type BackgroundTerminals, type TerminalSnapshot } from "./terminals";
 
 let base: string;
 let cwd: string;
@@ -55,6 +55,23 @@ async function rejection(promise: Promise<unknown>): Promise<string> {
 }
 
 describe("background terminals (S1)", () => {
+  test("what a terminal runs carries marcsh's environment and the terminal's id, and its group is listed while it runs (M6)", async () => {
+    const { terminals } = setup();
+    const before = process.env.MARCSH_SESSION;
+    process.env.MARCSH_SESSION = "session-for-test";
+    try {
+      const snap = await terminals.start({ command: 'echo "$MARCSH_SESSION|$MARCSH_BG"; sleep 30', title: "env", cwd });
+      expect(runningTerminalGroups()).toContain(snap.pid!);
+      await until(() => snap.stdout.text.includes("|"));
+      expect(snap.stdout.text.trim()).toBe(`session-for-test|${snap.id}`);
+      await terminals.kill([snap.id]);
+      expect(runningTerminalGroups()).not.toContain(snap.pid!);
+    } finally {
+      if (before === undefined) delete process.env.MARCSH_SESSION;
+      else process.env.MARCSH_SESSION = before;
+    }
+  });
+
   test("runs the command with sh, captures stdout and stderr apart, and settles once with the exit code", async () => {
     const { terminals, settled } = setup();
     const snap = await terminals.start({ command: "echo out; echo err >&2; exit 3", title: "mixed", cwd });

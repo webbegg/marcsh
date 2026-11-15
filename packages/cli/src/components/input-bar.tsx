@@ -21,6 +21,7 @@ import { SessionCommandsContext } from "./command-menu/session-commands";
 import { useBackgroundHub } from "../lib/background/context";
 import { useRunningTerminals } from "../lib/background/use-running-terminals";
 import { runningBackgroundText, useRunningSubagents } from "../lib/background/use-running-subagents";
+import { useLeftoverCount } from "../lib/background/use-leftovers";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
@@ -370,7 +371,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const toast = useToast();
   // What the commands on the open session act on; none on the home screen.
   const session = useContext(SessionCommandsContext);
-  const backgroundText = runningBackgroundText(useRunningTerminals(useBackgroundHub()), useRunningSubagents(useBackgroundHub()));
+  const runningTerminals = useRunningTerminals(useBackgroundHub());
+  const runningSubagents = useRunningSubagents(useBackgroundHub());
   // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
   const agentIdRef = useRef(agent.id);
   agentIdRef.current = agent.id;
@@ -382,6 +384,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
   const turnInput = useContext(TurnInputContext);
+  // Leftover processes are counted when the line appears, every 30 s at most, and when a turn ends (see `use-leftovers.ts`).
+  const backgroundText = runningBackgroundText(runningTerminals, runningSubagents, useLeftoverCount(turnInput.active));
   // Read once, when the first bar mounts; what was wrong in the file is said once, here, in a single toast.
   const keybinds = useMemo(() => loadKeybinds(COMMAND_NAMES), []);
   const runPaletteCommandRef = useRef<(command: Command) => void>(() => {});

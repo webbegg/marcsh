@@ -277,7 +277,7 @@ Copy the last reply to the clipboard.
 
 ### /ps
 
-Show this session's background terminals.
+Show this session's background terminals and the leftover processes of this marcsh run.
 
 ```
 /ps
@@ -287,7 +287,8 @@ Show this session's background terminals.
 - `Up` and `Down` move. `Enter` opens the selected terminal's output. It is read-only and follows new output. `t` switches between stdout and stderr. `Left` goes back to the list.
 - `x` kills the selected terminal, in the list and in the output view. The agent is told it was killed.
 - The output view strips colors and other terminal codes. It shows the last 3000 lines; the full log file is named at the top.
-- Background terminals stop when you leave the session or quit marcsh. On Claude, `/ps` says they run in pi sessions only.
+- Background terminals stop when you leave the session or quit marcsh. Background terminals exist on pi only; on Claude, `/ps` says so and lists only the leftover processes.
+- Under the terminals, **Leftover processes** lists what the agent's tools started in this marcsh run that is still running on its own after the command, tool call or terminal that started it ended. Examples are a server started with `cmd &`, a browser a test left open, or a watcher. Each row shows the pid, age, memory, command and, when known, the background terminal that started it (`bt-2`). `x` stops the selected one: `SIGTERM`, then `SIGKILL` after 2 seconds. marcsh never stops them on its own. Only processes carrying this run's marker are listed, and only those can be stopped; see [What marcsh may stop](security.md#what-marcsh-may-stop). The list is read when `/ps` opens and after each stop.
 
 ### /subagents
 
