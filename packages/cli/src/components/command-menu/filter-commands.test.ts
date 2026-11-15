@@ -1,11 +1,43 @@
 import { describe, expect, test } from "bun:test";
-import { getFilteredCommands } from "./filter-commands";
+import { getFilteredCommands, getMenuCommands } from "./filter-commands";
 import type { Command } from "./types";
+import type { UserCommand } from "../../lib/user-commands";
 
 const command = (name: string): Command => ({ name, description: name, value: `/${name}` });
 const names = (query: string, list: Command[]) => getFilteredCommands(query, list).map((c) => c.name);
 
 const MENU = ["new", "agents", "models", "sessions", "theme", "exit", "marcsh:feature", "marcsh:workflow", "review"].map(command);
+
+describe("pack commands in the menu (M2)", () => {
+  const spec: UserCommand = {
+    name: "spec",
+    description: "Write a spec",
+    template: "x",
+    agent: "asdd",
+    argumentHint: "[spec slug]",
+    source: "pack",
+    pack: "acme/flows",
+    engineName: "acme-flows:spec",
+  };
+
+  test("listed with the pack's name as its source and its argument hint", () => {
+    const entry = getMenuCommands([], [spec]).find((command) => command.name === "spec");
+    expect(entry).toMatchObject({ name: "spec", value: "/spec", description: "Write a spec", argumentHint: "[spec slug]", source: "flows" });
+  });
+
+  test("the engine's own copy of it is not listed a second time: Claude's plugin name or pi's template name", () => {
+    const claude = [{ name: "acme-flows:spec", description: "Write a spec", argumentHint: "" }, { name: "acme-flows:ship", description: "Ship", argumentHint: "" }];
+    const pi = [{ name: "spec", description: "Write a spec", argumentHint: "", source: "prompt" }];
+    const names = (list: Command[]) => list.map((command) => command.name);
+    expect(names(getMenuCommands(claude, [spec])).filter((name) => name.includes("spec") || name.includes("ship"))).toEqual(["acme-flows:ship", "spec"]);
+    expect(getMenuCommands(pi, [spec]).filter((command) => command.name === "spec")).toEqual([expect.objectContaining({ source: "flows" })]);
+  });
+
+  test("a user's own command keeps an empty hint unless its file gives one", () => {
+    const own: UserCommand = { name: "mine", description: "d", template: "x", source: "personal" };
+    expect(getMenuCommands([], [own]).find((command) => command.name === "mine")).toMatchObject({ argumentHint: "", source: "personal" });
+  });
+});
 
 describe("fuzzy command filter", () => {
   test("an empty query keeps every command in its original order", () => {

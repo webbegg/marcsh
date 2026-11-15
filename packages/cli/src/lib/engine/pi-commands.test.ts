@@ -28,10 +28,29 @@ describe("normalizePiCommands", () => {
     ]);
   });
 
-  test("a missing description is empty and the argument hint is empty (pi lists none)", () => {
+  test("a missing description is empty, and so is the hint of a command whose file gives none or cannot be read", () => {
     const [command] = normalizePiCommands([info("bare", "prompt")]);
 
     expect(command).toMatchObject({ name: "bare", description: "", argumentHint: "" });
+  });
+
+  test("a prompt template's argument-hint is read from its file's frontmatter (quotes stripped, printable only); a skill's is not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "marcsh-pi-hint-"));
+    try {
+      writeFileSync(join(dir, "plan.md"), '---\ndescription: Plan\nargument-hint: "[spec slug]"\n---\nPlan $ARGUMENTS');
+      writeFileSync(join(dir, "fix.md"), "---\nargument-hint: <what\u001b[31m>\n---\nFix");
+      mkdirSync(join(dir, "tdd"));
+      writeFileSync(join(dir, "tdd", "SKILL.md"), "---\nname: tdd\nargument-hint: <nope>\n---\nRED");
+      const commands = normalizePiCommands([info("plan", "prompt", join(dir, "plan.md")), info("fix", "prompt", join(dir, "fix.md")), info("skill:tdd", "skill", join(dir, "tdd", "SKILL.md"))]);
+
+      const hint = (name: string) => commands.find((command) => command.name === name)?.argumentHint;
+      expect(hint("plan")).toBe("[spec slug]");
+      expect(hint("fix")).toStartWith("<what");
+      expect(hint("fix")).not.toContain("\u001b");
+      expect(hint("skill:tdd")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("skips entries without a usable name or a known source, and strips a leading slash", () => {

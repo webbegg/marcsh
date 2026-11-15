@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { approvalModeLine, decideApproval, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
+import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, decideApproval, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
 import type { BranchState } from "./git-branch";
 
 const project = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-policy-")));
@@ -31,8 +31,15 @@ describe("approval modes", () => {
     expect(isApprovalMode(undefined)).toBe(false);
   });
 
-  test("normal adds no line to the system prompt, on any branch", () => {
-    for (const branch of [feature, onMain, detached]) expect(approvalModeLine("normal", branch)).toBeUndefined();
+  test("normal has its own line, the same on any branch (exact line)", () => {
+    for (const branch of [feature, onMain, detached]) expect(approvalModeLine("normal", branch)).toBe(NORMAL_MODE_LINE);
+    expect(NORMAL_MODE_LINE).toBe(
+      "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.",
+    );
+  });
+
+  test("plan mode has its own line (exact line)", () => {
+    expect(PLAN_MODE_LINE).toBe("Plan mode: read-only; file edits and shell commands are blocked, so read, plan and ask, and change nothing.");
   });
 
   test("auto and yolo on a feature branch say what runs unasked (exact lines)", () => {

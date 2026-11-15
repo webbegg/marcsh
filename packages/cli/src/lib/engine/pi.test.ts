@@ -17,7 +17,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import type { ChatMessage } from "../chat-types";
-import { approvalModeLine } from "../approval-policy";
+import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine } from "../approval-policy";
 import { Mode } from "../modes";
 import { openStorage, type Storage } from "../storage";
 import { createPiEngine, defaultPiAgentDir, type PiEngineOptions } from "./pi";
@@ -2350,26 +2350,27 @@ describe("pi engine approval modes (S5, S7, S9, S13)", () => {
     expect(prompts[0]).toContain(`<addendum>\n${approvalModeLine("yolo", feature)}\n</addendum>`);
   });
 
-  test("normal mode adds no mode line", async () => {
-    for (const approvalMode of [undefined, "normal"] as const) {
-      const { prompts, step } = promptOf();
-      const { engine, model } = await setup([step]);
+  test("normal mode adds its own line; no approval mode given adds none", async () => {
+    const normal = promptOf();
+    const first = await setup([normal.step]);
+    await runTurn(first.engine, first.model, { approvalMode: "normal", systemPromptAppend: "You are the FTD agent." });
+    expect(normal.prompts[0]).toContain(`<addendum>\nYou are the FTD agent.\n\n${NORMAL_MODE_LINE}\n</addendum>`);
 
-      await runTurn(engine, model, { approvalMode, systemPromptAppend: "You are the FTD agent." });
-
-      expect(prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
-      expect(prompts[0]).not.toContain("Approval mode");
-    }
+    const none = promptOf();
+    const second = await setup([none.step]);
+    await runTurn(second.engine, second.model, { systemPromptAppend: "You are the FTD agent." });
+    expect(none.prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
+    expect(none.prompts[0]).not.toContain("Approval mode");
   });
 
-  test("a plan turn gets no mode line, whatever the session's approval mode", async () => {
-    for (const approvalMode of ["auto", "yolo"] as const) {
+  test("a plan turn gets the plan line and no approval mode line, whatever the session's approval mode", async () => {
+    for (const approvalMode of ["normal", "auto", "yolo"] as const) {
       const { prompts, step } = promptOf();
       const { engine, model } = await setup([step]);
 
       await runTurn(engine, model, { mode: Mode.PLAN, approvalMode, systemPromptAppend: "You are the FTD agent." });
 
-      expect(prompts[0]).toContain("<addendum>\nYou are the FTD agent.\n</addendum>");
+      expect(prompts[0]).toContain(`<addendum>\nYou are the FTD agent.\n\n${PLAN_MODE_LINE}\n</addendum>`);
       expect(prompts[0]).not.toContain("Approval mode");
     }
   });

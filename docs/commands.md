@@ -353,7 +353,7 @@ The `/` menu lists the commands and skills of the engine you are on. The list is
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
 
-Your [custom commands](#custom-commands) are the exception: marcsh expands them itself before sending.
+Your [custom commands](#custom-commands) and the [pack commands that name an agent](#pack-commands) are the exception: marcsh expands them itself before sending.
 
 ## Custom commands
 
@@ -397,6 +397,7 @@ Pay special attention to: src/app.ts error handling
   - `description`: the text in the `/` menu. Without it, the first line of the prompt is shown.
   - `agent`: the agent to run the turn as, by ID (`user/reviewer`, `plan`) or by name. An unknown agent is reported and the selected agent is used.
   - `model`: the model for the turn. If the engine cannot use it (a pi model such as `openai/gpt-5` on Claude, or the reverse), it is reported and the session model is used.
+  - `argument-hint`: what the `/` menu shows after the name, such as `<file>` or `"[spec slug]"`. Quotes around it are dropped.
 - `agent` and `model` apply to that turn only. The next message runs as the selected agent on the session model.
 
 ### Arguments
@@ -414,7 +415,7 @@ Pay special attention to: src/app.ts error handling
 
 - They appear in the `/` menu with the tag `personal` or `project`. The files are read when the menu opens, so a new file shows up without a restart. Picking one puts `/name ` in the prompt; add the arguments and press `Enter`.
 - marcsh's own commands win a name clash: a `new.md` file is ignored. A command of yours also replaces an engine command with the same name.
-- A project command replaces a personal one with the same name.
+- A project command replaces a personal one with the same name, and a personal one replaces a [pack command](#pack-commands) with the same name.
 - To change where personal commands are read from, set `MARCSH_COMMANDS_DIR`.
 
 ### Project commands and trust
@@ -422,6 +423,34 @@ Pay special attention to: src/app.ts error handling
 A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
 
 Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
+
+## Pack commands
+
+An installed [pack](packs.md) can ship commands in its `commands/` folder. Most of them belong to the engine and work only while one of the pack's agents is selected. A pack command whose frontmatter names an `agent` works differently: marcsh runs it itself, from any agent.
+
+```markdown
+---
+description: Write a spec for an idea
+agent: asdd
+argument-hint: "<idea>"
+---
+Load the specify skill for this idea: $ARGUMENTS
+```
+
+With that file as `commands/spec.md` in the pack, typing `/spec offline mode` while Build is selected does this:
+
+- The prompt is expanded the same way as a [custom command](#arguments) (`$ARGUMENTS`, `$1` to `$9`). The chat shows the expanded prompt.
+- The turn runs as the pack's ASDD agent, with that agent's prompt, tools, pack skills, subagents and enabled hooks. This works because the turn's agent belongs to the pack.
+- The next message runs as the selected agent again, which is Build here.
+
+The `agent` field names the file of one of the pack's own agents (`asdd` for `agents/asdd.md`, in any letter case), that agent's `name`, or `build` or `plan`. If the agent is another pack's, one of yours, a subagent or unknown, marcsh warns and runs the turn as the selected agent.
+
+Where they show and which one wins:
+
+- They appear in the `/` menu and the command palette while the pack is installed, whichever agent is selected. They are tagged with the pack's repository name and show their `argument-hint`.
+- marcsh's own commands win a name clash. So do your personal and project commands. If two packs have a command with the same name, the pack whose ID sorts first keeps it.
+- On Claude, the pack's view also has its own copy of the command, named `<owner>-<repo>:<name>`. That copy is not listed again, and typing its name runs marcsh's version.
+- A pack command without `agent` works as before: the engine runs it, and only while one of the pack's agents is selected.
 
 ## Bundled commands and skills
 

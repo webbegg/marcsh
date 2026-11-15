@@ -13,6 +13,7 @@ import { mergeUsage } from "../usage";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
 import { Mode } from "../modes";
+import { packHookEnv } from "../pack-hooks";
 import { prepareViewForTurn } from "../packs";
 import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import { marcshPluginPath } from "../plugin";
@@ -163,16 +164,19 @@ export function claudeQueryOptions({
   abortController,
   canUseTool,
   plugins,
+  hookEnv,
 }: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "subagents" | "resumeRef"> & {
   /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
   branch?: BranchSource;
   abortController: AbortController;
   canUseTool: CanUseTool;
   plugins: readonly string[];
+  /** Added to marcsh's own environment for the Claude process, whose hooks inherit it (a pack's hooks: MARCSH_APPROVAL_MODE, MARCSH_AGENT). */
+  hookEnv?: Record<string, string>;
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
-  // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
-  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, branch ?? (() => branchState(cwd)));
+  // Plan mode stays read-only whatever the approval mode, so it gets the plan line and no approval mode line.
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalMode, branch ?? (() => branchState(cwd)));
   const agents = subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode }) : {};
   return {
     cwd,
@@ -186,6 +190,8 @@ export function claudeQueryOptions({
     ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
     ...(Object.keys(agents).length > 0 ? { agents } : {}),
     ...(plugins.length > 0 ? { plugins: plugins.map((path) => ({ type: "local" as const, path })) } : {}),
+    // The SDK's default is marcsh's environment; it is kept, with these on top.
+    ...(hookEnv ? { env: { ...process.env, ...hookEnv } } : {}),
   };
 }
 
@@ -230,7 +236,10 @@ export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, prio
   return { ...applied, metadata: { ...applied.metadata, ...(usage ? { usage } : {}) } };
 }
 
-function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn(
+  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, agentId, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest,
+  host: TurnHost,
+): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
@@ -251,10 +260,12 @@ function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, 
     const packView = packTurn?.view;
     const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])];
+    // Enabled pack hooks run in the Claude process (through marcsh's filter): they are told the mode and agent the turn started with, as on pi.
+    const hookEnv = packPath && packTurn?.hooks ? packHookEnv(mode === Mode.PLAN ? "plan" : (approvalMode ?? "normal"), agentId) : undefined;
     try {
       chat = query({
         prompt: claudePrompt(prompt, attachments, cwd),
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, subagents, resumeRef, abortController, canUseTool, plugins }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, subagents, resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
       });
 
       for await (const message of chat) {

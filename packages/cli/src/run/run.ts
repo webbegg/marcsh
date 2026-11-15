@@ -223,6 +223,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
         // never read here, so an unattended run cannot edit files or commit without approval.
         approvalMode: "normal",
         ...(agent.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
+        agentId: agent.id,
         ...(agent.tools && agent.tools.deny.length > 0 ? { deniedTools: agent.tools.deny } : {}),
         ...subagentsOf(agent),
         resumeRef,

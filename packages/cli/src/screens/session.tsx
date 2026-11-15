@@ -208,7 +208,7 @@ function SessionChat({
         userText,
         mode: turnAgent.mode,
         // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack.
-        turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
+        turnAgent: { id: turnAgent.id, name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
         ...(attachments?.length ? { attachments } : {}),
         ...(background ? { background } : {}),
       };

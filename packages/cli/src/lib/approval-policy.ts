@@ -34,9 +34,16 @@ function pausedReason(branch: Exclude<BranchState, { kind: "feature" }>): string
   return branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
 }
 
-/** One line for the system prompt, so the agent knows what needs no confirmation in chat. None in normal mode. */
-export function approvalModeLine(mode: ApprovalMode, branch: BranchState): string | undefined {
-  if (mode === "normal") return undefined;
+/** The system-prompt line of normal mode: the same on every branch. */
+export const NORMAL_MODE_LINE =
+  "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.";
+
+/** The system-prompt line of a plan turn (and of a read-only subagent), in place of any approval mode line: nothing runs that changes anything. */
+export const PLAN_MODE_LINE = "Plan mode: read-only; file edits and shell commands are blocked, so read, plan and ask, and change nothing.";
+
+/** One line for the system prompt, so the agent knows what needs no confirmation in chat. */
+export function approvalModeLine(mode: ApprovalMode, branch: BranchState): string {
+  if (mode === "normal") return NORMAL_MODE_LINE;
   const name = mode === "auto" ? "AUTO" : "YOLO";
   if (branch.kind !== "feature") {
     return `Approval mode ${name} is paused: this folder is not on a feature branch (${pausedReason(branch)}), so marcsh asks as in normal mode. Start the work on its own feature branch, preferably in a git worktree, before changing code.`;

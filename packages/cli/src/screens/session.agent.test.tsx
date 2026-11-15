@@ -29,6 +29,7 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { NORMAL_MODE_LINE } = await import("../lib/approval-policy");
 const { engines } = await import("../lib/engine");
 const { preferencesPath, setAgentId, setDefaultEngine } = await import("../lib/preferences");
 
@@ -80,7 +81,7 @@ describe("a Claude turn with the selected agent (S4, S5, S6)", () => {
   test("the agent prompt is appended to the Claude Code preset, never in place of it", async () => {
     const options = await runTurn("user/ftd");
 
-    expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: "Work test-first." });
+    expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: `Work test-first.\n\n${NORMAL_MODE_LINE}` });
   });
 
   test("a read-only agent runs in plan permission mode", async () => {
@@ -96,11 +97,10 @@ describe("a Claude turn with the selected agent (S4, S5, S6)", () => {
     expect((await runTurn("user/reviewer")).model).toBe("sonnet");
   });
 
-  test("a Build turn sends the same options as before: no append key", async () => {
+  test("a Build turn sends the same options as before, with only the normal mode line appended (M3)", async () => {
     const options = await runTurn("build");
 
-    expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
-    expect("append" in options.systemPrompt).toBe(false);
+    expect(options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: NORMAL_MODE_LINE });
     expect(options.permissionMode).toBe("default");
     expect(options.model).toBe("sonnet");
   });
@@ -108,12 +108,12 @@ describe("a Claude turn with the selected agent (S4, S5, S6)", () => {
   test("a new session starts with the agent chosen on the home screen", async () => {
     const options = await runTurn("build", { agentId: "user/ftd" });
 
-    expect(options.systemPrompt.append).toBe("Work test-first.");
+    expect(options.systemPrompt.append).toBe(`Work test-first.\n\n${NORMAL_MODE_LINE}`);
   });
 
   test("switching agent keeps the conversation and applies the new agent from the next turn (S5)", async () => {
     const first = await runTurn("build");
-    expect(first.systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+    expect(first.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: NORMAL_MODE_LINE });
 
     // Build → Plan → FTD
     for (let i = 0; i < 2; i++) await act(async () => screen!.mockInput.pressTab());
@@ -124,7 +124,7 @@ describe("a Claude turn with the selected agent (S4, S5, S6)", () => {
 
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options.resume).toBe("claude-1");
-    expect(calls[1]!.options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: "Work test-first." });
+    expect(calls[1]!.options.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: `Work test-first.\n\n${NORMAL_MODE_LINE}` });
     expect(calls[1]!.options.model).toBe("haiku");
     expect(frame()).toContain("FTD › ");
     expect(frame()).toContain("Build › ");

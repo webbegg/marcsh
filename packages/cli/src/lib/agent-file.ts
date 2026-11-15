@@ -88,6 +88,9 @@ function slug(text: string) {
   return text.toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
 }
 
+/** The ID part an agent file named `stem` (without `.md`) gets, in any letter case; empty when the name has no letters or digits. */
+export const agentFileSlug = (stem: string) => slug(stem);
+
 /** The ID part of an agent file: its slug, else (a name with no letters or digits) a short hash of the file name, which is stable. */
 const idPart = (stem: string, file: string) => slug(stem) || createHash("sha1").update(file).digest("hex").slice(0, 8);
 

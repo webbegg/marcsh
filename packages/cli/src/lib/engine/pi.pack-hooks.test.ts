@@ -220,6 +220,25 @@ describe("PreToolUse hooks on pi", () => {
     expect(readFileSync(marker("env.txt"), "utf8")).toBe(`${view}|${cwd}`);
   });
 
+  test("the hook is told the turn's approval mode and agent, in the payload and the environment; a plan turn says plan", async () => {
+    const view = await installFake("acme/flows", {
+      "hooks.json": hooksJson({ PreToolUse: [{ matcher: "Bash|Read", hooks: [{ type: "command", command: sh("see.sh") }] }] }),
+      "see.sh": `cat > ${marker("stdin.json")}\nprintf '%s|%s' "$MARCSH_APPROVAL_MODE" "$MARCSH_AGENT" > ${marker("env.txt")}\n`,
+    });
+    const build = await setup([bashCall("echo seen"), done()]);
+
+    await build.turn({ packPluginPath: view, approvalMode: "auto", currentApprovalMode: () => "yolo", agentId: "acme/flows/asdd" });
+
+    // The mode at the moment of the call (a /permissions switch during the turn counts), not the one the turn started in.
+    expect(JSON.parse(readFileSync(marker("stdin.json"), "utf8"))).toMatchObject({ permission_mode: "yolo", agent: "acme/flows/asdd" });
+    expect(readFileSync(marker("env.txt"), "utf8")).toBe("yolo|acme/flows/asdd");
+
+    const plan = await setup([toolCall("read", { path: join(cwd, "x.txt") }), done()]);
+    await plan.turn({ packPluginPath: view, mode: Mode.PLAN, approvalMode: "yolo", agentId: "acme/flows/asdd" });
+    expect(JSON.parse(readFileSync(marker("stdin.json"), "utf8"))).toMatchObject({ tool_name: "Read", permission_mode: "plan", agent: "acme/flows/asdd" });
+    expect(readFileSync(marker("env.txt"), "utf8")).toBe("plan|acme/flows/asdd");
+  });
+
   test("a hook that times out blocks the call and its whole process group is killed", async () => {
     const view = await installFake("acme/flows", {
       "hooks.json": preBash("slow.sh", { timeout: 1 }),

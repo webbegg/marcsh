@@ -16,6 +16,7 @@ import {
   isRef,
   listPacks,
   packDir,
+  packPluginName,
   packsRoot,
   readLock,
   rejected,
@@ -550,7 +551,7 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
 async function writePluginView(staging: string, id: string, { files }: Parts) {
   const view = join(staging, "plugin");
   await mkdir(join(view, ".claude-plugin"), { recursive: true });
-  const name = id.replace(/\//g, "-").replace(/[^A-Za-z0-9-]+/g, "-");
+  const name = packPluginName(id);
   await writeFile(join(view, ".claude-plugin", "plugin.json"), `${JSON.stringify({ name, description: `Skills and commands of the marcsh pack ${id}` }, null, 2)}\n`);
   for (const file of files) {
     const from = join(staging, "src", file);
