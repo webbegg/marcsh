@@ -5,10 +5,14 @@ import { copyFileSync, chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  capture,
   clearSessionMarker,
+  createProcReader,
+  describeLeftover,
   findLeftovers,
   parseProcStat,
   parsePsLine,
+  redactCommand,
   scanLeftovers,
   startSessionMarker,
   sessionMarker,
@@ -140,15 +144,14 @@ describe("scanLeftovers with real processes", () => {
     expect(own.groupOnly).toBe(true);
   }, 20000);
 
-  test("names the background terminal or call that started it, and skips infrastructure and running terminals' groups", async () => {
+  test("names the background terminal that started it, and skips infrastructure and running terminals' groups", async () => {
     session = newSession();
-    const fromTerminal = orphan(`${sleeper} 30`, markedEnv({ MARCSH_BG: "bt-7", MARCSH_CALL: "call-1" }));
+    const fromTerminal = orphan(`${sleeper} 30`, markedEnv({ MARCSH_BG: "bt-7" }));
     const infra = orphan(`${sleeper} 31`, markedEnv({ MARCSH_INFRA: "1" }));
     const pids = await scanUntil((found) => found.includes(fromTerminal));
     expect(pids).not.toContain(infra);
     const left = (await scanLeftovers({ session, selfPid: process.pid })).find((entry) => entry.pid === fromTerminal)!;
     expect(left.bg).toBe("bt-7");
-    expect(left.call).toBe("call-1");
     // A running terminal's group is shown in /ps already.
     const excluded = await scanLeftovers({ session, selfPid: process.pid, excludeGroups: [left.pgid] });
     expect(excluded.map((entry) => entry.pid)).not.toContain(fromTerminal);
@@ -235,7 +238,7 @@ describe("stopLeftovers checks again before each signal", () => {
 
   test("a pid now held by a process with another start time is never signalled (PID reuse)", async () => {
     const signals: Array<[number, string]> = [];
-    const result = await stopLeftovers([{ pid: 42, startedAt: 1_000_000 }], {
+    const result = await stopLeftovers([{ pid: 42, startKey: 1_000_000 }], {
       session: mockSession,
       selfPid: 7,
       read: async () => [entry({ pid: 42, startedAt: 1_005_000 })],
@@ -320,6 +323,126 @@ describe("stopLeftovers checks again before each signal", () => {
     expect(found.map((left) => left.pid)).toEqual([50]);
   });
 
+  test("a pid still taken after the grace but no longer listed is not reported as stopped, and gets no SIGKILL", async () => {
+    const signals: Array<[number, string]> = [];
+    let scans = 0;
+    const result = await stopLeftovers([42], {
+      session: mockSession,
+      selfPid: 7,
+      // Listed at first; afterwards the pid is still taken, but by nothing this run's leftovers include.
+      read: async () => [marcsh, ...(scans++ === 0 ? [entry({ pid: 42 })] : [])],
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      exists: () => true,
+      graceMs: 10,
+    });
+    expect(signals).toEqual([[-42, "SIGTERM"]]);
+    expect(result.stopped).toEqual([]);
+    expect(result.failed).toEqual([{ pid: 42, reason: expect.stringContaining("still running") }]);
+  });
+
+  test("a scan that fails after the grace leaves what is still there alone, reported as not stopped", async () => {
+    const signals: Array<[number, string]> = [];
+    let scans = 0;
+    const result = await stopLeftovers([42], {
+      session: mockSession,
+      selfPid: 7,
+      read: async () => {
+        if (scans++ > 0) throw new Error("ps timed out");
+        return [marcsh, entry({ pid: 42 })];
+      },
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      exists: () => true,
+      graceMs: 10,
+    });
+    expect(signals).toEqual([[-42, "SIGTERM"]]);
+    expect(result.stopped).toEqual([]);
+    expect(result.failed[0]).toEqual({ pid: 42, reason: expect.stringContaining("ps timed out") });
+  });
+
+  test("a failed first scan signals nothing and rejects", async () => {
+    const signals: Array<[number, string]> = [];
+    const stopping = stopLeftovers([42], {
+      session: mockSession,
+      selfPid: 7,
+      read: async () => Promise.reject(new Error("ps was killed")),
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      graceMs: 10,
+    });
+    await expect(stopping).rejects.toThrow("ps was killed");
+    expect(signals).toEqual([]);
+  });
+
+  test("an aborted stop signals nothing", async () => {
+    const signals: Array<[number, string]> = [];
+    const controller = new AbortController();
+    controller.abort();
+    const stopping = stopLeftovers([42], {
+      session: mockSession,
+      selfPid: 7,
+      read: async () => [marcsh, entry({ pid: 42 })],
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      graceMs: 10,
+      signal: controller.signal,
+    });
+    await expect(stopping).rejects.toThrow();
+    expect(signals).toEqual([]);
+  });
+
+  test("start times are compared on the raw start key when the platform gives one (Linux's start ticks)", async () => {
+    const signals: Array<[number, string]> = [];
+    // The epoch derived from btime moved by a second between scans; the ticks did not: the same process.
+    const same = await stopLeftovers([{ pid: 42, startKey: 4200 }], {
+      session: mockSession,
+      selfPid: 7,
+      read: async () => [marcsh, entry({ pid: 42, startedAt: 1_001_000, startKey: 4200 })],
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      exists: () => false,
+      graceMs: 10,
+    });
+    expect(same.stopped.map((item) => item.pid)).toEqual([42]);
+    const reused = await stopLeftovers([{ pid: 42, startKey: 4200 }], {
+      session: mockSession,
+      selfPid: 7,
+      read: async () => [marcsh, entry({ pid: 42, startedAt: 1_000_000, startKey: 4300 })],
+      kill: (pid, signal) => void signals.push([pid, signal]),
+      graceMs: 10,
+    });
+    expect(reused.failed.map((item) => item.pid)).toEqual([42]);
+    expect(signals).toEqual([[-42, "SIGTERM"]]);
+  });
+
+  test("marks what may be the user's own: a terminal, a session leader, or a session an editor or tmux the agent started leads", () => {
+    const found = findLeftovers(
+      [
+        marcsh,
+        // A plain orphan of a tool call: not marked.
+        entry({ pid: 10 }),
+        entry({ pid: 11, tty: true }),
+        entry({ pid: 12, leader: true }),
+        // An editor (a session leader the agent launched, now on its own) and a shell the user opened in it.
+        entry({ pid: 20, sid: 20 }),
+        entry({ pid: 21, ppid: 20, sid: 21 }),
+        entry({ pid: 22, ppid: 21, sid: 21 }),
+        // Double-forked out of the editor's session: no parent left, but the session's leader is the editor.
+        entry({ pid: 23, ppid: 1, sid: 20 }),
+        // Double-forked out of a running tool call's shell (a session leader under marcsh): an ordinary leftover.
+        entry({ pid: 30, ppid: 7, sid: 30 }),
+        entry({ pid: 31, ppid: 1, sid: 30 }),
+      ],
+      { since, selfPid: 7, now: 2_000_000 },
+    );
+    const marks = Object.fromEntries(found.map((left) => [left.pid, left.possiblyYours ?? null]));
+    expect(marks[10]).toBeNull();
+    expect(marks[31]).toBeNull();
+    expect(marks[11]).toContain("terminal");
+    expect(marks[12]).toContain("session");
+    expect(marks[20]).toContain("session");
+    expect(marks[21]).toContain("session");
+    expect(marks[22]).toContain("pid 21");
+    expect(marks[23]).toContain("pid 20");
+    expect(found.map((left) => left.pid)).not.toContain(30);
+  });
+
   test("a hostile command is shown on one line without control characters, and cut", () => {
     const [left] = findLeftovers([entry({ pid: 50, command: `evil\u001b[2J\u0007\nname ${"x".repeat(1000)}` })], { since, selfPid: 7, now: 2_000_000 });
     expect(left!.command).not.toMatch(/[\u0000-\u001f\u007f]/);
@@ -329,9 +452,19 @@ describe("stopLeftovers checks again before each signal", () => {
 });
 
 describe("parsers", () => {
-  test("a ps line: pid, parent, group, the start time (ps runs in UTC), memory, and the command", () => {
-    const parsed = parsePsLine("  123     1   120 Sun Nov  5 09:03:07 2026       2148 /usr/bin/node server.js A=1");
-    expect(parsed).toEqual({ pid: 123, ppid: 1, pgid: 120, startedAt: Date.UTC(2026, 10, 5, 9, 3, 7), rssKb: 2148, rest: "/usr/bin/node server.js A=1" });
+  test("a ps line: pid, parent, group, session leader, terminal, the start time (ps runs in UTC), memory, and the command", () => {
+    const parsed = parsePsLine("  123     1   120 Ss     ??  Sun Nov  5 09:03:07 2026       2148 /usr/bin/node server.js A=1");
+    expect(parsed).toEqual({
+      pid: 123,
+      ppid: 1,
+      pgid: 120,
+      leader: true,
+      tty: false,
+      startedAt: Date.UTC(2026, 10, 5, 9, 3, 7),
+      rssKb: 2148,
+      rest: "/usr/bin/node server.js A=1",
+    });
+    expect(parsePsLine("  124   123   124 R+   s001  Sun Nov  5 09:03:07 2026  10 vim")).toMatchObject({ leader: false, tty: true, rest: "vim" });
     expect(parsePsLine("garbage")).toBeUndefined();
   });
 
@@ -341,10 +474,156 @@ describe("parsers", () => {
     fields[3] = "S";
     fields[4] = "1";
     fields[5] = "99";
+    fields[6] = "70";
+    fields[7] = "34816";
     fields[22] = "4200";
     fields[24] = "512";
     const line = `77 (we ird) (x)) ${fields.slice(3).join(" ")}`;
-    expect(parseProcStat(line)).toEqual({ pid: 77, ppid: 1, pgid: 99, startTicks: 4200, rssPages: 512 });
+    expect(parseProcStat(line)).toEqual({ pid: 77, ppid: 1, pgid: 99, session: 70, ttyNr: 34816, startTicks: 4200, rssPages: 512 });
+  });
+});
+
+// R1-2 / R3-4: a cut or killed `ps` is a failed scan, never a smaller table.
+describe("capture", () => {
+  test("a non-zero exit keeps what was printed (ps -p with a pid that has gone)", async () => {
+    expect(await capture("/bin/sh", ["-c", "echo partial; exit 1"])).toBe("partial\n");
+  });
+
+  test("a timeout rejects, even with output", async () => {
+    await expect(capture("/bin/sh", ["-c", "echo partial; sleep 5"], { timeoutMs: 150 })).rejects.toThrow();
+  });
+
+  test("output over maxBuffer rejects", async () => {
+    await expect(capture("/bin/sh", ["-c", "yes | head -c 5000"], { maxBuffer: 100 })).rejects.toThrow();
+  });
+
+  test("a command killed by a signal rejects", async () => {
+    await expect(capture("/bin/sh", ["-c", "echo partial; kill -TERM $$"])).rejects.toThrow();
+  });
+
+  test("an aborted capture rejects", async () => {
+    const controller = new AbortController();
+    const running = capture("/bin/sh", ["-c", "echo partial; sleep 5"], { signal: controller.signal });
+    controller.abort();
+    await expect(running).rejects.toThrow();
+  });
+});
+
+describe("scanLeftovers when the reader fails", () => {
+  test("rejects: a failed read is never an empty table", async () => {
+    await expect(scanLeftovers({ session: { id: "s", since: 0 }, selfPid: 7, read: async () => Promise.reject(new Error("EMFILE")) })).rejects.toThrow("EMFILE");
+  });
+});
+
+// R3-6 / R4-5 / R3-9: the Linux reader, on a fake /proc.
+describe("the /proc reader", () => {
+  const statLine = (pid: number, { ppid = 1, pgid = pid, session = pid, tty = 0, start = 4200, rss = 100 } = {}) =>
+    `${pid} (x) S ${ppid} ${pgid} ${session} ${tty} -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${start} 1000 ${rss}`;
+  const failure = (code: string) => Object.assign(new Error(code), { code });
+  function fakeProc(files: Record<string, string | Error>, delayMs = 0) {
+    let open = 0;
+    let peak = 0;
+    const fs = {
+      readdir: async () => Object.keys(files).flatMap((path) => (/^\/proc\/(\d+)\/stat$/.exec(path) ? [path.split("/")[2]!] : [])).concat(["self", "stat"]),
+      readFile: async (path: string) => {
+        open++;
+        peak = Math.max(peak, open);
+        try {
+          if (delayMs) await wait(delayMs);
+          const value = files[path];
+          if (value === undefined) throw failure("ENOENT");
+          if (value instanceof Error) throw value;
+          return value;
+        } finally {
+          open--;
+        }
+      },
+    };
+    return { fs, peak: () => peak };
+  }
+  const env = (...vars: string[]) => vars.join("\0");
+
+  test("reads the marker, the terminal, the session and the raw start ticks; a vanished or unreadable process is skipped or unmarked", async () => {
+    const { fs } = fakeProc({
+      "/proc/stat": "cpu 1 2 3\nbtime 1700000000\n",
+      "/proc/10/stat": statLine(10, { tty: 34816, session: 9 }),
+      "/proc/10/environ": env("A=1", "MARCSH_SESSION=sess", "MARCSH_BG=bt-1"),
+      "/proc/10/cmdline": "node\0server.js\0",
+      "/proc/11/stat": failure("ENOENT"),
+      "/proc/12/stat": statLine(12),
+      "/proc/12/environ": failure("EACCES"),
+    });
+    const entries = await createProcReader(fs)("sess");
+    expect(entries).toEqual([
+      {
+        pid: 10,
+        ppid: 1,
+        pgid: 10,
+        sid: 9,
+        tty: true,
+        startKey: 4200,
+        startedAt: (1_700_000_000 + 42) * 1000,
+        rssKb: 400,
+        marked: true,
+        command: "node server.js",
+        bg: "bt-1",
+      },
+      { pid: 12, ppid: 1, pgid: 12, sid: 12, tty: false, startKey: 4200, startedAt: (1_700_000_000 + 42) * 1000, rssKb: 400, marked: false },
+    ]);
+  });
+
+  test("a stat read that fails for another reason (EMFILE) fails the scan", async () => {
+    const { fs } = fakeProc({ "/proc/stat": "btime 1700000000\n", "/proc/10/stat": failure("EMFILE"), "/proc/12/stat": statLine(12), "/proc/12/environ": env() });
+    await expect(createProcReader(fs)("sess")).rejects.toThrow("EMFILE");
+  });
+
+  test("without btime the scan fails", async () => {
+    const { fs } = fakeProc({ "/proc/stat": "cpu 1\n", "/proc/12/stat": statLine(12), "/proc/12/environ": env() });
+    await expect(createProcReader(fs)("sess")).rejects.toThrow();
+  });
+
+  test("at most 32 files are open at once", async () => {
+    const files: Record<string, string> = { "/proc/stat": "btime 1700000000\n" };
+    for (let pid = 100; pid < 300; pid++) {
+      files[`/proc/${pid}/stat`] = statLine(pid);
+      files[`/proc/${pid}/environ`] = env("MARCSH_SESSION=other");
+    }
+    const { fs, peak } = fakeProc(files, 2);
+    expect((await createProcReader(fs)("sess")).length).toBe(200);
+    expect(peak()).toBeLessThanOrEqual(32);
+    expect(peak()).toBeGreaterThan(1);
+  });
+});
+
+// R1-7: what the agent and the stop prompt are shown of a command line.
+describe("redactCommand", () => {
+  test("hides secret-looking values and keeps the shape", () => {
+    expect(redactCommand("node server.js --token=abc123 --api-key=XYZ --client-secret=s3 --password hunter2 --password=hunter3")).toBe(
+      "node server.js --token=*** --api-key=*** --client-secret=*** --password *** --password=***",
+    );
+    expect(redactCommand("mysql -uroot -ps3cret db")).toBe("mysql -uroot -p*** db");
+    expect(redactCommand("/usr/local/bin/mysqldump -pXyZ db")).toBe("/usr/local/bin/mysqldump -p*** db");
+    // Not mysql-like: -p is a port.
+    expect(redactCommand("ssh -p2222 host")).toBe("ssh -p2222 host");
+    expect(redactCommand("curl -H Authorization: Bearer abc.def https://x")).toBe("curl -H Authorization: Bearer *** https://x");
+    expect(redactCommand("psql postgres://me:pw@host/db")).toBe("psql postgres://me:***@host/db");
+    expect(redactCommand("env API_TOKEN=xyz node a.js")).toBe("env API_TOKEN=*** node a.js");
+    expect(redactCommand("node server.js --port=3000")).toBe("node server.js --port=3000");
+  });
+
+  test("describeLeftover redacts, and says when a process may be the user's own", () => {
+    const line = describeLeftover({
+      pid: 9,
+      pgid: 9,
+      startedAt: 0,
+      startKey: 0,
+      ageMs: 61_000,
+      rssMb: 2,
+      command: "node a.js --token=abc",
+      groupOnly: false,
+      possiblyYours: "it has a terminal",
+    });
+    expect(line).toBe("pid 9 · 1m · 2 MB · node a.js --token=*** · possibly yours: it has a terminal");
   });
 });
 

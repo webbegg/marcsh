@@ -10,7 +10,7 @@ import { terminalsFor } from "../../lib/background/session-terminals";
 import { formatElapsed, formatExit, type BackgroundTerminals, type TerminalSnapshot } from "../../lib/background/terminals";
 import { leftoverWatch, type LeftoverWatch } from "../../lib/background/leftover-watch";
 import { formatAge, type Leftover } from "../../lib/background/leftovers";
-import { useLeftovers } from "../../lib/background/use-leftovers";
+import { useLeftovers, useLeftoverScanError } from "../../lib/background/use-leftovers";
 
 // The /ps viewer follows davi7's `extensions/background-terminals/src/ui/ps.ts` (MIT license; see THIRD_PARTY_NOTICES.md): a list,
 // and a read-only output view.
@@ -137,10 +137,10 @@ function TerminalDetail({ snapshot, terminals, onBack }: { snapshot: TerminalSna
   );
 }
 
-/** A leftover process: its pid, age, memory, command and, when known, the terminal or call that started it. */
+/** A leftover process: its pid, age, memory, command and, when known, the terminal that started it; "possibly yours" when it may be the user's own. */
 function LeftoverRow({ leftover, selected, stopping }: { leftover: Leftover; selected: boolean; stopping: boolean }) {
   const { colors } = useTheme();
-  const from = [leftover.bg, leftover.call].filter(Boolean).join(" ");
+  const from = [leftover.possiblyYours ? "possibly yours" : undefined, leftover.bg].filter(Boolean).join(" · ");
   return (
     <box flexDirection="row" height={1} overflow="hidden" gap={1} backgroundColor={selected ? colors.selection : undefined}>
       <text selectable={false} flexShrink={0} fg={selected ? "black" : colors.info}>
@@ -166,18 +166,25 @@ function LeftoverRow({ leftover, selected, stopping }: { leftover: Leftover; sel
 
 type Row = { key: string; terminal: TerminalSnapshot; leftover?: undefined } | { key: string; leftover: Leftover; terminal?: undefined };
 
-const leftoverKey = (leftover: Leftover) => `p:${leftover.pid}:${leftover.startedAt}`;
+const leftoverKey = (leftover: Leftover) => `p:${leftover.pid}:${leftover.startKey}`;
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
  * `/ps`: the session's background terminals, newest first (Enter shows one's output, `x` kills the highlighted one), then the leftover
- * processes this marcsh run's tools started (see `leftovers.ts`; `x` stops the highlighted one). Without a hub (a Claude session) only
- * the leftovers. The leftovers are scanned when it opens and after each stop, never per keystroke.
+ * processes this marcsh run's tools started (see `leftovers.ts`; `x` stops the highlighted one, and what did not stop is said). Without
+ * a hub (a Claude session) only the leftovers. The leftovers are scanned when it opens and after each stop, never per keystroke; a scan
+ * that failed is said, with the last list it found. One that may be the user's own (`possiblyYours`) is marked, and the line under the
+ * list says why. What pi's pack hooks leave running (`MARCSH_INFRA`) is not listed.
  */
 export const PsDialogContent = ({ hub, leftovers: watch = leftoverWatch }: { hub?: BackgroundHub; leftovers?: LeftoverWatch }) => {
   const [openId, setOpenId] = useState<string | null>(null);
   const terminals = useTerminals(hub, openId ? DETAIL_REDRAW_MS : LIST_REDRAW_MS);
   const leftovers = useLeftovers(watch);
+  const scanError = useLeftoverScanError(watch);
+  const { colors } = useTheme();
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
+  const [stopNote, setStopNote] = useState<string | null>(null);
   useEffect(() => {
     void watch.refresh({ force: true });
   }, [watch]);
@@ -204,14 +211,24 @@ export const PsDialogContent = ({ hub, leftovers: watch = leftoverWatch }: { hub
     const key = leftoverKey(leftover);
     if (stopping.has(key)) return;
     setStopping((current) => new Set([...current, key]));
-    // The start time it was listed with: a pid given to another process meanwhile is left alone.
-    void watch.stop([{ pid: leftover.pid, startedAt: leftover.startedAt }]).finally(() =>
-      setStopping((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      }),
-    );
+    setStopNote(null);
+    // The start it was listed with: a pid given to another process meanwhile is left alone.
+    void watch
+      .stop([{ pid: leftover.pid, startKey: leftover.startKey }])
+      .then(
+        (result) => {
+          const failed = result.failed[0];
+          setStopNote(failed ? `Not stopped pid ${failed.pid}: ${failed.reason}` : null);
+        },
+        (error) => setStopNote(`Could not stop pid ${leftover.pid}: ${errorText(error)}`),
+      )
+      .finally(() =>
+        setStopping((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        }),
+      );
   };
 
   useKeyboard((key) => {
@@ -231,6 +248,7 @@ export const PsDialogContent = ({ hub, leftovers: watch = leftoverWatch }: { hub
   const visibleTerminals = visible.filter((row) => row.terminal);
   const visibleLeftovers = visible.filter((row) => row.leftover);
   const running = list.filter((snapshot) => snapshot.status === "running").length;
+  const highlightedYours = rows[index]?.leftover?.possiblyYours;
   const footer = [
     ...(terminals ? [`${running} running of ${list.length}`] : []),
     ...(leftovers.length > 0 ? [`${leftovers.length} leftover`] : []),
@@ -258,6 +276,21 @@ export const PsDialogContent = ({ hub, leftovers: watch = leftoverWatch }: { hub
             <LeftoverRow key={row.key} leftover={row.leftover!} selected={row.key === highlightedId} stopping={stopping.has(row.key)} />
           ))}
         </box>
+      ) : null}
+      {highlightedYours ? (
+        <text attributes={TextAttributes.DIM} wrapMode="word" width="100%">
+          {oneLine(`Possibly yours: ${highlightedYours}. A tool call started what it runs under; you may have opened it yourself.`, 400)}
+        </text>
+      ) : null}
+      {scanError ? (
+        <text fg={colors.error} wrapMode="word" width="100%">
+          {oneLine(`The process table could not be read (${scanError})${leftovers.length > 0 ? `: the leftovers shown are from the last scan that worked` : ""}.`, 400)}
+        </text>
+      ) : null}
+      {stopNote ? (
+        <text fg={colors.error} wrapMode="word" width="100%">
+          {oneLine(stopNote, 400)}
+        </text>
       ) : null}
       <text attributes={TextAttributes.DIM}>{footer}</text>
     </box>
