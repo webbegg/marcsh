@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { Mode } from "../modes";
-import { applyClaudeMessage, claudePrompt, claudeQueryOptions, createCanUseTool } from "./claude";
-import type { PermissionAsk, TurnHost, TurnRequest } from "./types";
+import { applyClaudeMessage, claudeAgents, claudePrompt, claudeQueryOptions, createCanUseTool } from "./claude";
+import type { PermissionAsk, TurnHost, TurnRequest, TurnSubagent } from "./types";
 
 // The names are spelled out on purpose: this pins what the SDK is sent, so a renamed or dropped entry in the tool table fails here.
 const DENIED_BY_GROUP = {
@@ -48,6 +48,61 @@ describe("the options of a Claude turn for an agent's tools", () => {
       expect("disallowedTools" in sent).toBe(false);
       expect(sent.canUseTool).toBe(noAsk);
     }
+  });
+});
+
+describe("named subagents on Claude: the SDK's agents option (M1)", () => {
+  const DEVELOPER: TurnSubagent = { name: "developer", description: "Builds one task", prompt: "You build.", readOnly: false };
+  const REFUTER: TurnSubagent = { name: "refuter", description: "Refutes claims", prompt: "You refute.", readOnly: true, model: "haiku" };
+  const READ_TOOLS = ["Read", "Grep", "Glob", "NotebookRead", "LS"];
+
+  test("no subagents: no agents key, exactly as before", () => {
+    for (const subagents of [undefined, []]) expect("agents" in claudeQueryOptions({ ...base, subagents, canUseTool: noAsk })).toBe(false);
+  });
+
+  test("each subagent is an AgentDefinition keyed by its name, with its description and prompt", () => {
+    const sent = claudeQueryOptions({ ...base, subagents: [DEVELOPER, REFUTER], canUseTool: noAsk });
+    expect(Object.keys(sent.agents!)).toEqual(["developer", "refuter"]);
+    expect(sent.agents!.developer).toEqual({ description: "Builds one task", prompt: "You build.", model: "inherit" });
+    expect(sent.agents!.refuter).toMatchObject({ description: "Refutes claims", prompt: "You refute.", model: "haiku" });
+  });
+
+  test("its tools only narrow the session's: the session's denied groups and its own are both disallowed", () => {
+    const agents = claudeAgents([{ ...DEVELOPER, deniedTools: ["web"] }], { deniedTools: ["bash"], mode: Mode.BUILD });
+    expect(agents.developer!.disallowedTools).toEqual([...DENIED_BY_GROUP.bash, ...DENIED_BY_GROUP.web]);
+    expect(agents.developer!.tools).toBeUndefined();
+  });
+
+  test("a subagent that keeps bash still has it disallowed when the session denies bash [invariant]", () => {
+    const agents = claudeAgents([DEVELOPER], { deniedTools: ["bash"], mode: Mode.BUILD });
+    expect(agents.developer!.disallowedTools).toEqual(expect.arrayContaining(DENIED_BY_GROUP.bash));
+  });
+
+  test("a read-only subagent, or any subagent of a plan turn, gets only the read tools", () => {
+    expect(claudeAgents([REFUTER], { mode: Mode.BUILD }).refuter!.tools).toEqual(READ_TOOLS);
+    expect(claudeAgents([DEVELOPER], { mode: Mode.PLAN }).developer!.tools).toEqual(READ_TOOLS);
+    // The session's own narrowing applies to those too.
+    expect(claudeAgents([REFUTER], { mode: Mode.BUILD, deniedTools: ["read"] }).refuter!.tools).toEqual([]);
+  });
+
+  test("the model is the subagent's when it fits Claude, else inherit", () => {
+    const model = (value: string | undefined) => claudeAgents([{ ...DEVELOPER, ...(value ? { model: value } : {}) }], { mode: Mode.BUILD }).developer!.model;
+    expect(model("opus")).toBe("opus");
+    expect(model("sonnet")).toBe("sonnet");
+    expect(model("claude-haiku-5-5")).toBe("claude-haiku-5-5");
+    expect(model("anthropic/claude-sonnet-5-5")).toBe("inherit");
+    expect(model("gpt-5")).toBe("inherit");
+    expect(model("default")).toBe("inherit");
+    expect(model(undefined)).toBe("inherit");
+  });
+
+  test("a subagent named like one of Claude's own types is not passed, so a plain Task stays Claude's", () => {
+    const agents = claudeAgents([{ ...DEVELOPER, name: "general-purpose" }, { ...DEVELOPER, name: "Explore" }, DEVELOPER], { mode: Mode.BUILD });
+    expect(Object.keys(agents)).toEqual(["developer"]);
+  });
+
+  test("one without a description still gets one (the SDK requires it)", () => {
+    expect(claudeAgents([{ name: "helper", readOnly: false }], { mode: Mode.BUILD }).helper).toMatchObject({ description: "The helper subagent.", prompt: "" });
   });
 });
 

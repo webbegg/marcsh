@@ -2,19 +2,24 @@ import { useCallback, useEffect, useState } from "react";
 import { useDialog } from "../../providers/dialog";
 import { DialogSearchList } from "../dialog-search-list";
 import { PackInstallDialogContent, PackPickerDialogContent } from "./pack-dialogs";
-import { agentLabel, type Agent } from "../../lib/agents";
+import { agentLabel, type Agent, type Subagent } from "../../lib/agents";
 import { lockProblem, packHooksStates } from "../../lib/packs";
 import { Mode } from "../../lib/modes";
 
 type AgentsDialogContentProps = {
   agents: Agent[];
+  /** The named subagents: listed after the agents for information; the model starts them, so they are never selected here. */
+  subagents?: Subagent[];
   currentId: string;
   onSelectAgent: (id: string) => void;
   /** Called after a pack was installed, updated or removed, so the agent list is read again. */
   onPacksChanged?: () => void;
 };
 
-type Row = { kind: "agent"; agent: Agent } | { kind: "action"; id: "install" | "update" | "remove" | "hooks"; label: string };
+type Row =
+  | { kind: "agent"; agent: Agent }
+  | { kind: "subagent"; subagent: Subagent }
+  | { kind: "action"; id: "install" | "update" | "remove" | "hooks"; label: string };
 
 // After the agents: the pack actions.
 const ACTIONS: Row[] = [
@@ -39,8 +44,16 @@ function agentRowText(agent: Agent, agents: readonly Agent[], currentId: string,
   return parts.join("");
 }
 
+/** One subagent's row: the name the model starts it by, where it comes from, its permission, "limited tools", then its label and description. */
+export function subagentRowText(subagent: Subagent): string {
+  const tags = [subagent.pack ?? "user", subagent.mode === Mode.PLAN ? "read-only" : "build", ...(subagent.tools ? ["limited tools"] : [])];
+  const about = [subagent.name !== subagent.address ? subagent.name : undefined, subagent.description].filter(Boolean).join(": ");
+  return `   ↳ ${subagent.address}  (${tags.join(", ")})${about ? `  ${about}` : ""}`;
+}
+
 export const AgentsDialogContent = ({ 
   agents, 
+  subagents = [],
   currentId,
   onSelectAgent,
   onPacksChanged = () => {},
@@ -62,10 +75,16 @@ export const AgentsDialogContent = ({
     };
   }, []);
 
-  const rows: Row[] = [...agents.map((agent): Row => ({ kind: "agent", agent })), ...ACTIONS];
+  const rows: Row[] = [
+    ...agents.map((agent): Row => ({ kind: "agent", agent })),
+    ...subagents.map((subagent): Row => ({ kind: "subagent", subagent })),
+    ...ACTIONS,
+  ];
 
   const handleSelect = useCallback(
     (row: Row) => {
+      // A subagent is started by the model (`Task` with `agent`), never selected: its row only informs.
+      if (row.kind === "subagent") return;
       if (row.kind === "agent") {
         onSelectAgent(row.agent.id);
         dialog.close();
@@ -79,7 +98,8 @@ export const AgentsDialogContent = ({
     [onSelectAgent, onPacksChanged, dialog],
   );
 
-  const label = (row: Row) => (row.kind === "agent" ? agentLabel(row.agent, agents) : row.label);
+  const label = (row: Row) =>
+    row.kind === "agent" ? agentLabel(row.agent, agents) : row.kind === "subagent" ? `${row.subagent.address} ${row.subagent.name} subagent` : row.label;
 
   return (
     <box flexDirection="column" gap={1}>
@@ -93,11 +113,11 @@ export const AgentsDialogContent = ({
         onSelect={handleSelect}
         filterFn={(row, query) => label(row).toLowerCase().includes(query.toLowerCase())}
         renderItem={(row, isSelected) => (
-          <text selectable={false} fg={isSelected ? "black" : "white"}>
-            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId, hooks) : `   ${row.label}`}
+          <text selectable={false} fg={isSelected ? "black" : row.kind === "subagent" ? "gray" : "white"}>
+            {row.kind === "agent" ? agentRowText(row.agent, agents, currentId, hooks) : row.kind === "subagent" ? subagentRowText(row.subagent) : `   ${row.label}`}
           </text>
         )}
-        getKey={(row) => (row.kind === "agent" ? row.agent.id : `action:${row.id}`)}
+        getKey={(row) => (row.kind === "agent" ? row.agent.id : row.kind === "subagent" ? `subagent:${row.subagent.id}` : `action:${row.id}`)}
         placeholder="Search agents"
         emptyText="No matching agents"
       />

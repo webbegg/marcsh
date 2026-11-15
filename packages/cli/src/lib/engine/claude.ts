@@ -1,10 +1,11 @@
-import { query, type CanUseTool, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type AgentDefinition, type CanUseTool, type Options, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
 import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
 import { type BranchSource, type BranchState, branchState } from "../git-branch";
-import type { Group } from "../tool-names";
+import { agentModelFits } from "../agents";
+import { claudeGroupTools, type Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
 import { referenceText, splitAttachments, type Attachment } from "../attachments";
 import type { ChatMessage } from "../chat-types";
@@ -24,7 +25,7 @@ import {
   toPermissionResult,
 } from "../sdk-messages";
 import { getStorage } from "../storage";
-import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
+import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
 function emitCommands(host: TurnHost, commands: unknown) {
@@ -114,6 +115,37 @@ export function createCanUseTool(
   };
 }
 
+/** Claude's own subagent types: a named subagent with one of these names is not passed, so it never takes the place of Claude's. */
+const CLAUDE_AGENT_TYPES = new Set(["general-purpose", "explore", "plan", "statusline-setup", "output-style-setup", "claude-code-guide"]);
+
+/** The subagent's model when it fits Claude (an alias or a `claude-*` name), else `inherit` (the session's). `default` and `opusplan` inherit. */
+function subagentModel(model: string | undefined): string {
+  if (!model || !agentModelFits(model, "claude") || /^(?:default|opusplan)(?:\[|$)/i.test(model)) return "inherit";
+  return model;
+}
+
+/**
+ * The named subagents as the SDK's `agents` option, so Claude's Task/Agent can start them by `subagent_type`. Their tools only narrow the
+ * session's: the session's denied groups and their own are disallowed, and a read-only one (or any in a plan turn) is given the read tools only.
+ */
+export function claudeAgents(subagents: readonly TurnSubagent[], { deniedTools = [], mode }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"] }): Record<string, AgentDefinition> {
+  const agents: Record<string, AgentDefinition> = {};
+  for (const sub of subagents) {
+    if (CLAUDE_AGENT_TYPES.has(sub.name.toLowerCase()) || Object.hasOwn(agents, sub.name)) continue;
+    const denied = [...new Set([...deniedTools, ...(sub.deniedTools ?? [])])];
+    const disallowed = claudeDeniedTools(denied);
+    const readOnly = sub.readOnly || mode === Mode.PLAN;
+    agents[sub.name] = {
+      description: sub.description || `The ${sub.name} subagent.`,
+      prompt: sub.prompt ?? "",
+      ...(readOnly ? { tools: claudeGroupTools("read").filter((name) => !disallowed.includes(name)) } : {}),
+      ...(disallowed.length > 0 ? { disallowedTools: disallowed } : {}),
+      model: subagentModel(sub.model),
+    };
+  }
+  return agents;
+}
+
 /**
  * The options of a Claude turn. An agent's denied groups go in `disallowedTools` (none when it denies nothing), never `allowedTools`.
  * The approval mode only adds its line to the appended system prompt: the permission mode stays default or plan, never bypassPermissions.
@@ -126,11 +158,12 @@ export function claudeQueryOptions({
   approvalMode,
   branch,
   deniedTools,
+  subagents,
   resumeRef,
   abortController,
   canUseTool,
   plugins,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "resumeRef"> & {
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "subagents" | "resumeRef"> & {
   /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
   branch?: BranchSource;
   abortController: AbortController;
@@ -140,6 +173,7 @@ export function claudeQueryOptions({
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
   // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
   const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, branch ?? (() => branchState(cwd)));
+  const agents = subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode }) : {};
   return {
     cwd,
     model,
@@ -150,6 +184,7 @@ export function claudeQueryOptions({
     settingSources: ["user", "project", "local"],
     canUseTool,
     ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
+    ...(Object.keys(agents).length > 0 ? { agents } : {}),
     ...(plugins.length > 0 ? { plugins: plugins.map((path) => ({ type: "local" as const, path })) } : {}),
   };
 }
@@ -195,7 +230,7 @@ export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, prio
   return { ...applied, metadata: { ...applied.metadata, ...(usage ? { usage } : {}) } };
 }
 
-function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
@@ -219,7 +254,7 @@ function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, 
     try {
       chat = query({
         prompt: claudePrompt(prompt, attachments, cwd),
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, resumeRef, abortController, canUseTool, plugins }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, subagents, resumeRef, abortController, canUseTool, plugins }),
       });
 
       for await (const message of chat) {

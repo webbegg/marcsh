@@ -15,6 +15,7 @@ import {
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
+import { loadSubagents } from "../../lib/agents";
 import { branchState } from "../../lib/git-branch";
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { SessionCommands } from "./session-commands";
@@ -110,7 +111,15 @@ export const COMMANDS: Command[] = [
       ctx.dialog.open({
         title: "Select Agent",
         // Read the files again: an agent added since start is listed without a restart.
-        children: <AgentsDialogContent agents={ctx.reloadAgents()} currentId={ctx.agentId} onSelectAgent={ctx.selectAgent} onPacksChanged={ctx.reloadAgents} />,
+        children: (
+          <AgentsDialogContent
+            agents={ctx.reloadAgents()}
+            subagents={loadSubagents()}
+            currentId={ctx.agentId}
+            onSelectAgent={ctx.selectAgent}
+            onPacksChanged={ctx.reloadAgents}
+          />
+        ),
       })
     },
   },

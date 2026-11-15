@@ -28,6 +28,7 @@ Good to know:
 - marcsh remembers your choice and selects the same agent the next time you start. If that agent no longer exists, marcsh selects Build.
 - When you select an agent that marcsh cannot apply in full, a toast starts with `Warning:` and says what is ignored. See [Warnings](#warnings).
 - `/agents` shows a tag after each name: `(read-only)` for agents that cannot change anything, `(build)` for build agents that come from a pack, `(limited tools)` when the agent has a `tools` field that takes tools away, and `(hooks on)` or `(hooks changed — off)` for [pack hooks](pack-hooks.md).
+- After the agents, `/agents` lists the [subagents](#subagents), each on a row that starts with `↳`. They are there for information. You cannot select one, and they are not in the `Tab` cycle.
 - The same dialog has rows to install, update and remove packs. See [Packs](packs.md).
 
 ## Write a personal agent
@@ -78,7 +79,7 @@ Frontmatter is flat `key: value` lines between two `---` lines. Quoted values wo
 | --- | --- | --- | --- |
 | `name` | text | the file name without `.md` | Shown in the status line and in `/agents`. |
 | `description` | text | none | One line shown after the name in `/agents`. |
-| `mode` | `primary` or `all` | selectable | Both make the agent selectable and work the same. Values marcsh does not recognize are ignored with a warning. |
+| `mode` | `primary`, `all` or `subagent` | selectable | `primary` and `all` both make the agent selectable and work the same. `subagent` makes the file a [subagent](#subagents) instead. Values marcsh does not recognize are ignored with a warning. |
 | `permission` | `read-only` or `build` | `build` | `read-only` behaves like Plan. `build` behaves like Build: it asks before it writes or runs. Any other value is ignored with a warning, and the agent is a build agent. |
 | `model` | a model name | the session model | See [Model](#model-and-fallback). |
 | `tools` | a map or a list | all of the engine's tools | Takes tools away. See [Limit tools](#limit-tools). |
@@ -154,6 +155,36 @@ Names are not case-sensitive. Naming one tool takes or keeps its whole group. Th
 - A name that matches no group is ignored and listed in the warning as `unknown tools`. If no name in the field is known, the agent has no restriction.
 - A `tools` field with no names at all is ignored, and the warning says `ignored tools`.
 - In the map, a value other than `true` or `false` makes that name unknown.
+
+## Subagents
+
+A subagent is a role that the model starts by itself to do one piece of work, for example a reviewer that checks a change. You never select it. Write it like an agent and add `mode: subagent`:
+
+```markdown
+---
+name: Security refuter
+description: Tries to break the security claims of a change; changes nothing
+mode: subagent
+permission: read-only
+tools: Read, Grep, Bash
+---
+You try to refute the security claims of the change you are given. Report each claim you can break, with path:line.
+```
+
+Save it as `~/.marcsh/agents/refuter-security.md`.
+
+- **Its name is the file name** without `.md`, here `refuter-security`. The model uses that name to start it. The `name` field is only the label in `/agents`. The file name may only use letters, digits, `.`, `_` and `-`, and it can be at most 64 characters long. It cannot start with `.` or `-`. A file with any other name is skipped.
+- **Who can start it.** The model can start your own subagents in every turn. It can also start the subagents of the pack whose agent is selected. Subagents of other packs are not available. If one of your subagents has the same name as one in the selected agent's pack, the pack's subagent is used.
+- **Its prompt** is added to the subagent's system prompt. The subagent does not see your conversation, only the task it gets.
+- **Its tools only narrow.** The subagent starts with the tools of the agent that started it. Its `tools` field can take more away, but it never gives a tool back. If the selected agent has `bash: false`, a subagent with `tools: Read, Bash` still cannot run commands.
+- **`permission: read-only`** makes the subagent read-only, as in Plan, even when the agent that starts it can build. In Plan, every subagent is read-only.
+- **Its model.** The subagent uses its `model` when the engine can use it. Otherwise it uses the model of the turn that starts it, without a warning. See [Model](#model-and-fallback).
+- **Approvals and hooks** apply to its tool calls exactly as they do to the agent's.
+
+How the model starts one:
+
+- **pi.** `Task` gets an `agent` parameter. Its description lists the subagents the model can start, with their descriptions (at most 20 are listed). A name that is not on the list is an error that names the valid ones. `Task` without `agent` works as before. On pi, a pack's subagent also gets that pack's skills, but only while they are loaded for the turn. `background: true` works with `agent` too.
+- **Claude.** marcsh passes the same subagents to Claude, and Claude's `Task` starts one by its name. A read-only subagent gets only the read tools. A subagent whose name is one of Claude's own types (`general-purpose`, `Explore`, `Plan`, `statusline-setup`, `output-style-setup`, `claude-code-guide`) is not passed, so Claude's own type keeps that name.
 
 ## Engine differences
 

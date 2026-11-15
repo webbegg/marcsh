@@ -164,7 +164,9 @@ describe("installPack", () => {
       commands: ["ship"],
       // `{"hooks":{}}` declares nothing to run, so the folder is shown as unusable (see pack-hooks.test.ts for the enabled flow).
       hooks: { usable: false, reason: "hooks.json declares no command hooks" },
-      ignored: [".mcp.json", "subagent helper.md"],
+      // A `mode: subagent` file is a named subagent (M1): listed by its address, no longer as a part marcsh does not use.
+      subagents: [{ name: "helper", permission: "build" }],
+      ignored: [".mcp.json"],
       warnings: [],
     });
 

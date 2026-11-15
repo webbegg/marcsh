@@ -2,6 +2,8 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { isPiToolDenied } from "../agent-tools";
+import { agentModelFits } from "../agents";
 import { branchState } from "../git-branch";
 import { Mode } from "../modes";
 import { referenceText, splitAttachments } from "../attachments";
@@ -10,7 +12,7 @@ import { marcshPluginPath } from "../plugin";
 import { getStorage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
-import { narrowForTurn } from "./pi-agent-tools";
+import { createDeniedToolsExtension, narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import { BG_PLAN_TOOLS, BG_START_TOOL, createBackgroundTerminalsExtension } from "./pi-bg-tools";
 import type { Guard } from "./pi-guard";
@@ -23,7 +25,7 @@ import { type BackgroundRunChild, createSubagentExtension, runChildSession, type
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import { backgroundMessageText, type BackgroundBatch } from "../background/hub";
-import { systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
+import { systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -313,6 +315,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       currentPlanMode,
       packPluginPath,
       deniedTools,
+      subagents,
       resumeRef,
       background,
       promptKind,
@@ -450,33 +453,60 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>) =>
         packTurn?.hooks ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: hookSignal, notify })] : [];
       const packHooks = packHooksFor(turnEnded.signal, (message, level) => host.notify?.(message, level));
+      // A named subagent's model, when the engine has it and a login for its provider; else undefined (the parent's is used).
+      const subagentModel = async (wantedModel: string | undefined) => {
+        const ref = wantedModel && agentModelFits(wantedModel, "pi") ? parseModel(wantedModel) : undefined;
+        const found = ref ? models.getModel(ref.provider, ref.id) : undefined;
+        if (!found) return undefined;
+        try {
+          return (await models.getAuth(found)) ? found : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      // A named subagent's prompt (with the mode line, as the parent's) and, for a subagent of the pack this turn loaded, that pack's skills.
+      const subagentResources = (subagent: TurnSubagent, readOnly: boolean) => {
+        const append = systemPromptWithMode(subagent.prompt, readOnly ? undefined : approvalMode, () => branchState(cwd));
+        const packSkills = subagent.pluginDir && subagent.pluginDir === packPluginPath && packTurn?.view ? join(packTurn.view, "skills") : undefined;
+        return { ...(append ? { appendSystemPrompt: append } : {}), ...(packSkills && existsSync(packSkills) ? { skillPaths: [packSkills] } : {}) };
+      };
       // A child session has the parent turn's rules, guard, mode and agent narrowing; in plan mode it only reads. It never gets the
       // background hub, so it has no bg tools, no task tools and cannot start background subagents.
-      const runChild = (request: Parameters<RunChild>[0], approvalAndHooks: ExtensionFactory[]) =>
-        runChildSession(pi, {
+      // A named subagent only narrows that: its denied groups are added to the parent's, and a read-only one gets plan's rules and tools.
+      // `approvalAndHooks` gets whether the child is read-only, for its approval extension.
+      const runChild = async ({ subagent, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[]) => {
+        const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
+        const own = subagent?.deniedTools ?? [];
+        const childDenied = own.length > 0 ? [...new Set([...denied, ...own])] : denied;
+        const narrowing = own.length > 0 ? [createDeniedToolsExtension(childDenied)] : tools.childExtensions;
+        const allowed = (name: string) => !isPiToolDenied(name, childDenied);
+        const model = (subagent && (await subagentModel(subagent.model))) || resolved;
+        return runChildSession(pi, {
           ...request,
           cwd,
           agentDir,
           models,
-          model: resolved,
+          model,
           projectTrusted,
-          extensions: [...tools.childExtensions, ...approvalAndHooks, ...tools.childExtensions],
-          ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(tools.allowed) } : buildToolsOption(settingsManager)),
+          extensions: [...narrowing, ...approvalAndHooks(readOnly), ...narrowing],
+          ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
+          ...(subagent ? subagentResources(subagent, readOnly) : {}),
         });
+      };
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
       // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
       // It follows the session's plan mode as it is at each call: once the session is in plan, only its read-only calls run.
       const runBackgroundChild: BackgroundRunChild | undefined =
         background &&
-        (({ description, prompt, signal: childSignal, onProgress, onEvent }) => {
+        (({ description, prompt, subagent, signal: childSignal, onProgress, onEvent }) => {
           const askHost: Pick<TurnHost, "askPermission"> = {
             askPermission: (ask, askSignal) =>
               background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
-          return runChild({ prompt, signal: childSignal, onProgress, onEvent }, [
+          return runChild({ prompt, ...(subagent ? { subagent } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
             ...packHooksFor(childSignal, notify),
-            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, ...(currentPlanMode ? { currentPlanMode } : {}) }),
+            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
           ]);
         });
       const resourceLoader = new pi.DefaultResourceLoader({
@@ -506,8 +536,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             signal: turnEnded.signal,
             timeoutMs: options.toolTimeoutMs,
             runChild: ({ holdClock, ...request }) =>
-              runChild(request, [...packHooks, createApprovalExtension(holdClock ? { ...approval, host: holdingClock(host, holdClock) } : approval)]),
+              runChild(request, (readOnly) => [
+                ...packHooks,
+                createApprovalExtension({ ...approval, planMode: readOnly, ...(holdClock ? { host: holdingClock(host, holdClock) } : {}) }),
+              ]),
             ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),
+            ...(subagents && subagents.length > 0 ? { subagents } : {}),
           }),
         ],
       });
