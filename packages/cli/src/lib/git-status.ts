@@ -1,12 +1,15 @@
+import { basename } from "node:path";
 import { readOnlyGitArgs, readOnlyGitEnv } from "./git-safe";
 
 /**
  * What the status bar shows of the project's git state: the branch (a short SHA when HEAD is detached) and how many files changed;
- * `changed` is null when the files were not counted (a project the user has not trusted).
+ * `changed` is null when the files were not counted (a project the user has not trusted). `worktree` is the folder name of a
+ * linked git worktree, absent in the main checkout.
  */
 export type GitStatus = {
   branch: string;
   changed: number | null;
+  worktree?: string;
 };
 
 /**
@@ -34,10 +37,14 @@ export function parseGitStatus(output: string): GitStatus | null {
   return { branch, changed };
 }
 
-/** e.g. `main`, `main · 1 file changed`, `feat/x · 3 files changed`; the branch alone when nothing changed or nothing was counted. */
+/**
+ * e.g. `main`, `main · 1 file changed`, `feat/x · wt pack-integration · 3 files changed`; the branch (and worktree) alone when nothing
+ * changed or nothing was counted.
+ */
 export function formatGit(status: GitStatus): string {
-  if (!status.changed) return status.branch;
-  return `${status.branch} · ${status.changed} ${status.changed === 1 ? "file" : "files"} changed`;
+  const place = status.worktree ? `${status.branch} · wt ${status.worktree}` : status.branch;
+  if (!status.changed) return place;
+  return `${place} · ${status.changed} ${status.changed === 1 ? "file" : "files"} changed`;
 }
 
 type GitRun = { code: number; out: string };
@@ -85,6 +92,21 @@ export async function readGitBranch(cwd: string, { timeoutMs = 2000 }: { timeout
   return sha.code === 0 && sha.out.trim() ? sha.out.trim() : "detached";
 }
 
+/**
+ * The folder name of the linked worktree `cwd` is in, or null in the main checkout (or when it cannot be read). Linked when
+ * `--git-dir` differs from `--git-common-dir`; one `git rev-parse`, which reads HEAD and the repo's paths but never the work tree or
+ * the index, so nothing the repo names runs.
+ */
+export async function readGitWorktree(cwd: string, { timeoutMs = 2000 }: { timeoutMs?: number } = {}): Promise<string | null> {
+  const paths = await runGit(cwd, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel"], timeoutMs);
+  if (!paths || paths.code !== 0) return null;
+  const [gitDir, commonDir, top] = paths.out.split("\n");
+  if (!gitDir || !commonDir || !top || gitDir === commonDir) return null;
+  return basename(top) || null;
+}
+
+const withWorktree = (status: GitStatus, worktree: string | null): GitStatus => (worktree ? { ...status, worktree } : status);
+
 export type ReadGitStatusOptions = {
   timeoutMs?: number;
   /**
@@ -95,16 +117,20 @@ export type ReadGitStatusOptions = {
 };
 
 /**
- * The git state of `cwd`. Not trusted (the default): the branch from HEAD alone (`readGitBranch`), and no count. Trusted: one
+ * The git state of `cwd`, with the linked worktree's name (`readGitWorktree`, trusted or not). Not trusted (the default): the
+ * branch from HEAD alone (`readGitBranch`), and no count. Trusted: one
  * `git status` call that takes no optional locks (so it never gets in the way of the user's own git commands), hardened like the
  * HEAD reads (no fsmonitor, hooks or pager; submodules not entered), but it may run the repo's filter drivers. Null outside a
  * repo, when git fails, or when it does not answer within `timeoutMs` (it is then killed).
  */
 export async function readGitStatus(cwd: string, { timeoutMs = 2000, trusted = false }: ReadGitStatusOptions = {}): Promise<GitStatus | null> {
+  let status: GitStatus | null;
   if (!trusted) {
     const branch = await readGitBranch(cwd, { timeoutMs });
-    return branch === null ? null : { branch, changed: null };
+    status = branch === null ? null : { branch, changed: null };
+  } else {
+    const run = await runGit(cwd, ["status", "--porcelain=v2", "--branch", "--ignore-submodules=all"], timeoutMs);
+    status = run && run.code === 0 ? parseGitStatus(run.out) : null;
   }
-  const status = await runGit(cwd, ["status", "--porcelain=v2", "--branch", "--ignore-submodules=all"], timeoutMs);
-  return status && status.code === 0 ? parseGitStatus(status.out) : null;
+  return status === null ? null : withWorktree(status, await readGitWorktree(cwd, { timeoutMs }));
 }

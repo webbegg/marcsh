@@ -66,6 +66,18 @@ describe("useGitStatus", () => {
     expect(latest).toEqual({ branch: "main", changed: 2 });
   });
 
+  // M5: the worktree name is part of the state, so a read that only changes it still updates.
+  test("shows a read that changes only the worktree name", async () => {
+    const fake = fakeRead();
+    await mount(<Host cwd="/repo" read={fake.read} />);
+    await fake.answer({ branch: "feat/x", changed: null });
+
+    await act(async () => setTrigger(1));
+    await fake.answer({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+
+    expect(latest).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+  });
+
   test("does nothing without a folder", async () => {
     const fake = fakeRead();
     await mount(<Probe read={fake.read} intervalMs={10} />);

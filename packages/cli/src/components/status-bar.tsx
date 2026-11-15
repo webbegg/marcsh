@@ -12,6 +12,8 @@ import { formatUsage, sessionUsage } from "../lib/usage";
 import { formatGit } from "../lib/git-status";
 import { escapeTranscriptText } from "../lib/display-text";
 import { useGitStatus, type GitReader } from "../hooks/use-git-status";
+import { effectiveApprovalMode } from "../lib/approval-policy";
+import { branchState, type BranchState } from "../lib/git-branch";
 
 /** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
 const engineLabel = (engineId: string) => (engineId === "pi" ? `pi v${PI_VERSION}` : engineId);
@@ -27,6 +29,8 @@ type Props = {
   cwd?: string;
   /** Reads the git state of a folder; injectable so screen tests do not spawn git. */
   readGit?: GitReader;
+  /** Where the folder's checkout stands for the approval policy (default `branchState`); injectable so screen tests do not spawn git. */
+  readBranch?: (cwd: string) => BranchState;
   /** What runs in the background (`2 background terminals running · /ps`); none when empty. The first segment dropped when narrow. */
   background?: string;
 };
@@ -38,7 +42,7 @@ const finishedToolCalls = (messages: readonly ChatMessage[] | undefined) =>
     0,
   );
 
-export function StatusBar({ engine, messages, hint, cwd, readGit, background }: Props) {
+export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch = branchState, background }: Props) {
   const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine, approvalMode } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
@@ -60,17 +64,28 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, background }: 
   // Normal mode, the usual one, is not shown.
   const approvalText = approvalMode === "normal" ? null : `· ${approvalMode}`;
 
-  // The row lays out its items side by side with one space between; a hint that does not fit would wrap the whole line, so it is
-  // dropped (the engine label never is). Until the row is measured the widest wording is shown.
-  // The approval mode is a safety signal, so it is never dropped; the usage is.
-  const items = [modeText, "›", modelText, engineText, approvalText].filter((item): item is string => item !== null);
-  const baseUsed = items.reduce((sum, item) => sum + item.length, 0) + items.length - 1;
   // The usage and then git go before the hint. When the line is too narrow the usage is dropped first, then git, so it never wraps.
   const usageText = useMemo(() => (messages ? formatUsage(sessionUsage(messages)) : ""), [messages]);
   const toolCalls = useMemo(() => finishedToolCalls(messages), [messages]);
   const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls });
-  // The branch name comes from the folder, which may be untrusted: what could act on the terminal shows as an escape.
-  const gitText = git ? formatGit({ ...git, branch: escapeTranscriptText(git.branch) }) : "";
+  // Not fully active: the policy itself (effectiveApprovalMode) applies a freer mode than normal only where its requirements hold
+  // (a feature branch). Asked again whenever the polled branch changes, so switching to a feature branch clears it.
+  const gitBranch = git?.branch ?? null;
+  const paused = useMemo(
+    () => cwd !== undefined && approvalMode !== "normal" && effectiveApprovalMode(approvalMode, cwd, () => readBranch(cwd)) !== approvalMode,
+    [approvalMode, cwd, gitBranch, readBranch],
+  );
+  const pausedText = paused ? "!" : null;
+
+  // The row lays out its items side by side with one space between; a hint that does not fit would wrap the whole line, so it is
+  // dropped (the engine label never is). Until the row is measured the widest wording is shown.
+  // The approval mode (and its `!`) is a safety signal, so it is never dropped; the usage is.
+  const items = [modeText, "›", modelText, engineText, approvalText, pausedText].filter((item): item is string => item !== null);
+  const baseUsed = items.reduce((sum, item) => sum + item.length, 0) + items.length - 1;
+  // The branch and worktree names come from the folder, which may be untrusted: what could act on the terminal shows as an escape.
+  const gitText = git
+    ? formatGit({ ...git, branch: escapeTranscriptText(git.branch), worktree: git.worktree === undefined ? undefined : escapeTranscriptText(git.worktree) })
+    : "";
   const gitShown = gitText !== "" && (width === null || baseUsed + 1 + 2 + gitText.length <= width);
   const withGit = baseUsed + (gitShown ? 1 + 2 + gitText.length : 0);
   const usageShown = usageText !== "" && (width === null || withGit + 1 + 2 + usageText.length <= width);
@@ -102,8 +117,21 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, background }: 
         </text>
       )}
       {approvalText === null ? null : (
-        // The theme has no warning colour: auto is noted (info), yolo is flagged (error).
-        <text fg={approvalMode === "yolo" ? colors.error : colors.info}>{approvalText}</text>
+        // The theme has no warning colour: auto is noted (info), yolo is flagged (error). A paused mode is struck through.
+        <text fg={approvalMode === "yolo" ? colors.error : colors.info}>
+          {paused ? (
+            <>
+              {"· "}
+              <span attributes={TextAttributes.STRIKETHROUGH}>{approvalMode}</span>
+            </>
+          ) : (
+            approvalText
+          )}
+        </text>
+      )}
+      {pausedText === null ? null : (
+        // Also for terminals that cannot draw a strikethrough.
+        <text fg={colors.error}>{pausedText}</text>
       )}
       {usageShown ? (
         <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>

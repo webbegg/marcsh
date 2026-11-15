@@ -50,6 +50,12 @@ describe("formatGit", () => {
   test("shows the branch alone when the files were not counted", () => {
     expect(formatGit({ branch: "main", changed: null })).toBe("main");
   });
+
+  // M5: a linked worktree is named after the branch, before the count.
+  test("names a linked worktree after the branch", () => {
+    expect(formatGit({ branch: "feat/x", changed: null, worktree: "pack-integration" })).toBe("feat/x · wt pack-integration");
+    expect(formatGit({ branch: "feat/x", changed: 2, worktree: "pack-integration" })).toBe("feat/x · wt pack-integration · 2 files changed");
+  });
 });
 
 describe("readGitStatus", () => {
@@ -125,6 +131,74 @@ describe("readGitStatus", () => {
       expect(existsSync(marker)).toBe(false);
     } finally {
       git("config", "--unset", "core.fsmonitor");
+    }
+  });
+});
+
+// M5: in a linked worktree (`--git-dir` differs from `--git-common-dir`) the status names the worktree's folder; the main
+// checkout gets no name. Read from HEAD-only git calls, so it shows in untrusted folders and runs nothing the repo names.
+describe("readGitStatus in a linked worktree", () => {
+  let dir: string;
+  let repo: string;
+  let linked: string;
+  const gitIn = (cwd: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    return result.stdout.toString().trim();
+  };
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-git-worktree-"));
+    repo = join(dir, "repo");
+    linked = join(dir, "pack-integration");
+    mkdirSync(repo);
+    gitIn(repo, "init", "--quiet", "--initial-branch=trunk");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+    gitIn(repo, "add", ".");
+    gitIn(repo, "commit", "--quiet", "-m", "first");
+    gitIn(repo, "worktree", "add", "--quiet", "-b", "feat/x", linked);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("an untrusted linked worktree: the branch and the worktree's folder name", async () => {
+    expect(await readGitStatus(linked)).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+  });
+
+  test("a trusted linked worktree: the count as well", async () => {
+    expect(await readGitStatus(linked, { trusted: true })).toEqual({ branch: "feat/x", changed: 0, worktree: "pack-integration" });
+  });
+
+  test("from a subfolder of the worktree, still the worktree's own folder name", async () => {
+    expect(await readGitStatus(join(linked, "sub"))).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+  });
+
+  test("the main checkout gets no worktree name", async () => {
+    expect(await readGitStatus(repo)).toEqual({ branch: "trunk", changed: null });
+    expect(await readGitStatus(repo, { trusted: true })).toEqual({ branch: "trunk", changed: 0 });
+    expect(await readGitStatus(join(repo, "sub"))).toEqual({ branch: "trunk", changed: null });
+  });
+
+  test("an untrusted linked worktree runs no fsmonitor or filter driver its config names", async () => {
+    const marker = join(dir, "ran");
+    const script = join(dir, "evil.sh");
+    writeFileSync(script, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`);
+    chmodSync(script, 0o755);
+    writeFileSync(join(repo, ".git", "info", "attributes"), "* filter=evil\n");
+    gitIn(repo, "config", "core.fsmonitor", script);
+    gitIn(repo, "config", "filter.evil.clean", script);
+    gitIn(repo, "config", "filter.evil.process", script);
+    gitIn(repo, "config", "filter.evil.required", "true");
+    const later = new Date(Date.now() + 120_000);
+    utimesSync(join(linked, "a.txt"), later, later);
+    try {
+      const status = await readGitStatus(linked);
+      expect(existsSync(marker)).toBe(false);
+      expect(status).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+    } finally {
+      for (const key of ["core.fsmonitor", "filter.evil.clean", "filter.evil.process", "filter.evil.required"]) gitIn(repo, "config", "--unset", key);
+      rmSync(join(repo, ".git", "info", "attributes"));
     }
   });
 });
