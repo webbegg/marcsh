@@ -15,6 +15,7 @@ import { CommandMenu } from "./command-menu";
 import type { Command } from "./command-menu/types";
 import { COMMANDS, COMMAND_NAMES } from "./command-menu/commands";
 import { loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
+import { takePackCommandNotices } from "../lib/user-commands";
 import { CommandPalette } from "./command-palette";
 import { SessionCommandsContext } from "./command-menu/session-commands";
 import { useBackgroundHub } from "../lib/background/context";
@@ -431,6 +432,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     resolveCommand,
     setSelectedIndex,
   } = useCommandMenu(engineId, cwd, session !== null);
+
+  // A pack command hidden by a name clash is said once, when the menu that would have listed it opens.
+  useEffect(() => {
+    if (!showCommandMenu) return;
+    const notices = takePackCommandNotices();
+    if (notices.length > 0) toast.show({ variant: "info", message: `Warning: ${notices.join(" ")}`, duration: 8000 });
+  }, [showCommandMenu, toast]);
 
   const showMentionMenu = activeMention !== null;
 

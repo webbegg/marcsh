@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
 import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
-import { type BranchSource, type BranchState, branchState } from "../git-branch";
+import { type BranchSource, type BranchState, branchState, resolveBranch } from "../git-branch";
 import { agentModelFits } from "../agents";
 import { claudeGroupTools, type Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
@@ -116,6 +116,9 @@ export function createCanUseTool(
   };
 }
 
+/** The branch a subagent's mode line is about when the caller gives none: auto and yolo read as paused. */
+const UNKNOWN_BRANCH: BranchState = { kind: "none", reason: "the branch is not known" };
+
 /** Claude's own subagent types: a named subagent with one of these names is not passed, so it never takes the place of Claude's. */
 const CLAUDE_AGENT_TYPES = new Set(["general-purpose", "explore", "plan", "statusline-setup", "output-style-setup", "claude-code-guide"]);
 
@@ -128,8 +131,12 @@ function subagentModel(model: string | undefined): string {
 /**
  * The named subagents as the SDK's `agents` option, so Claude's Task/Agent can start them by `subagent_type`. Their tools only narrow the
  * session's: the session's denied groups and their own are disallowed, and a read-only one (or any in a plan turn) is given the read tools only.
+ * Each prompt ends with the mode line, as a pi child's does: the plan line for a read-only one, else the turn's approval mode line.
  */
-export function claudeAgents(subagents: readonly TurnSubagent[], { deniedTools = [], mode }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"] }): Record<string, AgentDefinition> {
+export function claudeAgents(
+  subagents: readonly TurnSubagent[],
+  { deniedTools = [], mode, approvalMode, branch }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"]; approvalMode?: TurnRequest["approvalMode"]; branch?: BranchSource },
+): Record<string, AgentDefinition> {
   const agents: Record<string, AgentDefinition> = {};
   for (const sub of subagents) {
     if (CLAUDE_AGENT_TYPES.has(sub.name.toLowerCase()) || Object.hasOwn(agents, sub.name)) continue;
@@ -138,7 +145,7 @@ export function claudeAgents(subagents: readonly TurnSubagent[], { deniedTools =
     const readOnly = sub.readOnly || mode === Mode.PLAN;
     agents[sub.name] = {
       description: sub.description || `The ${sub.name} subagent.`,
-      prompt: sub.prompt ?? "",
+      prompt: systemPromptWithMode(sub.prompt, readOnly ? "plan" : approvalMode, branch ?? UNKNOWN_BRANCH) ?? "",
       ...(readOnly ? { tools: claudeGroupTools("read").filter((name) => !disallowed.includes(name)) } : {}),
       ...(disallowed.length > 0 ? { disallowedTools: disallowed } : {}),
       model: subagentModel(sub.model),
@@ -176,8 +183,12 @@ export function claudeQueryOptions({
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
   // Plan mode stays read-only whatever the approval mode, so it gets the plan line and no approval mode line.
-  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalMode, branch ?? (() => branchState(cwd)));
-  const agents = subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode }) : {};
+  // Read once (and only when a mode line needs it) for the session's line and its subagents'.
+  let known: BranchState | undefined;
+  const branchOnce = () => (known ??= resolveBranch(branch ?? (() => branchState(cwd))));
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalMode, branchOnce);
+  const agents =
+    subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode, approvalMode, branch: branchOnce }) : {};
   return {
     cwd,
     model,

@@ -18,6 +18,8 @@ process.env.MARCSH_AGENTS_DIR = join(work, "agents");
 process.env.MARCSH_PACKS_DIR = join(work, "packs");
 
 let calls: { prompt: string; options: any }[] = [];
+// What Claude reports as its commands after a turn (the menu's cache is refreshed from it).
+let supported: { name: string; description: string; argumentHint: string }[] = [];
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: ({ prompt, options }: any) => {
@@ -26,7 +28,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
       yield { type: "system", subtype: "init", session_id: "claude-1", model: options.model };
       yield { type: "result", subtype: "success", is_error: false, result: "ok", duration_ms: 1, total_cost_usd: 0 };
     })();
-    return Object.assign(messages, { interrupt: async () => {}, supportedCommands: async () => [] });
+    return Object.assign(messages, { interrupt: async () => {}, supportedCommands: async () => supported });
   },
 }));
 
@@ -40,6 +42,7 @@ const { preferencesPath, setAgentId, setDefaultEngine } = await import("../lib/p
 const { disablePackHooks, enablePackHooks, inspectPackHooks, installPack, packPluginDir } = await import("../lib/packs");
 const { marcshPluginPath } = await import("../lib/plugin");
 const { NORMAL_MODE_LINE } = await import("../lib/approval-policy");
+const { loadMenuCommands } = await import("../components/command-menu/use-command-menu");
 
 beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} }));
 afterAll(() => engines.set("pi", undefined));
@@ -52,6 +55,7 @@ beforeAll(async () => {
     "skills/specify/SKILL.md": "---\nname: specify\ndescription: Write a spec\n---\nAsk, then write.",
     "commands/spec.md": '---\ndescription: Write a spec for an idea\nagent: asdd\nargument-hint: "[idea]"\n---\nLoad the specify skill for: $ARGUMENTS',
     "commands/ship.md": "---\ndescription: Ship\n---\nShip it.",
+    "commands/review.md": "---\ndescription: Review the spec\nagent: asdd\n---\nReview the spec: $ARGUMENTS",
     "hooks/hooks.json": JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "true" }] }] } }),
   };
   mkdirSync(repo, { recursive: true });
@@ -107,6 +111,7 @@ async function openIdle(selected: string) {
 }
 
 beforeEach(() => {
+  supported = [];
   mkdirSync(process.env.MARCSH_AGENTS_DIR!, { recursive: true });
   setDefaultEngine("claude");
   getStorage().saveClaudeCommands([]);
@@ -180,6 +185,43 @@ describe("a pack command that names its agent (M2)", () => {
     await until(() => calls.length > 0, "the /spec turn");
 
     expect(calls[0]!.options.env).toMatchObject({ MARCSH_APPROVAL_MODE: "normal", MARCSH_AGENT: "acme/flows/asdd" });
+  });
+
+  test("Claude's built-in /review beats the pack's: /review goes to Claude as typed, the pack's runs as /flows:review (L5)", async () => {
+    supported = [{ name: "review", description: "Review a pull request", argumentHint: "" }];
+    getStorage().saveClaudeCommands(supported);
+    await openIdle("build");
+
+    await type("/flows:rev");
+    expect(frameText()).toContain("/flows:review");
+    for (let i = 0; i < "/flows:rev".length; i++) await act(() => screen!.mockInput.pressBackspace());
+
+    await type("/review 12");
+    await enter();
+    await until(() => calls.length > 0, "the /review turn");
+    expect(calls[0]!.prompt).toBe("/review 12");
+    expect(calls[0]!.options.plugins).toEqual([{ type: "local", path: marcshPluginPath() }]);
+
+    await type("/flows:review x");
+    await enter();
+    await until(() => calls.length > 1, "the /flows:review turn");
+    expect(calls[1]!.prompt).toBe("Review the spec: x");
+    expect(calls[1]!.options.plugins).toEqual([
+      { type: "local", path: marcshPluginPath() },
+      { type: "local", path: packPluginDir("acme/flows") },
+    ]);
+  });
+
+  test("on pi, a prompt template named like a pack command keeps the name in the menu; a command without a clash is unchanged (L5)", () => {
+    getStorage().saveCommands("pi", [{ name: "spec", description: "My pi template", argumentHint: "", source: "prompt" }]);
+    try {
+      const menu = loadMenuCommands("pi", "/tmp/marcsh-cwd", true);
+      expect(menu.filter((command) => command.name === "spec")).toEqual([expect.objectContaining({ source: "prompt", description: "My pi template" })]);
+      expect(menu.find((command) => command.name === "flows:spec")).toMatchObject({ source: "flows", argumentHint: "[idea]" });
+      expect(menu.find((command) => command.name === "review")).toMatchObject({ source: "flows" });
+    } finally {
+      getStorage().saveCommands("pi", []);
+    }
   });
 
   test("a Build turn has no hook environment", async () => {

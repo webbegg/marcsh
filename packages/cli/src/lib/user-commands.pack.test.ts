@@ -6,7 +6,7 @@ import { join } from "node:path";
 process.env.MARCSH_DB_PATH = ":memory:";
 
 const { BUILTIN_AGENTS, loadAgents } = await import("./agents");
-const { loadUserCommands, userCommandTurn } = await import("./user-commands");
+const { loadUserCommands, takePackCommandNotices, userCommandTurn } = await import("./user-commands");
 
 // M2: a pack's `commands/*.md` that names an `agent` is marcsh's to run: listed while the pack is installed, expanded by marcsh, and
 // run for one turn as that agent of the same pack (or a built-in).
@@ -93,10 +93,13 @@ describe("loadUserCommands: pack commands (M2)", () => {
     const names = load().map((command) => command.name);
     expect(names).not.toContain("plain");
     expect(names).not.toContain("new");
+    // It loses the clash, so it is reachable under its pack's repository name.
+    expect(load().find((command) => command.name === "flows:new")?.pack).toBe("acme/flows");
   });
 
   test("two packs with the same command: the first pack by ID keeps the name; the user's own command wins over any pack's", () => {
     expect(load().find((command) => command.name === "spec")?.pack).toBe("acme/flows");
+    expect(load().find((command) => command.name === "tools:spec")?.pack).toBe("other/tools");
     expect(load().find((command) => command.name === "tool")?.pack).toBe("other/tools");
 
     write(join(personal, "spec.md"), "My own spec $ARGUMENTS");
@@ -121,6 +124,62 @@ describe("loadUserCommands: pack commands (M2)", () => {
     const esc = commands.find((command) => command.name === "esc")!;
     expect(esc.description).not.toContain("\u001b");
     expect(esc.argumentHint).not.toContain("\u001b");
+  });
+});
+
+describe("engine commands beat pack commands (L5)", () => {
+  const withEngine = (engineNames: string[]) => loadUserCommands({ cwd: project, trusted: false, builtinNames: ["new", "agents"], engineNames, packsDir: packs });
+  const turnOptions = (engine: string, engineNames: string[]) => ({
+    cwd: project,
+    engine,
+    trusted: false,
+    agents: loadAgents(agentsDir, packs),
+    builtinNames: ["new", "agents"],
+    engineNames,
+    packsDir: packs,
+  });
+
+  beforeEach(() => {
+    takePackCommandNotices();
+    write(join(packs, "acme", "flows", "plugin", "commands", "review.md"), "---\ndescription: Review the spec\nagent: asdd\n---\nReview: $ARGUMENTS");
+  });
+
+  test("Claude's built-in /review keeps its name: the pack's /review is listed as /flows:review, and /review goes to Claude as typed", () => {
+    const commands = withEngine(["review", "compact", "acme-flows:review"]);
+    expect(commands.find((command) => command.name === "review")).toBeUndefined();
+    expect(commands.find((command) => command.name === "flows:review")).toMatchObject({ pack: "acme/flows", engineName: "acme-flows:review", description: "Review the spec" });
+
+    expect(userCommandTurn("/review the diff", turnOptions("claude", ["review"]))).toBeNull();
+    const turn = userCommandTurn("/flows:review the diff", turnOptions("claude", ["review"]))!;
+    expect(turn.text).toBe("Review: the diff");
+    expect(turn.agent?.id).toBe("acme/flows/asdd");
+  });
+
+  test("on pi, a prompt template (or extension command) with the same name keeps it too", () => {
+    expect(userCommandTurn("/spec x", turnOptions("pi", ["spec", "skill:specify"]))).toBeNull();
+    expect(userCommandTurn("/flows:spec x", turnOptions("pi", ["spec"]))?.agent?.id).toBe("acme/flows/asdd");
+    // The other pack's spec, which already lost to acme/flows, keeps its own prefixed name.
+    expect(userCommandTurn("/tools:spec", turnOptions("pi", ["spec"]))?.text).toBe("Other spec");
+  });
+
+  test("an engine name in another letter case is the same name", () => {
+    expect(withEngine(["Review"]).map((command) => command.name)).toContain("flows:review");
+  });
+
+  test("a pack command that clashes with nothing is unchanged", () => {
+    const ftd = withEngine(["review", "spec"]).find((command) => command.pack === "acme/flows" && command.agent === "Fast Track")!;
+    expect(ftd.name).toBe("ftd");
+    expect(userCommandTurn("/ftd x", turnOptions("claude", ["review"]))?.agent?.id).toBe("acme/flows/ftd");
+    expect(takePackCommandNotices()).toEqual([]);
+  });
+
+  test("when the prefixed name is taken as well, the command is hidden and a notice names the clash, once", () => {
+    const names = withEngine(["review", "flows:review"]).map((command) => command.name);
+    expect(names).not.toContain("review");
+    expect(names).not.toContain("flows:review");
+    expect(takePackCommandNotices()).toEqual(["acme/flows's /review is hidden: /review and /flows:review are already other commands."]);
+    withEngine(["review", "flows:review"]);
+    expect(takePackCommandNotices()).toEqual([]);
   });
 });
 

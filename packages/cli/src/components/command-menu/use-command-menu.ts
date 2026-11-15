@@ -5,7 +5,7 @@ import { getFilteredCommands, getMenuCommands } from "./filter-commands";
 import type { Command } from "./types";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { getStorage } from "../../lib/storage";
-import { combineClaudeCommands } from "../../lib/claude-commands";
+import { combineClaudeCommands, type ClaudeCommand } from "../../lib/claude-commands";
 import { marcshPluginPath, readPluginCommands } from "../../lib/plugin";
 import { bundledPiCommands } from "../../lib/engine/pi-commands";
 import { loadUserCommands } from "../../lib/user-commands";
@@ -14,16 +14,25 @@ import { COMMAND_NAMES } from "./commands";
 // Read when the menu opens, so a list cached by a turn or the startup warm-up that just ended shows up.
 // The plugin's own commands are read from disk, so they are listed even with an empty cache. So are the user's: a file added since start is listed.
 export function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
-  const user = loadUserCommands({ cwd, builtinNames: COMMAND_NAMES });
+  const known = loadEngineCommands(engine);
+  const user = loadUserCommands({ cwd, builtinNames: COMMAND_NAMES, engineNames: known.map((command) => command.name) });
+  return getMenuCommands(known, user, inSession);
+}
+
+/** The engine's commands as marcsh knows them: the list its last turn or warm-up cached, plus the bundled plugin's. */
+export function loadEngineCommands(engine: string): ClaudeCommand[] {
   const pluginPath = marcshPluginPath();
   // Each engine has its own cache and its own names for the plugin's commands (on pi, `marcsh:feature` is a template).
   const bundled = !pluginPath ? [] : engine === "pi" ? bundledPiCommands(pluginPath) : readPluginCommands(pluginPath);
   try {
-    return getMenuCommands(combineClaudeCommands(getStorage().getCommands(engine), bundled), user, inSession);
+    return combineClaudeCommands(getStorage().getCommands(engine), bundled);
   } catch {
-    return getMenuCommands(bundled, user, inSession);
+    return bundled;
   }
 }
+
+/** The engine's command names, which beat a pack's command of the same name (see `loadUserCommands`). */
+export const engineCommandNames = (engine: string) => loadEngineCommands(engine).map((command) => command.name);
 
 type UseCommandMenuReturn = {
   showCommandMenu: boolean;

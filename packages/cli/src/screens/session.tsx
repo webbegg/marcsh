@@ -36,6 +36,7 @@ import { SessionCommandsContext } from "../components/command-menu/session-comma
 import { escapeTranscriptText } from "../lib/display-text";
 import { openSnapshots } from "../lib/session-snapshots";
 import { userCommandTurn } from "../lib/user-commands";
+import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { backgroundMessageText, createBackgroundHub, noticeOf, type BackgroundBatch } from "../lib/background/hub";
 import { BackgroundContext } from "../lib/background/context";
 
@@ -265,7 +266,7 @@ function SessionChat({
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
   const sendTyped = useCallback(
     (text: string, attachments?: MessageAttachment[]) => {
-      const turn = userCommandTurn(text, { cwd: session.cwd, engine: session.engine, agents, builtinNames: COMMAND_NAMES });
+      const turn = userCommandTurn(text, { cwd: session.cwd, engine: session.engine, agents, builtinNames: COMMAND_NAMES, engineNames: engineCommandNames(session.engine) });
       if (!turn) return send(text, agent, model, undefined, attachments);
       if (turn.warning) toast.show({ variant: "info", message: turn.warning });
       send(turn.text, turn.agent ?? agent, model, turn.model, attachments);

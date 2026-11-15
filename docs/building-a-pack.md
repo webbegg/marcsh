@@ -120,7 +120,7 @@ Spec slug (empty means the most recent approved spec): $ARGUMENTS
 - `agent` names one of your pack's agents by file name without `.md` (`asdd` for `agents/asdd.md`, in any letter case) or by its `name`. It can also be `build` or `plan`. An agent of another pack, a subagent or an unknown name gets a warning, and the turn runs as the selected agent.
 - The prompt is expanded like a [custom command](commands.md#arguments): `$ARGUMENTS` is everything after the name, and `$1` to `$9` are its words.
 - Quote an `argument-hint` that starts with `[`, as YAML needs. marcsh drops the quotes.
-- marcsh's own commands and the user's own commands win a name clash. Pick names that do not collide with [marcsh's commands](commands.md#marcsh-commands).
+- Your command never takes a name from another command. marcsh's own commands win a name clash, then the engine's (Claude's or pi's built-in, plugin and template commands, such as Claude's `/review`), then the user's own commands. A command that loses is listed and run as `/<repo>:<name>` instead (`/marcsh-rsc:review`), and is hidden, with a one-time warning, if that name is taken too. Pick names that do not collide with [marcsh's commands](commands.md#marcsh-commands) or the engines' built-in commands.
 
 ## Test it before you publish
 

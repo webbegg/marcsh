@@ -42,13 +42,13 @@ function joinMessage(message: string, stdin: string | undefined): string {
   return [message.trim(), stdin?.trim() ?? ""].filter(Boolean).join("\n\n");
 }
 
-/** The agent named by `--agent` (its id, its name, or the file name inside its id), or the selected one when none is named. */
 /** The named subagents a run of `agent` may start, as the turn request's `subagents` (none: no key). */
 function subagentsOf(agent: Agent) {
   const subagents = turnSubagents(agent);
   return subagents.length > 0 ? { subagents } : {};
 }
 
+/** The agent named by `--agent` (its id, its name, or the file name inside its id), or the selected one when none is named. */
 function pickAgent(agents: readonly Agent[], name: string | undefined): Agent | undefined {
   if (name === undefined) return findAgent(agents, getAgentId());
   const wanted = name.toLowerCase();

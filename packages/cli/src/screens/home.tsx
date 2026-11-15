@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Header } from "../components/header";
 import { InputBar } from "../components/input-bar";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
+import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { usePromptConfig } from "../providers/prompt-config";
 import { useToast } from "../providers/toast";
 import { userCommandTurn } from "../lib/user-commands";
@@ -16,7 +17,7 @@ export function Home() {
   const handleSubmit = useCallback(
     (text: string) => {
       // One of the user's commands runs as its expanded prompt, as the agent and model it names.
-      const turn = userCommandTurn(text, { cwd: process.cwd(), engine: defaultEngine, agents, builtinNames: COMMAND_NAMES });
+      const turn = userCommandTurn(text, { cwd: process.cwd(), engine: defaultEngine, agents, builtinNames: COMMAND_NAMES, engineNames: engineCommandNames(defaultEngine) });
       if (turn?.warning) toast.show({ variant: "info", message: turn.warning });
       const turnAgent = turn?.agent ?? agent;
       navigate("/sessions/new", {

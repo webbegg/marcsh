@@ -96,6 +96,8 @@ export type LoadOptions = {
   cwd: string;
   /** Marcsh's own command names: they win a name clash. */
   builtinNames?: readonly string[];
+  /** The engine's command names as marcsh knows them (Claude's or pi's built-ins, plugins, templates): they win a clash with a pack's command. */
+  engineNames?: readonly string[];
   /** Whether the project is trusted; read from the trust store when not given. */
   trusted?: boolean;
   /** Where the installed packs are. Default: marcsh's packs folder. */
@@ -124,18 +126,60 @@ function loadPackCommands(packsDir: string): UserCommand[] {
     });
 }
 
+/** The clashes of hidden pack commands already said, so each is said once per run. */
+const noticedClashes = new Set<string>();
+let pendingNotices: string[] = [];
+
+/** What was hidden since the last call, each clash once per run: the screen that lists the commands says so in a toast. */
+export function takePackCommandNotices(): string[] {
+  const notices = pendingNotices;
+  pendingNotices = [];
+  return notices;
+}
+
+/** The name a pack command that lost a clash is reachable by: `<repo>:<name>` (`flows:review` for acme/flows' `review`). */
+const prefixedName = (command: UserCommand) => `${(command.pack!.split("/")[1] ?? command.pack!).toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}:${command.name}`;
+
 /**
- * The user's commands, sorted by name: the installed packs' commands that name an agent (the first pack by ID keeps a name), then
- * `~/.marcsh/commands/*.md`, which replace a pack's command of the same name, then the project's `.marcsh/commands/*.md`, which replace
- * a personal command of the same name. A project's commands are loaded only when the project is trusted. A name
- * that is one of marcsh's own is never a user command.
+ * The user's commands, sorted by name: `~/.marcsh/commands/*.md`, then the project's `.marcsh/commands/*.md`, which replace a personal
+ * command of the same name, then the installed packs' commands that name an agent. A project's commands are loaded only when the project
+ * is trusted. A name that is one of marcsh's own is never a user command.
+ *
+ * A pack's command keeps its name only when no other command has it: marcsh's, the engine's (`engineNames`, the pack's own copy aside),
+ * the user's, or an earlier pack's (by ID). One that loses is listed as `<repo>:<name>` instead, and is hidden, with a notice (see
+ * `takePackCommandNotices`), when that name is taken too.
  */
-export function loadUserCommands({ cwd, builtinNames = [], trusted, packsDir = packsRoot() }: LoadOptions): UserCommand[] {
+export function loadUserCommands({ cwd, builtinNames = [], engineNames = [], trusted, packsDir = packsRoot() }: LoadOptions): UserCommand[] {
   const byName = new Map<string, UserCommand>();
-  for (const command of loadPackCommands(packsDir)) if (!byName.has(command.name)) byName.set(command.name, command);
   const project = (trusted ?? isTrusted(cwd)) ? readCommandDir(join(cwd, ".marcsh", "commands"), "project") : [];
   for (const command of [...readCommandDir(userCommandsDir(), "personal"), ...project]) byName.set(command.name, command);
   for (const name of builtinNames) byName.delete(name);
+
+  const packCommands = loadPackCommands(packsDir);
+  const copies = new Set(packCommands.map((command) => command.engineName!.toLowerCase()));
+  const taken = new Set([...builtinNames, ...engineNames].map((name) => name.toLowerCase()).filter((name) => !copies.has(name)));
+  for (const name of byName.keys()) taken.add(name);
+  const lost: UserCommand[] = [];
+  for (const command of packCommands) {
+    if (taken.has(command.name)) lost.push(command);
+    else {
+      taken.add(command.name);
+      byName.set(command.name, command);
+    }
+  }
+  for (const command of lost) {
+    const name = prefixedName(command);
+    if (NAME.test(name) && !taken.has(name)) {
+      taken.add(name);
+      byName.set(name, { ...command, name });
+      continue;
+    }
+    const clash = `${command.pack}'s /${command.name} is hidden: /${command.name} and /${name} are already other commands.`;
+    if (!noticedClashes.has(clash)) {
+      noticedClashes.add(clash);
+      pendingNotices.push(clash);
+    }
+  }
   return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
