@@ -225,9 +225,21 @@ export type CommandTurn = {
 export type TurnOptions = LoadOptions & {
   engine: string;
   agents: readonly Agent[];
-  /** The selected agent. A read-only one (Plan) keeps a pack command's build agent read-only for the turn. */
+  /**
+   * The selected agent. A read-only one (Plan) keeps a pack command's build agent read-only for the turn, and the tools it denies stay
+   * denied: a pack command never widens what the selected agent may use.
+   */
   selected?: Agent;
 };
+
+/** `agent` with the tool groups `selected` denies added to its own (as a subagent narrows its parent); unchanged when `selected` denies none. */
+function withSelectedDenials(agent: Agent, selected: Agent | undefined): Agent {
+  const extra = selected?.tools?.deny ?? [];
+  if (extra.length === 0) return agent;
+  const deny = [...new Set([...(agent.tools?.deny ?? []), ...extra])];
+  const named = [...new Set([...(agent.tools?.named ?? []), ...(selected?.tools?.named ?? [])])];
+  return { ...agent, tools: { deny, ...(named.length > 0 ? { named } : {}) } };
+}
 
 /** A user's command may name any agent, by ID or by name (any case). */
 function namedAgent(wanted: string, agents: readonly Agent[]): Agent | undefined {
@@ -265,11 +277,13 @@ export function userCommandTurn(input: string, { engine, agents, selected, ...lo
   if (command.agent === "") warnings.push(`/${command.name}: ${command.pack} names no agent (its agent: is empty); the selected agent is used.`);
   else if (command.agent) {
     const agent = command.pack ? packCommandAgent(command.agent, command.pack, agents) : namedAgent(command.agent, agents);
-    // L6: a pack command never relaxes a read-only selected agent. Its agent's prompt, skills and subagents answer, under plan's rules.
-    if (agent && command.pack && selected?.mode === Mode.PLAN && agent.mode !== Mode.PLAN) {
-      turn.agent = { ...agent, mode: Mode.PLAN };
-      turn.notice = `/${command.name} runs as ${agent.name} in ${selected.name} (read-only): switch to Build to let it change files.`;
-    } else if (agent) turn.agent = agent;
+    // A pack command never relaxes the selected agent: a read-only one keeps it read-only (its agent's prompt, skills and subagents
+    // answer, under plan's rules), and the tools the selected agent denies stay denied.
+    const narrowed = agent && command.pack ? withSelectedDenials(agent, selected) : agent;
+    if (narrowed && command.pack && selected?.mode === Mode.PLAN && narrowed.mode !== Mode.PLAN) {
+      turn.agent = { ...narrowed, mode: Mode.PLAN };
+      turn.notice = `/${command.name} runs as ${narrowed.name} in ${selected.name} (read-only): switch to Build to let it change files.`;
+    } else if (narrowed) turn.agent = narrowed;
     else if (command.pack) warnings.push(`/${command.name}: ${command.pack} has no agent “${command.agent}”; the selected agent is used.`);
     else warnings.push(`/${command.name}: no agent named “${command.agent}”; the selected agent is used.`);
   }

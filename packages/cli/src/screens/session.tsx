@@ -49,6 +49,8 @@ const sessionLocationSchema = z.object({
       agentId: z.string().optional(),
       /** The model a custom command asked for, for this first turn. */
       agentModel: z.string().optional(),
+      /** Tool groups the first turn's agent must not use, on top of its own. */
+      agentDeny: z.array(z.string()).optional(),
     })
     .optional(),
 });
@@ -105,7 +107,7 @@ function SessionChat({
   initialPrompt,
 }: { 
   session: StoredSession,
-  initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string };
+  initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string; agentDeny?: string[] };
 }) {
   const { agents, agent, model, setModel, piModel, setPiModel, refreshPiModel } = usePromptConfig();
   // The agent selected now, for what runs later than a render: background results' turns and background subagents' plan mode.
@@ -266,7 +268,8 @@ function SessionChat({
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
   const sendTyped = useCallback(
     (text: string, attachments?: MessageAttachment[]) => {
-      // From a read-only agent (Plan), a pack command's build agent answers in plan for this turn, and the user is told (L6).
+      // From a read-only agent (Plan), a pack command's build agent answers in plan for this turn, and the user is told; the tools the
+      // selected agent denies stay denied (see `userCommandTurn`).
       const turn = userCommandTurn(text, {
         cwd: session.cwd,
         engine: session.engine,
@@ -357,8 +360,13 @@ function SessionChat({
     // A prompt that names no agent (older navigation state) runs as the selected agent, or as the built-in one when the mode it carries differs.
     const fallback = agent.mode === initialPrompt.mode ? agent.id : builtinAgentId(initialPrompt.mode);
     const found = findAgent(agents, initialPrompt.agentId ?? fallback);
-    // A pack command typed on the home screen from Plan carries plan for its build agent (L6): the turn stays read-only.
-    const first = initialPrompt.mode === Mode.PLAN && found.mode !== Mode.PLAN ? { ...found, mode: Mode.PLAN } : found;
+    // A pack command typed on the home screen from Plan carries plan for its build agent: the turn stays read-only.
+    const planned = initialPrompt.mode === Mode.PLAN && found.mode !== Mode.PLAN ? { ...found, mode: Mode.PLAN } : found;
+    // The home screen's turn may carry denials the agent itself doesn't have (a pack command never widens the selected agent's tools).
+    const extraDeny = initialPrompt.agentDeny ?? [];
+    const first = extraDeny.length > 0
+      ? { ...planned, tools: { ...planned.tools, deny: [...new Set([...(planned.tools?.deny ?? []), ...extraDeny])] } as NonNullable<Agent["tools"]> }
+      : planned;
     send(initialPrompt.message, first, initialPrompt.model, initialPrompt.agentModel);
   }, [initialPrompt, agents, agent, send]);
 

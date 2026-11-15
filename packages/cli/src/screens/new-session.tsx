@@ -16,6 +16,8 @@ const newSessionStateSchema = z.object({
   agentId: z.string().optional(),
   /** The model a custom command chose for the first turn only. */
   agentModel: z.string().optional(),
+  /** Tool groups the first turn's agent must not use (a pack command keeps the selected agent's denials). */
+  agentDeny: z.array(z.string()).optional(),
 });
 
 export function NewSession() {

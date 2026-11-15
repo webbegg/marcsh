@@ -118,6 +118,8 @@ Spec slug (empty means the most recent approved spec): $ARGUMENTS
 - marcsh runs this command itself on both engines. Users can type `/plan`, and it is listed in the `/` menu with your pack's name and the hint, whichever agent they have selected.
 - The turn runs as the named agent, so your skills, subagents and enabled hooks are there for it. The next message goes back to the selected agent.
 - A command never lifts Plan. With Plan (or another read-only agent) selected, the turn runs as your agent but read-only, under Plan's rules, and marcsh tells the user to switch to Build to let it change files. Write the command so that a read-only run still does something useful, such as reading and planning.
+- A command never gives the turn tools the selected agent does not have: the tool groups the selected agent turns off stay off for your agent too.
+- The install preview shows the agent each command runs as, for example `spec → ASDD`.
 - `agent` names one of your pack's agents by file name without `.md` (`asdd` for `agents/asdd.md`, in any letter case) or by its `name`. It can also be `build` or `plan`. An agent of another pack, a subagent, an unknown name or an empty `agent:` gets a warning, and the turn runs as the selected agent.
 - The prompt is expanded like a [custom command](commands.md#arguments): `$ARGUMENTS` is everything after the name, and `$1` to `$9` are its words.
 - Quote an `argument-hint` that starts with `[`, as YAML needs. marcsh drops the quotes.

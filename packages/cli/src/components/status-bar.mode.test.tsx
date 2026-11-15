@@ -123,6 +123,41 @@ describe("StatusBar mode that is not fully active", () => {
     expect(struck(spanWith("auto"))).toBe(false);
   });
 
+  // R3-2: where the checkout stands is read asynchronously, never by a synchronous git call in render.
+  test("the paused state comes from an async read of the branch", async () => {
+    const feature = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "feat/x", changed: null })} readBranch={async () => FEATURE} />, "auto");
+    expect(feature).toContain("· auto · feat/x");
+    expect(feature).not.toContain("!");
+    await act(async () => screen!.renderer.destroy());
+
+    const main = await render(<StatusBar cwd="/repo" readGit={gitOf({ branch: "main", changed: null })} readBranch={async () => MAIN} />, "yolo");
+    expect(main).toContain("· yolo !");
+    expect(struck(spanWith("yolo"))).toBe(true);
+  });
+
+  // R3-10 / R4-2: with git status off (MARCSH_GIT_STATUS=off) or failing, the branch is still read, so the mark follows a switch.
+  test("with no git status, a switch to a feature branch still un-strikes the mode", async () => {
+    let branch = "main";
+    const readBranch = async (): Promise<BranchState> => (branch === "main" ? MAIN : FEATURE);
+    let setMessages: (messages: any[]) => void = () => {};
+    function Host() {
+      const [messages, set] = useState<any[]>([]);
+      setMessages = set;
+      return <StatusBar cwd="/repo" readGit={gitOf(null)} readBranch={readBranch} messages={messages} />;
+    }
+    expect(await render(<Host />, "auto")).toContain("· auto !");
+
+    branch = "feat/x";
+    // A tool call ending (here a new message) reads the branch again, as the branch's own poll does.
+    await act(async () => setMessages([{ id: "u", role: "user", parts: [] }]));
+    await settle();
+    await screen!.renderOnce();
+    const after = screen!.captureCharFrame();
+    expect(after).toContain("· auto");
+    expect(after).not.toContain("!");
+    expect(struck(spanWith("auto"))).toBe(false);
+  });
+
   test("the mode and its `!` are never dropped when narrow", async () => {
     const frame = await render(
       <StatusBar cwd="/repo" readGit={gitOf({ branch: "main", changed: 3 })} readBranch={() => MAIN} hint="enter steers" background="1 background terminal" />,

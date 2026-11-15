@@ -30,7 +30,7 @@ export function Home() {
       if (said) toast.show({ variant: "info", message: said });
       const turnAgent = turn?.agent ?? agent;
       navigate("/sessions/new", {
-        state: { message: turn?.text ?? text, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}) },
+        state: { message: turn?.text ?? text, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}), ...(turnAgent.tools?.deny?.length ? { agentDeny: [...turnAgent.tools.deny] } : {}) },
       });
     },
     [navigate, toast, agent, agents, model, defaultEngine],

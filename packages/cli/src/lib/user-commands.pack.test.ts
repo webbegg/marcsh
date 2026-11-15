@@ -268,6 +268,29 @@ describe("userCommandTurn: pack commands run as their pack's agent (M2)", () => 
     expect(userCommandTurn("/plan x", { ...base(), selected: plan })!.notice).toBeUndefined();
   });
 
+  // R1-3: a pack command never widens the selected agent's tools: its agent runs with the selected agent's denials added.
+  test("the selected agent's denied tools stay denied when a pack command runs as another agent", () => {
+    const build = BUILTIN_AGENTS.find((agent) => agent.id === "build")!;
+    const narrowed = { ...build, id: "user/no-shell", name: "No shell", tools: { deny: ["bash" as const] } };
+    const toPack = userCommandTurn("/spec x", { ...base(), selected: narrowed })!;
+    expect(toPack.agent).toMatchObject({ id: "acme/flows/asdd", mode: "BUILD" });
+    expect(toPack.agent?.tools?.deny).toEqual(["bash"]);
+
+    // A command that names Build, from an agent without edits: still without edits.
+    write(join(packs, "acme", "flows", "plugin", "commands", "tobuild.md"), "---\nagent: build\n---\nBuild: $ARGUMENTS");
+    const noEdit = { ...build, id: "acme/flows/reviewer", name: "Reviewer", pack: "acme/flows", tools: { deny: ["edit" as const] } };
+    const toBuild = userCommandTurn("/tobuild x", { ...base(), selected: noEdit })!;
+    expect(toBuild.agent?.id).toBe("build");
+    expect(toBuild.agent?.tools?.deny).toEqual(["edit"]);
+
+    // Both deny: the union, each once.
+    const both = userCommandTurn("/tobuild x", { ...base(), selected: { ...noEdit, tools: { deny: ["edit" as const, "bash" as const] } } })!;
+    expect([...(both.agent?.tools?.deny ?? [])].sort()).toEqual(["bash", "edit"]);
+
+    // From an agent that denies nothing, the command's agent is unchanged.
+    expect(userCommandTurn("/spec x", { ...base(), selected: build })!.agent?.tools).toBeUndefined();
+  });
+
   test("the agents list without the pack's agents (none loaded) warns rather than guessing", () => {
     const turn = userCommandTurn("/spec x", { ...base(), agents: BUILTIN_AGENTS })!;
     expect(turn.agent).toBeUndefined();

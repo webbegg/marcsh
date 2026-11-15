@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { INFRA_ENV } from "../background/session-marker";
+import type { BranchState } from "../git-branch";
 import { compileMatcher, packHookEnv, type HookCommand, type HookPermissionMode, type HooksConfig } from "../pack-hooks";
 import { claudeToolName, claudeToolNames } from "../tool-names";
 import { BG_START_TOOL, bgStartDir, hasWorkingDir, workingDirError } from "./pi-bg-tools";
@@ -212,11 +214,29 @@ export type PackHooksOptions = {
   /** Aborts when the turn ends: running hooks are killed. */
   signal: AbortSignal;
   notify?: (message: string, level: NoticeLevel) => void;
-  /** The mode at the moment of a call (`permission_mode`, MARCSH_APPROVAL_MODE). Absent: neither is given to the hook. */
-  permissionMode?: () => HookPermissionMode;
+  /** The mode at the moment of a call, asked with the call's ID (`permission_mode`, MARCSH_APPROVAL_MODE). Absent: neither is given to the hook. */
+  permissionMode?: (toolCallId: string) => HookPermissionMode;
   /** The ID of the turn's agent (`agent`, MARCSH_AGENT). Absent: neither is given. */
   agent?: string;
 };
+
+/**
+ * Where the checkout stands for each tool call: `read` runs once per call ID (its PreToolUse and PostToolUse hooks share it) and again
+ * for the next call, so a branch switch during the turn is what the next call's hooks are told. Without an ID it reads every time.
+ * Only the latest `keep` calls are remembered.
+ */
+export function branchPerCall(read: () => BranchState, keep = 32): (toolCallId: string | undefined) => BranchState {
+  const seen = new Map<string, BranchState>();
+  return (toolCallId) => {
+    if (toolCallId === undefined) return read();
+    const known = seen.get(toolCallId);
+    if (known) return known;
+    const state = read();
+    if (seen.size >= keep) seen.delete(seen.keys().next().value!);
+    seen.set(toolCallId, state);
+    return state;
+  };
+}
 
 const shorten = (command: string) => (command.length > 60 ? `${command.slice(0, 59)}…` : command);
 
@@ -236,12 +256,12 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify, pe
     // The payload's `cwd` says where the call's command runs. The hook process starts in the session's folder (CLAUDE_PROJECT_DIR):
     // a `bg_start`'s `working_dir` is the model's choice and nothing has approved it when PreToolUse runs.
     // The mode is read at each call, so a /permissions switch during the turn is what the next call's hooks are told.
-    const execute = (hooks: HookCommand[], call: Json & { cwd: string }) => {
-      const mode = permissionMode?.();
+    const execute = (hooks: HookCommand[], call: Json & { cwd: string }, toolCallId: string) => {
+      const mode = permissionMode?.(toolCallId);
       const payload = { ...call, ...(mode ? { permission_mode: mode } : {}), ...(agent ? { agent } : {}) };
       const input = JSON.stringify(payload);
       // MARCSH_INFRA: a hook is marcsh's own process, so what it leaves running is never listed as a leftover of the agent's tools (see `leftovers.ts`).
-      const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd, MARCSH_INFRA: "1", ...(mode ? packHookEnv(mode, agent) : agent ? { MARCSH_AGENT: agent } : {}) };
+      const env = { ...process.env, CLAUDE_PLUGIN_ROOT: view, CLAUDE_PROJECT_DIR: cwd, [INFRA_ENV]: "1", ...(mode ? packHookEnv(mode, agent) : agent ? { MARCSH_AGENT: agent } : {}) };
       return Promise.all(
         hooks.map(async (hook) => ({
           hook,
@@ -273,7 +293,7 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify, pe
             hook_event_name: "PreToolUse",
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),
-          });
+          }, event.toolCallId);
           let block: string | undefined;
           for (const { hook, outcome } of results) {
             const verdict = judgePreToolUse(outcome);
@@ -304,7 +324,7 @@ export function createPackHooksExtension({ config, view, cwd, signal, notify, pe
             tool_name: name,
             tool_input: toolInput(event.toolName, event.input),
             ...(event.isError ? { error: resultText(event.content), is_interrupt: false } : { tool_response: { content: event.content, is_error: false } }),
-          });
+          }, event.toolCallId);
           const feedback: string[] = [];
           for (const { hook, outcome } of results) {
             const verdict = judgePostToolUse(outcome);

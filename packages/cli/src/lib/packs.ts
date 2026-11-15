@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, rmdirSync, utimesSync } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { MAX_AGENT_BYTES, parseAgentFile, parseSubagentFile, type Agent } from "./agent-file";
+import { MAX_AGENT_BYTES, agentFileSlug, parseAgentFile, parseSubagentFile, readFrontmatter, type Agent } from "./agent-file";
 import { describeTools } from "./agent-tools";
 import { HOOKS_DIR, hookEvents, readHooksDir } from "./pack-hooks";
 import {
@@ -80,6 +80,7 @@ export type PackPreview = {
   /** The named subagents (`mode: subagent` files), by the address the model starts them with; absent when there are none. */
   subagents?: { name: string; permission: "read-only" | "build"; model?: string; tools?: string }[];
   skills: string[];
+  /** Each command by name; one marcsh runs itself (it names an `agent:`) with the agent it runs as: `spec → ASDD`. */
   commands: string[];
   /** The pack's `hooks/`, when it has one: off until the user enables it (`/agents hooks <id>`), or unusable and never enabled. */
   hooks?: { usable: true; events: string[] } | { usable: false; reason: string };
@@ -381,20 +382,52 @@ function declaredKeys(text: string): { hooks: boolean; allowedTools: boolean } {
   };
 }
 
-/** The skills and commands of a clone: every regular file the generated view is copied from, and what the preview lists. */
-type Parts = { files: string[]; skills: string[]; commands: string[]; warnings: string[] };
+/**
+ * The skills and commands of a clone: every regular file the generated view is copied from, and what the preview lists. `commandAgents`:
+ * the `agent:` of each command marcsh runs itself (a `commands/<name>.md` that names one; "" when it is empty), by command name.
+ */
+type Parts = { files: string[]; skills: string[]; commands: string[]; commandAgents?: Record<string, string>; warnings: string[] };
+
+// The loader's rule for a command name (user-commands.ts): only these are marcsh's commands.
+const COMMAND_NAME = /^[a-z0-9][a-z0-9\-_:]*$/;
+
+// The built-in agents a pack command may name (agents.ts BUILTIN_AGENTS, which imports this module): by ID or name, in any case.
+const BUILTIN_AGENT_NAMES: Record<string, string> = { build: "Build", plan: "Plan" };
+
+/**
+ * Who a pack command whose `agent:` is `wanted` runs as, for the preview, by the loader's rules (user-commands.ts `packCommandAgent`):
+ * a built-in, else one of the pack's own agents by file name or by name; anything else runs as the selected agent, with a warning.
+ */
+function commandRunsAs(wanted: string, pack: string, own: readonly Agent[]): string {
+  if (wanted === "") return "the selected agent (its agent: is empty)";
+  const name = printable(wanted).trim();
+  const lower = name.toLowerCase();
+  const builtin = BUILTIN_AGENT_NAMES[lower] ?? Object.values(BUILTIN_AGENT_NAMES).find((label) => label.toLowerCase() === lower);
+  if (builtin) return builtin;
+  const file = agentFileSlug(name);
+  const agent = (file ? own.find((candidate) => candidate.id === `${pack}/${file}`) : undefined) ?? own.find((candidate) => candidate.name.toLowerCase() === lower);
+  return agent ? printable(agent.name) : `the selected agent (no agent “${name}”)`;
+}
 
 /** Lists `skills/` and `commands/` and reads every `.md` in them whole (any case of the extension). Throws if a file declares hooks. */
 async function readParts(src: string): Promise<Parts> {
   const files = [...(await listPart(src, "skills")), ...(await listPart(src, "commands"))];
   const warnings: string[] = [];
+  const commandAgents: Record<string, string> = {};
   for (const file of files) {
     if (!file.toLowerCase().endsWith(".md")) continue;
     let found;
+    let text: string;
     try {
-      found = declaredKeys(await readFile(join(src, file), "utf8"));
+      text = await readFile(join(src, file), "utf8");
+      found = declaredKeys(text);
     } catch (error) {
       throw rejected(`the frontmatter of ${printable(file)} cannot be read unambiguously (${(error as Error).message})`);
+    }
+    const command = dirname(file) === "commands" && file.endsWith(".md") ? basename(file).slice(0, -3) : undefined;
+    if (command !== undefined && COMMAND_NAME.test(command)) {
+      const { fields } = readFrontmatter(text);
+      if (fields.has("agent")) commandAgents[command] = fields.get("agent")?.trim() ?? "";
     }
     if (found.hooks) throw rejected(`${printable(file)} declares hooks, which marcsh never runs from a skill or command; declare them in hooks/hooks.json, where they stay off until you enable them with /agents hooks`);
     if (found.allowedTools) warnings.push(`${file} pre-approves tools (allowed-tools)`);
@@ -408,7 +441,7 @@ async function readParts(src: string): Promise<Parts> {
     .filter((file) => dirname(file) === "skills" && file.toLowerCase().endsWith(".md") && basename(file).toLowerCase() !== "skill.md")
     .map((file) => basename(file).slice(0, -3));
   const commands = files.filter((file) => file.startsWith("commands/") && file.toLowerCase().endsWith(".md")).map((file) => relative("commands", file).slice(0, -3));
-  return { files, skills: [...folderSkills, ...rootSkills].sort(), commands: commands.sort(), warnings };
+  return { files, skills: [...folderSkills, ...rootSkills].sort(), commands: commands.sort(), commandAgents, warnings };
 }
 
 // Like the loader, a pack's `agents` folder is not read through a link.
@@ -497,6 +530,7 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
   const agents: PackPreview["agents"] = [];
   const subagents: NonNullable<PackPreview["subagents"]> = [];
   const notUsed: string[] = [];
+  const own: Agent[] = [];
   const entry = (name: string, agent: Agent) => {
     const tools = describeTools(agent.tools);
     return { name, permission: agent.mode === Mode.PLAN ? ("read-only" as const) : ("build" as const), ...(agent.model ? { model: agent.model } : {}), ...(tools ? { tools } : {}) };
@@ -511,6 +545,7 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
     const agent = parseAgentFile(text, { pack: id, file });
     if (agent) {
       agents.push(entry(agent.name, agent));
+      own.push(agent);
       continue;
     }
     const subagent = parseSubagentFile(text, { pack: id, file });
@@ -535,7 +570,11 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
     agents: agents.map((agent) => ({ ...agent, name: printable(agent.name), ...(agent.model ? { model: printable(agent.model) } : {}) })),
     ...(subagents.length > 0 ? { subagents: subagents.map((sub) => ({ ...sub, ...(sub.model ? { model: printable(sub.model) } : {}) })) } : {}),
     skills: clean(parts.skills),
-    commands: clean(parts.commands),
+    // A command marcsh runs itself names the agent it runs as: `spec → ASDD`.
+    commands: parts.commands.map((name) => {
+      const wanted = parts.commandAgents?.[name];
+      return wanted === undefined ? printable(name) : `${printable(name)} → ${commandRunsAs(wanted, id, own)}`;
+    }),
     ...(hooks.present ? { hooks: hooks.usable ? { usable: true as const, events: clean(hookEvents(hooks.config)) } : { usable: false as const, reason: printable(hooks.reason) } } : {}),
     ignored: clean(ignored),
     warnings: clean(parts.warnings),

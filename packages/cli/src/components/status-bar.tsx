@@ -11,9 +11,8 @@ import type { ChatMessage } from "../lib/chat-types";
 import { formatUsage, sessionUsage } from "../lib/usage";
 import { formatGit } from "../lib/git-status";
 import { escapeTranscriptText } from "../lib/display-text";
-import { useGitStatus, type GitReader } from "../hooks/use-git-status";
+import { useBranchState, useGitStatus, type BranchReader, type GitReader } from "../hooks/use-git-status";
 import { effectiveApprovalMode } from "../lib/approval-policy";
-import { branchState, type BranchState } from "../lib/git-branch";
 
 /** The engine as the status line names it, with its version when marcsh knows one (Claude has none of its own). */
 const engineLabel = (engineId: string) => (engineId === "pi" ? `pi v${PI_VERSION}` : engineId);
@@ -29,8 +28,8 @@ type Props = {
   cwd?: string;
   /** Reads the git state of a folder; injectable so screen tests do not spawn git. */
   readGit?: GitReader;
-  /** Where the folder's checkout stands for the approval policy (default `branchState`); injectable so screen tests do not spawn git. */
-  readBranch?: (cwd: string) => BranchState;
+  /** Where the folder's checkout stands for the approval policy, read asynchronously (default `readGitBranchState`); injectable so screen tests do not spawn git. */
+  readBranch?: BranchReader;
   /** What runs in the background (`2 background terminals running · /ps`); none when empty. The first segment dropped when narrow. */
   background?: string;
 };
@@ -42,7 +41,7 @@ const finishedToolCalls = (messages: readonly ChatMessage[] | undefined) =>
     0,
   );
 
-export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch = branchState, background }: Props) {
+export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch, background }: Props) {
   const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine, approvalMode } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
@@ -69,12 +68,17 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch = b
   const toolCalls = useMemo(() => finishedToolCalls(messages), [messages]);
   const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls });
   // Not fully active: the policy itself (effectiveApprovalMode) applies a freer mode than normal only where its requirements hold
-  // (a feature branch). Asked again whenever the polled branch changes, so switching to a feature branch clears it.
-  const gitBranch = git?.branch ?? null;
-  const paused = useMemo(
-    () => cwd !== undefined && approvalMode !== "normal" && effectiveApprovalMode(approvalMode, cwd, () => readBranch(cwd)) !== approvalMode,
-    [approvalMode, cwd, gitBranch, readBranch],
-  );
+  // (a feature branch). Where the checkout stands is read asynchronously, only while auto or yolo is on: again whenever the polled
+  // branch changes, and, while git status gives nothing (MARCSH_GIT_STATUS=off, or git failing), after each tool call and on its own
+  // poll. Unknown until the first read: not marked.
+  const relaxed = cwd !== undefined && approvalMode !== "normal";
+  const gitMissing = git === null;
+  const branchNow = useBranchState(relaxed ? cwd : undefined, {
+    ...(readBranch ? { read: readBranch } : {}),
+    trigger: gitMissing ? `calls:${toolCalls}` : `branch:${git.branch}`,
+    poll: gitMissing,
+  });
+  const paused = relaxed && branchNow !== null && effectiveApprovalMode(approvalMode, cwd, branchNow) !== approvalMode;
   const pausedText = paused ? "!" : null;
 
   // The row lays out its items side by side with one space between; a hint that does not fit would wrap the whole line, so it is
