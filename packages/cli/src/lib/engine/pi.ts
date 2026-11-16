@@ -14,6 +14,7 @@ import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
 import { createDeniedToolsExtension, narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
+import { createTodoExtension, TODO_TOOL } from "./pi-todo";
 import { BG_PLAN_TOOLS, BG_START_TOOL, createBackgroundTerminalsExtension } from "./pi-bg-tools";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
@@ -261,9 +262,9 @@ function parseModel(ref: string): { provider: string; id: string } | null {
  * The pi engine. Each turn opens its own pi session (new, or the file named by `resumeRef`), prompts it
  * once, and disposes it when pi has settled.
  *
- * Every tool except pi's read-only ones and marcsh's `AskUserQuestion` and `Task` asks through the host before
+ * Every tool except pi's read-only ones and marcsh's `AskUserQuestion`, `Task` and `todo` asks through the host before
  * it runs (see `pi-permissions.ts`), and a `bash` command the branch/ship guard flags is blocked or always asked
- * (see `pi-guard.ts`). In plan mode the session only has the read-only tools, `AskUserQuestion` and `Task`.
+ * (see `pi-guard.ts`). In plan mode the session only has the read-only tools, `AskUserQuestion`, `Task` and `todo`.
  * `Task` runs a child session in this process (see `pi-subagent.ts`) whose tool calls ask the same way.
  *
  * A project's own pi files (extensions, MCP servers, settings...) load only when the project is trusted (see `pi-trust.ts`):
@@ -559,6 +560,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           createApprovalExtension(approval),
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
+          // The main session's task list; a Task child's extensions (see `runChild`) do not include it.
+          createTodoExtension(),
           // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
           // The leftover-process tools come with them (see `pi-proc-tools.ts`).
           ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd }), createProcToolsExtension(options.leftovers)] : []),
@@ -590,8 +593,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         sessionManager,
         settingsManager,
         resourceLoader,
-        // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS, ...PROC_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        // Plan mode: only the read-only tools, the question tool, the task list and Task exist, so nothing that writes or runs can be called.
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TODO_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS, ...PROC_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) {

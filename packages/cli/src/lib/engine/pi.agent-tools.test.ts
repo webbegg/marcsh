@@ -89,7 +89,7 @@ function recording(calls: number) {
   return { offered, steps };
 }
 
-const ALL_BUILD = ["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "write"];
+const ALL_BUILD = ["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "todo", "write"];
 const without = (list: string[], ...removed: string[]) => list.filter((name) => !removed.includes(name));
 
 describe("pi build turns with denied tool groups", () => {
@@ -186,8 +186,8 @@ describe("pi plan turns with denied tool groups", () => {
     await turn({ mode: Mode.PLAN });
     await turn({ mode: Mode.PLAN, deniedTools: ["read", "task"] });
 
-    expect(plain.offered[0]).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
-    expect(narrowed.offered[0]).toEqual(["AskUserQuestion"]);
+    expect(plain.offered[0]).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read", "todo"]);
+    expect(narrowed.offered[0]).toEqual(["AskUserQuestion", "todo"]);
   });
 
   test("a read-only agent whose `tools` lists bash (so no denial reaches the engine) still cannot run bash [invariant]", async () => {
@@ -323,7 +323,7 @@ export default function (pi) {
     await turn({ resumeRef: first.ref });
 
     // The same list as on 28474e7 (the baseline): no narrowing of marcsh's was recorded, so none is undone.
-    expect(two.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "find", "grep", "ls", "read"]);
+    expect(two.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "find", "grep", "ls", "read", "todo"]);
   });
 
   test("a lifted narrowing does not bring back a tool a user extension turns off", async () => {
@@ -354,7 +354,7 @@ export default function (pi) {
     forge(first.ref, { denied: ["edit"], removed: ["write", "edit"] });
     await turn({ resumeRef: first.ref });
 
-    expect(one.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "read"]);
+    expect(one.offered[0]).toEqual(["AskUserQuestion", "Task", "bash", "read", "todo"]);
     expect(two.offered[0]).toEqual(one.offered[0]!);
   });
 
@@ -373,7 +373,7 @@ export default function (pi) {
     const second = await narrowed.turn();
     forge(second.ref, { denied: ["bash"], removed: ["bash"] });
     await narrowed.turn({ deniedTools: ["edit"], resumeRef: second.ref });
-    expect(three.offered[1]).toEqual(["AskUserQuestion", "Task", "read"]);
+    expect(three.offered[1]).toEqual(["AskUserQuestion", "Task", "read", "todo"]);
   });
 
   test("a recorded name never activates an extension tool that is not active by default", async () => {

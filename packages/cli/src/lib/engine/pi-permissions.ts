@@ -5,6 +5,7 @@ import { type BranchState, branchState } from "../git-branch";
 import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
+import { isMarcshTodo } from "./pi-todo";
 import { BG_PLAN_TOOLS, bgStartDir, hasWorkingDir, isMarcshBgStart, isMarcshBgTool, workingDirError } from "./pi-bg-tools";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
 import { describeProcStop, isMarcshProcStop, isMarcshProcTool, PROC_PLAN_TOOLS } from "./pi-proc-tools";
@@ -34,12 +35,14 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
  * question is the approval), marcsh's own `Task` (the subagent it starts asks for its own tool calls, and has only the
  * read-only tools in plan mode), marcsh's own bg tools except `bg_start` (they read, or stop this session's terminals),
  * marcsh's own task tools (they read, wait for, or stop this session's background subagents), and marcsh's own `proc_list` (it
- * reads the process table). marcsh's `proc_stop` is not one: it always asks (see `createApprovalHandler`).
+ * reads the process table), and marcsh's own `todo` (it keeps a list in memory and the session, and changes no files).
+ * marcsh's `proc_stop` is not one: it always asks (see `createApprovalHandler`).
  */
 export function runsUnasked(tool: ToolSource): boolean {
   return (
     isReadOnlyBuiltin(tool) ||
     isMarcshAskUser(tool) ||
+    isMarcshTodo(tool) ||
     isMarcshTask(tool) ||
     isMarcshTaskTool(tool) ||
     (isMarcshBgTool(tool) && !isMarcshBgStart(tool)) ||
