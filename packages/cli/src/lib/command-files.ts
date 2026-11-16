@@ -8,6 +8,9 @@ export const COMMAND_NAME = /^[a-z0-9][a-z0-9\-_:]*$/;
 /** Where a project's own commands are: `<project>/.marcsh/commands`. */
 export const PROJECT_COMMANDS_DIR = join(".marcsh", "commands");
 
+/** The same folder as the trust review names it, with `/` on every system. */
+export const PROJECT_COMMANDS_PATH = ".marcsh/commands";
+
 /** A file that can be a command: its name (without `.md`), its file name and where it is. */
 export type CommandFile = { name: string; file: string; path: string };
 
@@ -17,12 +20,19 @@ export type CommandFile = { name: string; file: string; path: string };
  * cannot pull in a file from elsewhere. Whether the body is empty is the reader's check.
  *
  * Both the command loader and the project trust review list a project's commands with this, so what trust covers is what loads.
- * `onEntry` is told every candidate path before it is looked at (the trust review records them to notice a later change).
+ * `onList` is told the folder's names as read, and `onEntry` every candidate path before it is looked at (the trust review records
+ * them to notice a later change).
  */
-export function commandFiles(dir: string, followLinks: boolean, onEntry?: (path: string) => void): CommandFile[] {
+export function commandFiles(
+  dir: string,
+  followLinks: boolean,
+  { onEntry, onList }: { onEntry?: (path: string) => void; onList?: (names: string[]) => void } = {},
+): CommandFile[] {
   let files: string[];
   try {
-    files = readdirSync(dir).filter((file) => file.endsWith(".md")).sort();
+    const names = readdirSync(dir);
+    onList?.(names);
+    files = names.filter((file) => file.endsWith(".md")).sort();
   } catch {
     return [];
   }

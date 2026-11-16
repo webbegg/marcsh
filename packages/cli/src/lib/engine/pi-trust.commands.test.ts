@@ -58,8 +58,8 @@ describe("the trust review holds the project's commands (S2)", () => {
 
     expect(resources).toEqual([
       { path: ".pi/SYSTEM.md", detail: "changes the system prompt" },
-      { path: ".marcsh/commands/deploy.md", detail: "project command /deploy" },
-      { path: ".marcsh/commands/review.md", detail: "project command /review" },
+      { path: ".marcsh/commands/deploy.md", detail: "project command /deploy", kind: "command" },
+      { path: ".marcsh/commands/review.md", detail: "project command /review", kind: "command" },
     ]);
     expect(record.map((entry) => entry.path)).toEqual([".marcsh/commands/deploy.md", ".marcsh/commands/review.md", ".pi/SYSTEM.md"]);
   });
@@ -72,7 +72,7 @@ describe("the trust review holds the project's commands (S2)", () => {
     writeFileSync(join(root, "elsewhere.md"), "outside");
     symlinkSync(join(root, "elsewhere.md"), join(commands(), "linked.md"));
 
-    expect(reviewProject(project).resources).toEqual([{ path: ".marcsh/commands/ok.md", detail: "project command /ok" }]);
+    expect(reviewProject(project).resources).toEqual([{ path: ".marcsh/commands/ok.md", detail: "project command /ok", kind: "command" }]);
   });
 
   test("a command added, changed or removed makes the review differ, and the diff says which", () => {
@@ -149,20 +149,19 @@ describe("projectTrustHolds: one rule for every consumer (S3)", () => {
     ).toBe(false);
   });
 
-  test("pi warm-up follows it: a project with only commands, trusted as it is, is trusted; once a command changes it is not", () => {
+  test("pi warm-up follows the pi part only: a project with only commands is never trusted for pi (R1-5)", () => {
     command("deploy.md");
     const storage = store();
     storage.setProjectTrust(project, "trusted", reviewProject(project).record);
-    expect(isProjectTrusted(project, () => storage)).toBe(true);
-
-    command("deploy.md", "Changed.\n");
 
     expect(isProjectTrusted(project, () => storage)).toBe(false);
   });
 });
 
-describe("the pi turn asks when the project has only commands (S2)", () => {
-  test("an undecided project with only commands is asked about, with the commands listed; trusting stores their review", async () => {
+describe("the pi turn asks about the pi part only", () => {
+  test("an undecided project with pi files is asked about with the whole review listed (commands too); trusting stores all of it", async () => {
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    writeFileSync(join(project, ".pi", "SYSTEM.md"), "be nice");
     command("deploy.md");
     const storage = openStorage(":memory:");
     const asks: ProjectTrustAsk[] = [];
@@ -178,18 +177,20 @@ describe("the pi turn asks when the project has only commands (S2)", () => {
     });
 
     expect(trusted).toBe(true);
-    expect(asks.map((ask) => ask.resources)).toEqual([[{ path: ".marcsh/commands/deploy.md", detail: "project command /deploy" }]]);
+    expect(asks.map((ask) => ask.resources.map((resource) => resource.path))).toEqual([[".pi/SYSTEM.md", ".marcsh/commands/deploy.md"]]);
     expect(storage.getProjectReview(project)).toEqual(reviewProject(project).record);
   });
 
-  test("a trusted project whose command changed is asked again, with the change listed", async () => {
+  test("a trusted project whose command changed is not asked again by the pi turn: commands wait for /trust", async () => {
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    writeFileSync(join(project, ".pi", "SYSTEM.md"), "be nice");
     command("deploy.md");
     const storage = openStorage(":memory:");
     storage.setProjectTrust(project, "trusted", reviewProject(project).record);
     command("deploy.md", "Changed.\n");
     const asks: ProjectTrustAsk[] = [];
 
-    await resolveProjectTrust({
+    const trusted = await resolveProjectTrust({
       cwd: project,
       records: () => storage,
       ask: async (request) => {
@@ -199,8 +200,8 @@ describe("the pi turn asks when the project has only commands (S2)", () => {
       signal: new AbortController().signal,
     });
 
-    expect(asks).toHaveLength(1);
-    expect(asks[0]!.changes?.status.get(".marcsh/commands/deploy.md")).toBe("changed");
+    expect(trusted).toBe(true);
+    expect(asks).toHaveLength(0);
   });
 });
 

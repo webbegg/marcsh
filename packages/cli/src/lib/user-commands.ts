@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { agentModelFits, type Agent } from "./agents";
 import { Mode } from "./modes";
 import { agentFileSlug, readFrontmatter } from "./agent-file";
-import { COMMAND_NAME as NAME, PROJECT_COMMANDS_DIR, commandFiles } from "./command-files";
-import { canonical, projectTrustHolds } from "./engine/pi-trust";
+import { COMMAND_NAME as NAME, PROJECT_COMMANDS_DIR, commandFiles, type CommandFile } from "./command-files";
+import { trustedProjectCommands } from "./engine/pi-trust";
+import { trustNotice } from "./trust-notices";
 import { listPacks, packPluginDir, packPluginName, packsRoot } from "./pack-lock";
 import { printable } from "./safe-text";
 import { getStorage } from "./storage";
@@ -40,11 +41,17 @@ const firstLine = (text: string) => text.split("\n").find((line) => line.trim() 
 
 /** The commands in `dir`. A pack's (`pack` given) are only those that name an agent: the rest are the engine's, as before. */
 function readCommandDir(dir: string, source: UserCommand["source"], pack?: string): UserCommand[] {
-  const commands: UserCommand[] = [];
   // A project or a pack is third-party content: a link in it must not pull in a file from elsewhere.
-  for (const { name, path } of commandFiles(dir, source === "personal")) {
+  const files = commandFiles(dir, source === "personal").map((file) => ({ ...file, read: () => readFileSync(file.path, "utf8") }));
+  return parseCommands(files, source, pack);
+}
+
+/** The commands of these files (each read by its `read`); an unreadable or empty one is not a command. */
+function parseCommands(files: (CommandFile & { read: () => string })[], source: UserCommand["source"], pack?: string): UserCommand[] {
+  const commands: UserCommand[] = [];
+  for (const { name, read } of files) {
     try {
-      const { fields, body } = readFrontmatter(readFileSync(path, "utf8"));
+      const { fields, body } = readFrontmatter(read());
       const template = body.trim();
       if (template === "") continue;
       // A pack's texts are shown in the menu and the warnings: no escape sequence may get through.
@@ -73,13 +80,7 @@ function readCommandDir(dir: string, source: UserCommand["source"], pack?: strin
   return commands;
 }
 
-/** The project's commands are part of what its trust reviewed: they load only while that trust holds (see `projectTrustHolds`). */
-const isTrusted = (cwd: string) => projectTrustHolds(cwd, getStorage);
-
-/** The projects already told that their commands are not used, so each is told once per run. */
-const noticedProjects = new Set<string>();
-
-export const PROJECT_COMMANDS_NOTICE = "This project has its own commands (.marcsh/commands): run /trust to use them.";
+export { PROJECT_COMMANDS_NOTICE } from "./trust-notices";
 
 export type LoadOptions = {
   /** The project the prompt works in. */
@@ -88,7 +89,10 @@ export type LoadOptions = {
   builtinNames?: readonly string[];
   /** The engine's command names as marcsh knows them (Claude's or pi's built-ins, plugins, templates): they win a clash with a pack's command. */
   engineNames?: readonly string[];
-  /** Whether the project's trust holds; checked with `projectTrustHolds` when not given. */
+  /**
+   * Tests only: load the project's commands (`true`) or not (`false`) without asking the trust store. Absent (as the app calls it),
+   * they load only while the command part of the project's trust holds, from the bytes that were checked (`trustedProjectCommands`).
+   */
   trusted?: boolean;
   /** Where the installed packs are. Default: marcsh's packs folder. */
   packsDir?: string;
@@ -122,7 +126,7 @@ let pendingNotices: string[] = [];
 
 /**
  * What was hidden since the last call, each clash once per run, and once per project per run that its own commands are not used
- * because its trust does not hold (`PROJECT_COMMANDS_NOTICE`): the screen that lists the commands says so in a toast.
+ * because their part of its trust does not hold (see `trustNotice`): the screen that lists the commands says so in a toast.
  */
 export function takePackCommandNotices(): string[] {
   const notices = pendingNotices;
@@ -135,8 +139,9 @@ const prefixedName = (command: UserCommand) => `${(command.pack!.split("/")[1] ?
 
 /**
  * The user's commands, sorted by name: `~/.marcsh/commands/*.md`, then the project's `.marcsh/commands/*.md`, which replace a personal
- * command of the same name, then the installed packs' commands that name an agent. A project's commands are loaded only while the project's
- * trust holds (a stored "trusted" whose review, which lists them, equals the project now). A name that is one of marcsh's own is never a user command.
+ * command of the same name, then the installed packs' commands that name an agent. A project's commands are loaded only while the command
+ * part of the project's trust holds (a stored "trusted" whose review of them equals them now), from the bytes that were checked.
+ * A name that is one of marcsh's own is never a user command.
  *
  * A pack's command keeps its name only when no other command has it: marcsh's, the engine's (`engineNames`, the pack's own copy aside),
  * the user's, or an earlier pack's (by ID). One that loses is listed as `<repo>:<name>` instead, and is hidden, with a notice (see
@@ -152,15 +157,13 @@ export function loadUserCommands(options: LoadOptions): UserCommand[] {
  */
 export function loadCommandSet({ cwd, builtinNames = [], engineNames = [], trusted, packsDir = packsRoot() }: LoadOptions): { commands: UserCommand[]; hidden: UserCommand[] } {
   const byName = new Map<string, UserCommand>();
-  const projectDir = join(cwd, PROJECT_COMMANDS_DIR);
-  const projectTrusted = trusted ?? isTrusted(cwd);
-  const project = projectTrusted ? readCommandDir(projectDir, "project") : [];
-  if (!projectTrusted) {
-    const key = canonical(cwd);
-    if (!noticedProjects.has(key) && commandFiles(projectDir, false).length > 0) {
-      noticedProjects.add(key);
-      pendingNotices.push(PROJECT_COMMANDS_NOTICE);
-    }
+  let project: UserCommand[];
+  if (trusted !== undefined) project = trusted ? readCommandDir(join(cwd, PROJECT_COMMANDS_DIR), "project") : [];
+  else {
+    const { state, present, commands } = trustedProjectCommands(cwd, getStorage);
+    project = parseCommands(commands.map((command) => ({ ...command, read: () => command.text })), "project");
+    const notice = present ? trustNotice(cwd, "command", state) : null;
+    if (notice) pendingNotices.push(notice);
   }
   for (const command of [...readCommandDir(userCommandsDir(), "personal"), ...project]) byName.set(command.name, command);
   for (const name of builtinNames) byName.delete(name);

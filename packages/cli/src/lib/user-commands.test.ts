@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -156,6 +156,61 @@ describe("loadUserCommands (S7)", () => {
 
     projectFile("theirs.md", "changed after the review");
     expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+  });
+
+  test("a reviewed command removed since the review turns the rest off too", () => {
+    projectFile("theirs.md", "theirs");
+    projectFile("other.md", "other");
+    trustProject(project);
+    expect(names(loadUserCommands({ cwd: project }))).toEqual(["other", "theirs"]);
+
+    rmSync(join(project, ".marcsh", "commands", "other.md"));
+
+    expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+  });
+
+  test("a trust stored before commands were reviewed (pi files only) keeps them off and says marcsh now reviews them, once", () => {
+    takePackCommandNotices();
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    writeFileSync(join(project, ".pi", "SYSTEM.md"), "be nice");
+    projectFile("theirs.md", "theirs");
+    const legacy = reviewProject(project)
+      .record.filter((entry) => entry.kind === "pi")
+      .map(({ path, shown, content }) => ({ path, shown, content }));
+    getStorage().setProjectTrust(project, "trusted", legacy);
+
+    expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+    loadUserCommands({ cwd: project });
+    expect(takePackCommandNotices()).toEqual(["marcsh now also reviews project commands and git settings: run /trust to use them."]);
+  });
+
+  test("a stale trust says the commands changed; an explicit 'untrusted' says nothing", () => {
+    takePackCommandNotices();
+    projectFile("theirs.md", "theirs");
+    trustProject(project);
+    projectFile("theirs.md", "changed after the review");
+    loadUserCommands({ cwd: project });
+    expect(takePackCommandNotices()).toEqual(["This project's commands changed since you trusted them: run /trust to use them."]);
+
+    const other = join(root, "other");
+    write(join(other, ".marcsh", "commands"), "x.md", "x");
+    getStorage().setProjectTrust(other, "untrusted");
+    loadUserCommands({ cwd: other });
+    expect(takePackCommandNotices()).toEqual([]);
+    getStorage().setProjectTrust(other, null);
+  });
+
+  test("an unreadable command keeps the project's commands off, and marcsh still loads the personal ones", () => {
+    personalFile("mine.md", "mine");
+    projectFile("theirs.md", "theirs");
+    projectFile("locked.md", "locked");
+    chmodSync(join(project, ".marcsh", "commands", "locked.md"), 0);
+    try {
+      trustProject(project);
+      expect(names(loadUserCommands({ cwd: project }))).toEqual(["mine"]);
+    } finally {
+      chmodSync(join(project, ".marcsh", "commands", "locked.md"), 0o644);
+    }
   });
 
   test("a project with commands that are not used says once to run /trust; a project without commands says nothing", () => {

@@ -32,6 +32,8 @@ type Props = {
   readBranch?: BranchReader;
   /** What runs in the background (`2 background terminals running · /ps`); none when empty. The first segment dropped when narrow. */
   background?: string;
+  /** Told once per project per run why the git segment shows no changed-file count when there is something to say (a stale trust). */
+  onNotice?: (message: string) => void;
 };
 
 /** Changes after each tool call ends and each new message, so the git segment is read again then. */
@@ -41,7 +43,7 @@ const finishedToolCalls = (messages: readonly ChatMessage[] | undefined) =>
     0,
   );
 
-export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch, background }: Props) {
+export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch, background, onNotice }: Props) {
   const { agent, agents, mode, model, piModel, piModelStatus, defaultEngine, approvalMode } = usePromptConfig();
   const engineId = engine ?? defaultEngine;
   const { colors } = useTheme();
@@ -66,7 +68,7 @@ export function StatusBar({ engine, messages, hint, cwd, readGit, readBranch, ba
   // The usage and then git go before the hint. When the line is too narrow the usage is dropped first, then git, so it never wraps.
   const usageText = useMemo(() => (messages ? formatUsage(sessionUsage(messages)) : ""), [messages]);
   const toolCalls = useMemo(() => finishedToolCalls(messages), [messages]);
-  const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls });
+  const git = useGitStatus(cwd, { read: readGit, trigger: toolCalls, onNotice });
   // Not fully active: the policy itself (effectiveApprovalMode) applies a freer mode than normal only where its requirements hold
   // (a feature branch). Where the checkout stands is read asynchronously, only while auto or yolo is on: again whenever the polled
   // branch changes, and, while git status gives nothing (MARCSH_GIT_STATUS=off, or git failing), after each tool call and on its own

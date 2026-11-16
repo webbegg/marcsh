@@ -672,16 +672,27 @@ describe("/trust (S18)", () => {
     expect(frame()).not.toContain("Project Trust");
   }, 30000);
 
-  test("a project with nothing to review offers Trust, and choosing it stores 'trusted' with the empty review in one step", async () => {
+  test("a project with nothing to review offers Trust: choosing it says what trusting turns on, and only t then Enter stores the empty review", async () => {
     rmSync(join(cwd, ".pi"), { recursive: true, force: true });
     const dialog = await openTrust();
 
-    expect(dialog).toContain("no pi files or project commands found");
+    expect(dialog).toContain("no pi files, project commands or git settings found");
     expect(dialog).not.toContain("nothing to trust");
     expect(dialog).toContain("Don't trust");
     expect(dialog).toContain("use its pi files, commands and git status");
 
     await arrowDown();
+    await press("RETURN");
+
+    // Down and Enter (or a mouse press, or a filter) only get this far.
+    const confirm = await frameContaining("Nothing to review");
+    expect(confirm).toContain("Trusting turns on its pi files, project commands and the git changed-file count");
+    expect(confirm).toContain("t trust (then Enter)");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    await press("RETURN");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+
+    await press("t");
     await press("RETURN");
 
     expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
@@ -692,7 +703,7 @@ describe("/trust (S18)", () => {
 
   test("files that appear between opening /trust and choosing Trust are listed for review first; nothing is stored yet", async () => {
     rmSync(join(cwd, ".pi"), { recursive: true, force: true });
-    expect(await openTrust()).toContain("no pi files or project commands found");
+    expect(await openTrust()).toContain("no pi files, project commands or git settings found");
 
     mkdirSync(join(cwd, ".marcsh", "commands"), { recursive: true });
     writeFileSync(join(cwd, ".marcsh", "commands", "deploy.md"), "Deploy $ARGUMENTS");
