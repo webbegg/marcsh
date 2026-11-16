@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act } from "react";
@@ -166,6 +166,42 @@ describe("Ctrl+V with an image in the clipboard", () => {
     expect(frame()).toContain("[image: clipboard-1.png] [image: clipboard-2.png]");
   });
 
+  test("bytes that are not a PNG are not saved or attached, and a toast says why", async () => {
+    answer = image(Buffer.from("R0lGODlhAQABAAAAACw=", "base64"));
+    await open();
+
+    await ctrlV();
+
+    expect(frame()).toContain("The clipboard image is not a PNG, so it was not attached.");
+    expect(frame()).not.toContain("[image:");
+    expect(existsSync(join(attachmentsDir, sessionId))).toBe(false);
+  });
+
+  test("Backspace on the chip takes the image back and deletes its file", async () => {
+    answer = image();
+    await open();
+    await ctrlV();
+    const saved = join(attachmentsDir, sessionId, "clipboard-1.png");
+    expect(existsSync(saved)).toBe(true);
+
+    await act(async () => screen!.mockInput.pressBackspace());
+    await settle(80);
+
+    expect(frame()).not.toContain("[image:");
+    expect(existsSync(saved)).toBe(false);
+  });
+
+  test("a sent image is kept", async () => {
+    answer = image();
+    await open();
+    await ctrlV();
+
+    await type("look");
+    await enter();
+
+    expect(existsSync(join(attachmentsDir, sessionId, "clipboard-1.png"))).toBe(true);
+  });
+
   test("an image over 20 MB is not saved or attached, and a toast says why", async () => {
     answer = image(new Uint8Array(20 * 1024 * 1024 + 1));
     await open();
@@ -300,7 +336,7 @@ describe("a large paste", () => {
     await type("look: ");
     await paste(LINES);
     await type("thanks");
-    expect(frame()).toContain("look: [Pasted ~4 lines] thanks");
+    expect(frame()).toContain("look: [Pasted ~4 lines: first line] thanks");
     expect(frame()).not.toContain("second line");
 
     await enter();
@@ -314,7 +350,7 @@ describe("a large paste", () => {
 
     await paste("x".repeat(200));
 
-    expect(frame()).toContain("[Pasted ~1 lines]");
+    expect(frame()).toContain(`[Pasted ~1 lines: ${"x".repeat(30)}…]`);
   });
 
   test("Backspace removes the placeholder as one piece", async () => {
@@ -337,7 +373,7 @@ describe("a large paste", () => {
 
     await act(async () => screen!.mockInput.pressKey("z", { super: true }));
     await settle(50);
-    expect(frame()).toContain("[Pasted ~4 lines]");
+    expect(frame()).toContain("[Pasted ~4 lines: first line]");
 
     await enter();
     expect(calls[0]!.prompt).toBe(LINES);
@@ -371,7 +407,7 @@ describe("a large paste", () => {
 
     await ctrlV();
 
-    expect(frame()).toContain("[Pasted ~4 lines]");
+    expect(frame()).toContain("[Pasted ~4 lines: first line]");
     await enter();
     expect(calls[0]!.prompt).toBe(LINES);
   });
@@ -385,6 +421,199 @@ describe("a large paste", () => {
     await settle(50);
 
     expect(frame()).toContain("fourth line");
+  });
+});
+
+describe("a placeholder survives edits around it", () => {
+  const LINES = "one\ntwo\nthree\nfour\nfive";
+
+  test("picking an @-mention after it keeps it standing for the paste", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await paste(LINES);
+
+    await type(" @");
+    await settle(100);
+    expect(frame()).toContain("notes.md");
+    await enter();
+    expect(calls).toHaveLength(0);
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(`${LINES}  @notes.md`);
+  });
+
+  const key = async (name: string, modifiers: { shift?: boolean; ctrl?: boolean; super?: boolean } = {}) => {
+    await act(async () => screen!.mockInput.pressKey(name, modifiers));
+    await settle(40);
+  };
+
+  test("a paste over a forward selection replaces it with the placeholder", async () => {
+    await open();
+    await type("abcdef");
+    for (let i = 0; i < 3; i++) await key("ARROW_LEFT");
+    for (let i = 0; i < 3; i++) await key("ARROW_RIGHT", { shift: true });
+
+    await paste(LINES);
+    expect(frame()).toContain("abc[Pasted ~5 lines");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(`abc${LINES}`);
+  });
+
+  test("a paste over the whole text (select all) replaces it with the placeholder", async () => {
+    await open();
+    await type("replace me");
+    await key("a", { super: true });
+
+    await paste(LINES);
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("wide characters before it do not shift it", async () => {
+    await open();
+    await type("日本語 ");
+
+    await paste(LINES);
+    await type("x");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(`日本語 ${LINES} x`);
+  });
+
+  test("undo takes the paste back and redo brings the placeholder back, still standing for it", async () => {
+    await open();
+    await paste(LINES);
+
+    await key("z", { super: true });
+    expect(frame()).not.toContain("[Pasted");
+    await key("z", { super: true, shift: true });
+    expect(frame()).toContain("[Pasted ~5 lines");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("leaving the session and coming back brings the full text back", async () => {
+    sessionId = getStorage().createSession({ title: "t", cwd: dir, engine: "claude" }).id;
+    const router = createMemoryRouter(
+      [{ path: "/", element: <RootLayout />, children: [{ index: true, element: <text>home</text> }, { path: "sessions/:id", element: <Session /> }] }],
+      { initialEntries: [`/sessions/${sessionId}`] },
+    );
+    screen = await testRender(
+      <ClipboardProvider value={clipboard}>
+        <RouterProvider router={router} />
+      </ClipboardProvider>,
+      { width: 120, height: 30, kittyKeyboard: true },
+    );
+    await settle(100);
+    await paste(LINES);
+
+    await act(async () => void (await router.navigate("/")));
+    await settle(100);
+    await act(async () => void (await router.navigate(`/sessions/${sessionId}`)));
+    await settle(150);
+    expect(frame()).toContain("five");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("a paste while the @ menu is open still collapses", async () => {
+    await open();
+    await type("see @");
+
+    await paste(LINES);
+
+    expect(frame()).toContain("[Pasted ~5 lines");
+    expect(frame()).not.toContain("three");
+  });
+
+  test("Ctrl+V works while the @ menu is open", async () => {
+    answer = text("from clipboard");
+    await open();
+    await type("see @");
+
+    await ctrlV();
+
+    expect(reads).toBe(1);
+    expect(frame()).toContain("see @from clipboard");
+  });
+
+  test("a / command hidden in a placeholder is sent as text, not run", async () => {
+    await open();
+
+    await paste(`/new ${LINES}`);
+    await enter();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.prompt).toBe(`/new ${LINES}`);
+  });
+});
+
+describe("a large paste keeps its text", () => {
+  test("the first line's indentation stays; only trailing line ends go", async () => {
+    await open();
+    await type("see ");
+
+    await paste("    def f():\n        x = 1\n        return x\n\n");
+    await type("X");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe("see     def f():\n        x = 1\n        return x X");
+  });
+});
+
+describe("the paste order", () => {
+  test("a paste and Enter in one batch send the paste", async () => {
+    await open();
+
+    await act(() => screen!.mockInput.pressKeys(["\x1b[200~", "in one go", "\x1b[201~", "\r"]));
+    await settle(200);
+
+    expect(calls[0]?.prompt).toBe("in one go");
+  });
+
+  test("a read that ends after a dialog opened is dropped", async () => {
+    let release: (result: ClipboardReadResult) => void = () => {};
+    answer = () => new Promise((resolve) => (release = resolve));
+    await open();
+
+    await ctrlV();
+    await act(async () => screen!.mockInput.pressKey("p", { ctrl: true }));
+    await settle(80);
+    expect(frame()).toContain("Command Palette");
+    await act(async () => release({ status: "read", representation: { mimeType: "text/plain", bytes: new TextEncoder().encode("behind the dialog") } }));
+    await settle(80);
+    await act(async () => screen!.mockInput.pressEscape());
+    await settle(80);
+
+    expect(frame()).not.toContain("behind the dialog");
+  });
+
+  test("a read that ends after the agent changed is dropped", async () => {
+    const agentFile = join(process.env.MARCSH_AGENTS_DIR!, "ship.md");
+    mkdirSync(process.env.MARCSH_AGENTS_DIR!, { recursive: true });
+    writeFileSync(agentFile, "---\ndescription: Ships\n---\nShip it.");
+    try {
+      let release: (result: ClipboardReadResult) => void = () => {};
+      answer = () => new Promise((resolve) => (release = resolve));
+      await open();
+
+      await ctrlV();
+      await act(async () => screen!.mockInput.pressTab());
+      await settle(40);
+      await act(async () => screen!.mockInput.pressTab());
+      await settle(40);
+      expect(frame()).toContain("ship");
+      await act(async () => release({ status: "read", representation: { mimeType: "text/plain", bytes: new TextEncoder().encode("late paste") } }));
+      await settle(80);
+
+      expect(frame()).not.toContain("late paste");
+    } finally {
+      rmSync(agentFile, { force: true });
+    }
   });
 });
 
@@ -402,7 +631,7 @@ describe("pasted text is cleaned", () => {
     await open();
 
     await paste("1\r2\r3");
-    expect(frame()).toContain("[Pasted ~3 lines]");
+    expect(frame()).toContain("[Pasted ~3 lines: 1]");
 
     await enter();
     expect(calls[0]!.prompt).toBe("1\n2\n3");
