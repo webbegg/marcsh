@@ -144,6 +144,31 @@ function killTree(child: ReturnType<typeof spawn>) {
   }
 }
 
+/**
+ * Resolves once a killed git has exited and nothing of its process group is left, or after `ms` at most. Its staging directory is
+ * removed after this, so a process that was still finishing a write cannot leave files behind (or a folder that the removal gave up on).
+ */
+function gone(child: ReturnType<typeof spawn>, ms = 3000): Promise<void> {
+  const groupAlive = () => {
+    if (!child.pid || process.platform === "win32") return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const deadline = Date.now() + ms;
+  return new Promise((resolve) => {
+    const check = () => {
+      const exited = child.exitCode !== null || child.signalCode !== null;
+      if ((exited && !groupAlive()) || Date.now() >= deadline) return resolve();
+      setTimeout(check, 20);
+    };
+    check();
+  });
+}
+
 /** The bytes of the regular files under `dir`, never following a link; stops counting once `limit` is passed. What vanishes while it is counted counts as nothing. */
 async function bytesUnder(dir: string, limit: number): Promise<number> {
   let total = 0;
@@ -192,18 +217,22 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal, watch }: { u
     if (signal?.aborted) return reject(cancelled());
     // An argv array, never a shell string: nothing in the URL or ref is interpreted.
     const child = spawn("git", [...hardened, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    // Cancelling and timing out do not wait for git to exit: a program it started may hold its pipes open a while.
-    const onAbort = () => {
-      killTree(child);
-      reject(cancelled());
-    };
-    const timer = setTimeout(() => {
-      killTree(child);
-      fail(new PackError(`git ${args[0]} failed: timed out after ${Math.round(timeoutMs / 1000)} s`));
-    }, timeoutMs);
-    signal?.addEventListener("abort", onAbort, { once: true });
     let settled = false;
+    let stopping = false;
     let poll: ReturnType<typeof setInterval> | undefined;
+    // Cancelling, timing out and the download cap stop git and wait until it and its group are gone (not until its pipes close: a
+    // program it started may hold them open a while), so the staging directory is removed only once nothing writes into it.
+    const stop = (error: PackError) => {
+      if (settled || stopping) return;
+      stopping = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      killTree(child);
+      void gone(child).then(() => fail(error));
+    };
+    const onAbort = () => stop(cancelled());
+    const timer = setTimeout(() => stop(new PackError(`git ${args[0]} failed: timed out after ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
     const settle = () => {
       settled = true;
       clearTimeout(timer);
@@ -217,13 +246,10 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal, watch }: { u
     const overCap = async () => (watch ? (await bytesUnder(watch.dir, watch.maxBytes)) > watch.maxBytes : false);
     if (watch) {
       poll = setInterval(async () => {
-        if (measuring || settled) return;
+        if (measuring || settled || stopping) return;
         measuring = true;
         try {
-          if (await overCap()) {
-            killTree(child);
-            fail(downloadTooBig(watch.maxBytes));
-          }
+          if (await overCap()) stop(downloadTooBig(watch.maxBytes));
         } finally {
           measuring = false;
         }
@@ -239,8 +265,12 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal, watch }: { u
     let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
     child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("error", (error) => fail(new PackError(`git could not run: ${error.message}`)));
+    child.on("error", (error) => {
+      if (!stopping) fail(new PackError(`git could not run: ${error.message}`));
+    });
     child.on("close", (code) => {
+      // A git marcsh stopped reports through `stop`, with the reason it was stopped.
+      if (stopping) return;
       if (code === 0) return void finish(out.trim());
       // GitHub answers a missing or private repo by asking for a login, which is off: say what that means.
       if (/could not read Username|Authentication failed|Repository not found/.test(err)) {
