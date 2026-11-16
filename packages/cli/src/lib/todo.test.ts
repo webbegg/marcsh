@@ -38,6 +38,17 @@ describe("applyTodo set", () => {
     expect(() => applyTodo([], { action: "set", todos: "nope" as never })).toThrow("todos must be a list");
   });
 
+  test("the list, an id, a text and a note have a size limit, and the error names it", () => {
+    const many = Array.from({ length: 101 }, (_, i) => ({ id: `T${i}`, text: "x" }));
+    expect(() => applyTodo([], { action: "set", todos: many })).toThrow("at most 100 todos");
+    expect(applyTodo([], { action: "set", todos: many.slice(0, 100) })).toHaveLength(100);
+    expect(() => applyTodo([], { action: "set", todos: [{ id: "i".repeat(41), text: "x" }] })).toThrow("id is longer than 40 characters");
+    expect(applyTodo([], { action: "set", todos: [{ id: "i".repeat(40), text: "x".repeat(500), note: "n".repeat(500) }] })).toHaveLength(1);
+    expect(() => applyTodo([], { action: "set", todos: [{ id: "A", text: "x".repeat(501) }] })).toThrow("A: text is longer than 500 characters");
+    expect(() => applyTodo([], { action: "set", todos: [{ id: "A", text: "x", note: "n".repeat(501) }] })).toThrow("A: note is longer than 500 characters");
+    expect(() => applyTodo(list, { action: "update", id: "T1", note: "n".repeat(501) })).toThrow("T1: note is longer than 500 characters");
+  });
+
   test("an invalid set leaves the current list untouched", () => {
     const before = structuredClone(list);
     expect(() => applyTodo(list, { action: "set", todos: [{ id: "A", text: "ok" }, { id: "B", text: "" }] })).toThrow();
@@ -99,6 +110,18 @@ describe("renderTodos", () => {
     expect(renderTodos(items)).toBe(
       ["○ T1 a [pending]", "◐ T2 b [in_progress]", "✓ T3 c [done]", "⊘ T4 d — waits [blocked]", "✕ T5 e — no [dropped]"].join("\n"),
     );
+  });
+
+  test("id, text and note stay on one line: line breaks collapse to a space and other control characters go", () => {
+    const items: Todo[] = [
+      { id: "T1", text: "a\r\n\n b", status: "blocked", note: "waits\n✓ T9 forged [done]\u0007\u001b[31m\ttab\u2028x" },
+      { id: "T\n2", text: "c\u0000d", status: "pending" },
+    ];
+    const lines = renderTodos(items).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("⊘ T1 a  b — waits ✓ T9 forged [done][31mtab x [blocked]");
+    expect(lines[1]).toBe("○ T 2 cd [pending]");
+    expect(renderTodos(items)).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f]/);
   });
 
   test("an empty list says so", () => {

@@ -119,7 +119,22 @@ describe("composeRequest", () => {
   });
 
   test("block-quotes a multi-line answer line by line", () => {
-    expect(composeRequest(w, { what: "line one\n\nline three", area: "a" }, {})).toContain("- What:\n> line one\n> \n> line three\n- Area: a");
+    expect(composeRequest(w, { what: "line one\n\nline three", area: "a" }, {})).toContain("- What:\n> line one\n>\n> line three\n- Area: a");
+  });
+
+  test("a blank line of a multi-line answer renders as a bare > and \\r\\n becomes \\n", () => {
+    const text = composeRequest(w, { what: "a\r\n\r\nb", area: "x\r\ny" }, {});
+    expect(text).not.toContain("\r");
+    expect(text).not.toMatch(/> $/m);
+    expect(text).toBe("Plan the work.\n- What:\n> a\n>\n> b\n- Area:\n> x\n> y");
+  });
+
+  test("a cleared answer (kept as an empty string) is skipped and does not fall back to the default; an absent one does", () => {
+    const d = form("Start\nBase: {{base}}", [question("base", { default: "x" })]);
+    expect(composeRequest(d, { base: "" }, {})).toBe("Start");
+    expect(composeRequest(d, {}, {})).toBe("Start\nBase: x");
+    const r = form("{{v}}", [question("v", { required: true, default: "x" })]);
+    expect(missingRequired(r.questions, { v: "" }, {}).map((q) => q.id)).toEqual(["v"]);
   });
 
   test("omits the lines of skipped optional answers", () => {
@@ -215,8 +230,8 @@ describe("askQuestions", () => {
     expect(calls[1]!.arg).toBe("was long");
     expect(calls[2]!.arg?.[0]).toBe("one");
     expect(calls[3]!.arg).toBe("x");
-    // Clearing the editor prefill of an optional long question drops the answer.
-    expect(answers).toEqual({ a: "first", c: "one", d: "x" });
+    // Clearing the editor prefill of an optional long question that had an answer clears it (kept as empty).
+    expect(answers).toEqual({ a: "first", b: "", c: "one", d: "x" });
   });
 
   test("lets an optional text answer be cleared with a literal dash when editing", async () => {
@@ -225,7 +240,7 @@ describe("askQuestions", () => {
     // Required a: the dash is an ordinary answer. Optional text d: cleared. Long b: no dash rule.
     expect(answers?.a).toBe("-");
     expect(answers?.b).toBe("-");
-    expect("d" in (answers ?? {})).toBe(false);
+    expect(answers?.d).toBe("");
     expect(calls[0]!.title).not.toMatch(/clears/);
     expect(calls[3]!.title).toMatch(/\(optional, "-" clears\)/);
 
@@ -239,7 +254,7 @@ describe("askQuestions", () => {
   test("offers (no answer) last on an optional choice that has a previous answer, and only then", async () => {
     const opt = form("{{c}}", [question("c", { kind: "choice", options: ["one", "two"] })]);
     const clear = scripted(["(no answer)"]);
-    expect(await askQuestions(opt, {}, clear.ui, { current: { c: "two" } })).toEqual({});
+    expect(await askQuestions(opt, {}, clear.ui, { current: { c: "two" } })).toEqual({ c: "" });
     expect(clear.calls[0]!.arg).toEqual(["two", "one", "(no answer)"]);
 
     const keep = scripted(["one"]);
@@ -253,6 +268,20 @@ describe("askQuestions", () => {
     const req = scripted(["two"]);
     await askQuestions(required, {}, req.ui, { current: { c: "one" } });
     expect(req.calls[0]!.arg).toEqual(["one", "two"]);
+  });
+
+  test("composes after a clear: the cleared optional answer is left out instead of coming back as the default", async () => {
+    const t = form("Start\nNote: {{n}}\nKind: {{k}}", [question("n", { default: "x" }), question("k", { kind: "choice", options: ["one", "two"], default: "two" })]);
+    const first = scripted(["", "two"]);
+    const answers = await askQuestions(t, {}, first.ui);
+    expect(composeRequest(t, answers!, {})).toBe("Start\nNote: x\nKind: two");
+    const edit = scripted(["-", "(no answer)"]);
+    const cleared = await askQuestions(t, {}, edit.ui, { current: answers });
+    expect(composeRequest(t, cleared!, {})).toBe("Start");
+    // A long question with a default, emptied in the editor, is cleared too.
+    const long = form("Start\nNote: {{n}}", [question("n", { kind: "long", default: "x" })]);
+    const emptied = await askQuestions(long, {}, scripted([""]).ui);
+    expect(composeRequest(long, emptied!, {})).toBe("Start");
   });
 
   test("cancels everything when any question is escaped", async () => {

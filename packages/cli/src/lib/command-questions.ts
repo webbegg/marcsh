@@ -25,7 +25,10 @@ export type CommandQuestion = {
 /** What a command needs to be asked and composed: its name (for messages), its prompt with the `{{id}}` placeholders, and its questions. */
 export type QuestionForm = { name: string; template: string; questions: CommandQuestion[] };
 
-/** Answers by question id; skipped questions are absent. */
+/**
+ * Answers by question id. A question never answered is absent, and then its default applies. A present key is authoritative: an empty
+ * string is an answer deliberately cleared (the user removed the default or an earlier answer), so it is skipped and the default does not return.
+ */
 export type Answers = Record<string, string>;
 
 /** What the session can find locally; absent or null when unknown. */
@@ -151,9 +154,11 @@ export function questionDefault(question: CommandQuestion, facts: QuestionFacts)
   return known ? text : undefined;
 }
 
-/** The answer a question ends up with: what was given, else its default. */
+/** The answer a question ends up with: what was given (a cleared one is none), else, only when nothing was given, its default. */
 function effectiveAnswer(question: CommandQuestion, answers: Answers, facts: QuestionFacts): string | undefined {
-  return answers[question.id]?.trim() || questionDefault(question, facts)?.trim() || undefined;
+  const given = answers[question.id];
+  if (given !== undefined) return given.replace(/\r\n?/g, "\n").trim() || undefined;
+  return questionDefault(question, facts)?.replace(/\r\n?/g, "\n").trim() || undefined;
 }
 
 /** Required questions that have neither an answer nor a default. */
@@ -197,7 +202,8 @@ function composeLine(line: string, values: Map<string, string | undefined>, args
       continue;
     }
     if (current.trim()) out.push(current.trimEnd());
-    out.push(...answer.split("\n").map((part) => `${indent}> ${part}`));
+    // A blank line of the answer is a bare `>`: no trailing space.
+    out.push(...answer.split("\n").map((part) => (part.trim() === "" ? `${indent}>` : `${indent}> ${part}`)));
     current = indent;
     afterQuote = true;
   }
@@ -283,7 +289,8 @@ export async function askQuestions(
       const options = defaultFirst(question.options ?? [], preset);
       const choice = await ui.select(title, clearable ? [...options, NO_ANSWER] : options);
       if (choice === undefined) return undefined;
-      if (choice !== NO_ANSWER) answers[question.id] = choice;
+      // Clearing keeps the key with an empty answer, so the default does not come back.
+      answers[question.id] = choice === NO_ANSWER ? "" : choice;
       continue;
     }
 
@@ -302,6 +309,8 @@ export async function askQuestions(
     }
     if (!reply?.trim()) {
       if (question.required) return undefined;
+      // Something was on offer (an earlier answer, a typed preset or a default) and the user removed it: that is a cleared answer, not an absent one.
+      if (preset !== undefined) answers[question.id] = "";
       continue;
     }
     answers[question.id] = reply.trim();

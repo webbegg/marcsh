@@ -475,9 +475,9 @@ Each question has an `id` (lowercase letters, digits and `-`, unique in the file
 | `choice` | a list of its `options` (at least two); a `default` must be one of them and is listed first |
 
 - `{{id}}` in the prompt is replaced by the answer, exactly as given. An answer that contains `{{...}}`, `$ARGUMENTS` or `$1` is not expanded again.
-- A multi-line answer becomes a block quote on its own lines (`> line`), and the text after it goes on the line below.
+- A multi-line answer becomes a block quote on its own lines (`> line`; a blank line of the answer is a bare `>`), and the text after it goes on the line below. `\r\n` in an answer counts as a plain line break.
 - A prompt line is left out only when all of its answers were skipped. A skipped answer on a line with others renders as empty.
-- A required answer cannot be empty: marcsh asks again once, then cancels. An optional text question can be left empty. When you choose **Edit answers**, an optional text answer is cleared by entering `-` (the title says so), and an optional choice offers a last row, `(no answer)`.
+- A required answer cannot be empty: marcsh asks again once, then cancels. An optional text question can be left empty. When you choose **Edit answers**, an optional text answer is cleared by entering `-` (the title says so), and an optional choice offers a last row, `(no answer)`. A cleared answer stays cleared, also when the question has a default: its line is left out, the default does not come back. (Only an answer never given falls back to the default.)
 - A `default` is offered, not asked blind: leave a text field empty to accept it. It can use facts that marcsh reads locally, never from the network: `{{currentBranch}}`, `{{defaultBranch}}` (the branch `origin/HEAD` points at, else the only one of `main` and `master`) and `{{testScript}}` (the `test` script of the project's `package.json`). A default that uses a fact marcsh cannot find is dropped.
 
 **Typed arguments.** What you type after the command name is offered as the answer to the first `text` or `long` question, and it also preselects the first `choice` question when it matches one of the options (in any letter case). You still see each question and can change the answer. `$ARGUMENTS` and `$1` to `$9` in the prompt work as for any command, in the same pass as `{{id}}`, so nothing is expanded twice.
