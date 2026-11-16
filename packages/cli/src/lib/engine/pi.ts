@@ -19,7 +19,7 @@ import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS, type RuleStore } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
-import { createPackHooksExtension } from "./pi-pack-hooks";
+import { branchPerCall, createPackHooksExtension } from "./pi-pack-hooks";
 import { createProcToolsExtension, PROC_PLAN_TOOLS, type ProcToolsOptions } from "./pi-proc-tools";
 import type { HookPermissionMode } from "../pack-hooks";
 import { effectiveApprovalMode } from "../approval-policy";
@@ -461,11 +461,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
       // The hooks are told the mode at each call: plan for a plan turn or a read-only child (and a background child once the session is in
       // plan, as its calls then are), else the session's approval mode as it is then and as it is enforced (normal while auto or yolo is
-      // paused off a feature branch).
-      const hookMode = (readOnly: boolean, followsSession: boolean) => (): HookPermissionMode =>
+      // paused off a feature branch). The branch is read once per tool call (only for auto and yolo), shared by its hooks before and after it.
+      const branchForCall = branchPerCall(() => branchState(cwd));
+      const hookMode = (readOnly: boolean, followsSession: boolean) => (toolCallId: string): HookPermissionMode =>
         mode === Mode.PLAN || readOnly || (followsSession && currentPlanMode?.() === true)
           ? "plan"
-          : effectiveApprovalMode(currentApprovalMode?.() ?? approvalMode ?? "normal", cwd);
+          : effectiveApprovalMode(currentApprovalMode?.() ?? approvalMode ?? "normal", cwd, () => branchForCall(toolCallId));
       const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>, readOnly = false, followsSession = false) =>
         packTurn?.hooks
           ? [

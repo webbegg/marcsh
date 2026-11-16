@@ -448,6 +448,8 @@ The `agent` field names the file of one of the pack's own agents (`asdd` for `ag
 
 A pack command never lifts Plan. If Plan (or another read-only agent) is selected and the command's agent can change files, the turn still runs as that agent, with its prompt, skills, subagents and enabled hooks, but read-only, under Plan's rules: nothing is written, and the model is told it is in plan mode. marcsh says so, for example `/build runs as ASDD in Plan (read-only): switch to Build to let it change files.` From Build or another agent that can change files, the command's agent runs as usual.
 
+A pack command never gives the turn tools that the selected agent does not have. If the selected agent turns off a tool group (for example `bash: false`), that group stays off when the command's agent runs, as for a [subagent](agents.md). The install preview shows which agent each command runs as, for example `spec → ASDD`.
+
 Where they show and which one wins:
 
 - They appear in the `/` menu and the command palette while the pack is installed, whichever agent is selected. They are tagged with the pack's repository name and show their `argument-hint`.

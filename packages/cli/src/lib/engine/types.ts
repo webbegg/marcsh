@@ -1,5 +1,5 @@
-import { HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, type ApprovalMode } from "../approval-policy";
-import { type BranchSource, resolveBranch } from "../git-branch";
+import { modeLine, type ApprovalMode, type LineMode } from "../approval-policy";
+import type { BranchSource } from "../git-branch";
 import type { AskQuestion } from "../ask-user-question";
 import type { Attachment } from "../attachments";
 import type { BackgroundHub } from "../background/hub";
@@ -156,30 +156,18 @@ export type CompactRequest = {
 /** What the engine reports of a compaction, each when it knows it. */
 export type CompactResult = { tokensBefore?: number; tokensAfter?: number };
 
-/** Which mode line a prompt gets: an approval mode, `plan`, or `headless` (normal with nobody to approve). */
-export type LineMode = ApprovalMode | "plan" | "headless";
+export type { LineMode };
 
 /** The line mode of a turn that is not in plan: its approval mode, normal's headless line when nobody approves. */
 export const approvalLineMode = (approvalMode: ApprovalMode | undefined, noApprover: boolean | undefined): ApprovalMode | "headless" | undefined =>
   noApprover && approvalMode === "normal" ? "headless" : approvalMode;
 
 /**
- * The text an engine appends to its system prompt: the agent's prompt, then the mode line (a blank line apart). None when both are absent.
- * `plan` (a plan turn, a read-only child) gets the plan line and no approval mode; normal, auto and yolo get theirs, `headless` normal's
- * headless line; undefined (the caller
- * gave no mode) gets none. Auto and yolo say whether they are active or paused on `branch`, which is read only for them.
+ * The text an engine appends to its system prompt: the agent's prompt, then the mode line (`modeLine`, a blank line apart). No mode line
+ * when the caller gives no mode; none at all when both are absent. `branch` is read only for auto and yolo.
  */
 export function systemPromptWithMode(agentPrompt: string | undefined, mode: LineMode | undefined, branch: BranchSource): string | undefined {
-  const line =
-    mode === "plan"
-      ? PLAN_MODE_LINE
-      : mode === "headless"
-        ? HEADLESS_NORMAL_MODE_LINE
-        : mode === "normal"
-          ? NORMAL_MODE_LINE
-          : mode
-            ? approvalModeLine(mode, resolveBranch(branch))
-            : undefined;
+  const line = mode ? modeLine(mode, branch) : undefined;
   return [agentPrompt, line].filter(Boolean).join("\n\n") || undefined;
 }
 

@@ -34,9 +34,9 @@ function pausedReason(branch: Exclude<BranchState, { kind: "feature" }>): string
   return branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
 }
 
-/** The system-prompt line of normal mode: the same on every branch. */
+/** The system-prompt line of normal mode: the same on every branch. A call the user already allowed (a saved rule) runs unasked. */
 export const NORMAL_MODE_LINE =
-  "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.";
+  "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs, unless the user already allowed it; reads do not. Run the command; don't ask in chat first.";
 
 /** Normal's line when nobody is there to approve (headless `marcsh run`): every ask is denied, so nothing that would ask runs. */
 export const HEADLESS_NORMAL_MODE_LINE =
@@ -44,6 +44,20 @@ export const HEADLESS_NORMAL_MODE_LINE =
 
 /** The system-prompt line of a plan turn (and of a read-only subagent), in place of any approval mode line: nothing runs that changes anything. */
 export const PLAN_MODE_LINE = "Plan mode: read-only; file edits and shell commands are blocked, so read, plan and ask, and change nothing.";
+
+/** Which mode line a prompt gets: an approval mode, `plan` (a plan turn, a read-only child), or `headless` (normal with nobody to approve). */
+export type LineMode = ApprovalMode | "plan" | "headless";
+
+/**
+ * The system-prompt line of `mode`, the one place that picks it: plan's line (in place of any approval mode), normal's headless line, or
+ * the approval mode's (`approvalModeLine`). `branch` is read only for auto and yolo, which say whether they are active or paused on it.
+ */
+export function modeLine(mode: LineMode, branch: BranchSource): string {
+  if (mode === "plan") return PLAN_MODE_LINE;
+  if (mode === "headless") return HEADLESS_NORMAL_MODE_LINE;
+  if (mode === "normal") return NORMAL_MODE_LINE;
+  return approvalModeLine(mode, resolveBranch(branch));
+}
 
 /** One line for the system prompt, so the agent knows what needs no confirmation in chat. */
 export function approvalModeLine(mode: ApprovalMode, branch: BranchState): string {

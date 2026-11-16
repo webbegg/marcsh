@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileMatcher, type HooksConfig } from "../pack-hooks";
 import {
+  branchPerCall,
   createPackHooksExtension,
   judgePostToolUse,
   judgePreToolUse,
@@ -237,7 +238,7 @@ type Handler = (event: any, ctx: any) => any;
 
 function load(
   config: HooksConfig,
-  options: { notify?: (message: string, level: string) => void; signal?: AbortSignal; permissionMode?: () => "normal" | "auto" | "yolo" | "plan"; agent?: string } = {},
+  options: { notify?: (message: string, level: string) => void; signal?: AbortSignal; permissionMode?: (toolCallId: string) => "normal" | "auto" | "yolo" | "plan"; agent?: string } = {},
 ) {
   const handlers = new Map<string, Handler>();
   createPackHooksExtension({
@@ -254,13 +255,42 @@ function load(
   const ctx = { sessionManager: { getSessionId: () => "session-1" } };
   return {
     handlers,
-    call: (toolName: string, input: Record<string, unknown> = {}) => handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "c1", toolName, input }, ctx),
-    result: (toolName: string, input: Record<string, unknown>, text: string, isError = false) =>
-      handlers.get("tool_result")?.({ type: "tool_result", toolCallId: "c1", toolName, input, content: [{ type: "text", text }], isError, details: undefined }, ctx),
+    call: (toolName: string, input: Record<string, unknown> = {}, toolCallId = "c1") => handlers.get("tool_call")?.({ type: "tool_call", toolCallId, toolName, input }, ctx),
+    result: (toolName: string, input: Record<string, unknown>, text: string, isError = false, toolCallId = "c1") =>
+      handlers.get("tool_result")?.({ type: "tool_result", toolCallId, toolName, input, content: [{ type: "text", text }], isError, details: undefined }, ctx),
   };
 }
 
 const group = (command: string, matcher?: string, timeout?: number) => [{ ...(matcher === undefined ? {} : { matcher }), hooks: [{ command, ...(timeout === undefined ? {} : { timeout }) }] }];
+
+// R4-3: a pack hook's `permission_mode` needs where the checkout stands; it is read once per tool call (its PreToolUse and
+// PostToolUse share it), and again for the next call, so a branch switch during the turn is what the next call's hooks are told.
+describe("branchPerCall", () => {
+  test("reads once per call ID, again for another call", () => {
+    let reads = 0;
+    let branch = "feat/x";
+    const forCall = branchPerCall(() => (reads++, { kind: "feature" as const, branch }));
+    expect(forCall("a")).toEqual({ kind: "feature", branch: "feat/x" });
+    expect(forCall("a")).toEqual({ kind: "feature", branch: "feat/x" });
+    expect(reads).toBe(1);
+    branch = "feat/y";
+    expect(forCall("b")).toEqual({ kind: "feature", branch: "feat/y" });
+    expect(reads).toBe(2);
+  });
+
+  test("without a call ID it reads every time, and it keeps only the latest calls", () => {
+    let reads = 0;
+    const forCall = branchPerCall(() => (reads++, { kind: "none" as const, reason: "detached HEAD" }), 2);
+    forCall(undefined);
+    forCall(undefined);
+    expect(reads).toBe(2);
+    forCall("a");
+    forCall("b");
+    forCall("c");
+    forCall("a");
+    expect(reads).toBe(6);
+  });
+});
 
 describe("createPackHooksExtension", () => {
   test("registers nothing for events pi does not run", () => {
@@ -346,6 +376,16 @@ describe("createPackHooksExtension", () => {
     mode = "plan";
     await result("bash", { command: "ls" }, "ok");
     expect(JSON.parse(readFileSync(`${out}.post`, "utf8"))).toMatchObject({ hook_event_name: "PostToolUse", permission_mode: "plan", agent: "acme/flows/asdd" });
+  });
+
+  // R4-3: the mode is asked with the call's ID, so the branch behind it is read once per call (see `branchPerCall`).
+  test("the mode is asked with the tool call's ID, before and after the call", async () => {
+    const asked: string[] = [];
+    const { call, result } = load({ PreToolUse: group("true"), PostToolUse: group("true") }, { permissionMode: (id) => (asked.push(id), "auto") });
+    await call("bash", { command: "ls" }, "call-7");
+    await result("bash", { command: "ls" }, "ok", false, "call-7");
+    await call("bash", { command: "ls" }, "call-8");
+    expect(asked).toEqual(["call-7", "call-7", "call-8"]);
   });
 
   test("without a mode or agent the payload and environment are as before", async () => {

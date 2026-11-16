@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { QuitTurn } from "../quit";
 import { createLogDir, MAX_LOG_BYTES_PER_STREAM, openLog, OutputBuffer, RETAINED_PER_STREAM, sweepStaleLogDirs, type LogFile, type OutputView } from "./output";
+import { BG_ENV } from "./session-marker";
 
 /**
  * Background terminals: shell commands the model starts and that keep running after the tool call returns. Each runs with
@@ -299,7 +300,7 @@ export function createTerminals({
     try {
       // No stdin, ever: a process that reads it gets EOF. Its own process group, so a kill takes what it started. What it starts carries
       // marcsh's environment (with this run's MARCSH_SESSION) and the terminal's id, so a process it leaves behind is found (see `leftovers.ts`).
-      child = spawn("/bin/sh", ["-c", command], { cwd, env: { ...process.env, MARCSH_BG: id }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      child = spawn("/bin/sh", ["-c", command], { cwd, env: { ...process.env, [BG_ENV]: id }, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (error) {
       throw new Error(`The command could not be started: ${bounded(error)}`);
     }

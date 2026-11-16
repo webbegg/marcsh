@@ -7,7 +7,7 @@ import type { PermissionRule, Storage } from "../storage";
 import { isMarcshAskUser } from "./pi-ask-user";
 import { BG_PLAN_TOOLS, bgStartDir, hasWorkingDir, isMarcshBgStart, isMarcshBgTool, workingDirError } from "./pi-bg-tools";
 import { type Decision, type Guard, guardBashCommand, isBuiltinBash } from "./pi-guard";
-import { isMarcshProcTool, PROC_PLAN_TOOLS } from "./pi-proc-tools";
+import { describeProcStop, isMarcshProcStop, isMarcshProcTool, PROC_PLAN_TOOLS } from "./pi-proc-tools";
 import { isMarcshTask, isMarcshTaskTool, TASK_PLAN_TOOLS } from "./pi-subagent";
 import type { TurnHost } from "./types";
 
@@ -18,8 +18,8 @@ export const PLAN_MODE_REASON = "Plan mode only allows reading tools.";
 /** pi's read-only tools. Like Claude's default mode, they run without asking; everything else asks. */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
-/** The part of pi's `ToolInfo` that says where a tool comes from: pi's own tools have the path `builtin:<name>`. */
-export type ToolSource = { name: string; sourceInfo: { path: string } };
+/** The part of pi's `ToolInfo` that says where a tool comes from: pi's own tools have the path `builtin:<name>`. Its parameters, when given, tell marcsh's own tools apart (`describeProcStop`). */
+export type ToolSource = { name: string; sourceInfo: { path: string }; parameters?: unknown };
 
 /**
  * Read-only means pi's own read, grep, find or ls. An extension can register a tool with one of those
@@ -32,9 +32,9 @@ export function isReadOnlyBuiltin(tool: ToolSource): boolean {
 /**
  * Tools that run without the approval prompt: pi's read-only built-ins, marcsh's own `AskUserQuestion` (answering the
  * question is the approval), marcsh's own `Task` (the subagent it starts asks for its own tool calls, and has only the
- * read-only tools in plan mode), marcsh's own bg tools except `bg_start` (they read, or stop this session's terminals), and
- * marcsh's own task tools (they read, wait for, or stop this session's background subagents), and marcsh's own proc tools (they
- * read the process table, or stop only what this marcsh run's tools left running; see `pi-proc-tools.ts`).
+ * read-only tools in plan mode), marcsh's own bg tools except `bg_start` (they read, or stop this session's terminals),
+ * marcsh's own task tools (they read, wait for, or stop this session's background subagents), and marcsh's own `proc_list` (it
+ * reads the process table). marcsh's `proc_stop` is not one: it always asks (see `createApprovalHandler`).
  */
 export function runsUnasked(tool: ToolSource): boolean {
   return (
@@ -43,11 +43,11 @@ export function runsUnasked(tool: ToolSource): boolean {
     isMarcshTask(tool) ||
     isMarcshTaskTool(tool) ||
     (isMarcshBgTool(tool) && !isMarcshBgStart(tool)) ||
-    isMarcshProcTool(tool)
+    (isMarcshProcTool(tool) && !isMarcshProcStop(tool))
   );
 }
 
-/** The only tools plan mode offers: those that run unasked, without `bg_kill` and `task_cancel` (plan mode stops nothing). */
+/** The only tools plan mode offers: those that run unasked, without `bg_kill` and `task_cancel` (plan mode stops nothing; `proc_stop` asks, so it is out already). */
 export function offeredInPlan(tool: ToolSource): boolean {
   if (!runsUnasked(tool)) return false;
   if (isMarcshBgTool(tool)) return (BG_PLAN_TOOLS as readonly string[]).includes(tool.name);
@@ -173,6 +173,26 @@ export function createApprovalHandler({
 
     // marcsh's `bg_start` runs in its `working_dir`: that is where it is judged, and a folder that is not there is an error before anything runs.
     const tool = tools().find((candidate) => candidate.name === call.toolName);
+
+    // Stopping processes cannot be undone, and one a tool call started can be the user's own (an editor's terminal, a tmux pane): like a
+    // floor action, `proc_stop` asks in every mode, yolo included, no rule ever covers it, and the ask shows each process.
+    if (tool && isMarcshProcStop(tool)) {
+      let reason: string;
+      try {
+        reason = await describeProcStop(tool, call.input);
+      } catch (error) {
+        reason = `The processes could not be listed (${error instanceof Error ? error.message : String(error)}); marcsh checks each again before stopping it.`;
+      }
+      if (signal.aborted) return { block: true, reason: INTERRUPTED_REASON };
+      let answer: Awaited<ReturnType<TurnHost["askPermission"]>>;
+      try {
+        answer = await host.askPermission({ toolName: call.toolName, input: call.input, decisionReason: reason, suppressAlwaysAllowRule: true }, signal);
+      } catch {
+        return { block: true, reason: DENIED_REASON };
+      }
+      if (signal.aborted) return { block: true, reason: INTERRUPTED_REASON };
+      return answer === "deny" ? { block: true, reason: DENIED_REASON } : undefined;
+    }
     const runDir = tool && isMarcshBgStart(tool) ? bgStartDir(cwd, call.input) : cwd;
     const dirError = runDir !== cwd && hasWorkingDir(call.input) ? workingDirError(runDir) : undefined;
     if (dirError) return { block: true, reason: dirError };

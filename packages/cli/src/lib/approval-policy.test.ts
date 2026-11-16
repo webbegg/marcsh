@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APPROVAL_MODES, HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, decideApproval, effectiveApprovalMode, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
+import { APPROVAL_MODES, HEADLESS_NORMAL_MODE_LINE, NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, decideApproval, modeLine, effectiveApprovalMode, isApprovalMode, isGuardAsk, type ApprovalMode, type Verdict } from "./approval-policy";
 import type { BranchState } from "./git-branch";
 
 const project = realpathSync(mkdtempSync(join(tmpdir(), "marcsh-policy-")));
@@ -34,8 +34,21 @@ describe("approval modes", () => {
   test("normal has its own line, the same on any branch (exact line)", () => {
     for (const branch of [feature, onMain, detached]) expect(approvalModeLine("normal", branch)).toBe(NORMAL_MODE_LINE);
     expect(NORMAL_MODE_LINE).toBe(
-      "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs; reads do not. Run the command; don't ask in chat first.",
+      // R3-8: a call the user already allowed (a saved rule) runs without asking.
+      "Approval mode NORMAL: every file edit and shell command asks the user through marcsh before it runs, unless the user already allowed it; reads do not. Run the command; don't ask in chat first.",
     );
+  });
+
+  // R2-6: one place picks the line for every line mode; a branch is read only for auto and yolo.
+  test("modeLine: plan, headless and normal lines without reading the branch; auto and yolo by the branch", () => {
+    const unread = () => {
+      throw new Error("read");
+    };
+    expect(modeLine("plan", unread)).toBe(PLAN_MODE_LINE);
+    expect(modeLine("headless", unread)).toBe(HEADLESS_NORMAL_MODE_LINE);
+    expect(modeLine("normal", unread)).toBe(NORMAL_MODE_LINE);
+    expect(modeLine("auto", feature)).toBe(approvalModeLine("auto", feature));
+    expect(modeLine("yolo", () => onMain)).toBe(approvalModeLine("yolo", onMain));
   });
 
   test("a headless run's normal line says every ask is denied (exact line)", () => {

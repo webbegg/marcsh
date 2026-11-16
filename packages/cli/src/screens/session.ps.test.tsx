@@ -203,7 +203,9 @@ describe("/ps (S3)", () => {
     const { PsDialogContent } = await import("../components/dialogs/ps-dialog");
     const { createLeftoverWatch } = await import("../lib/background/leftover-watch");
     const watch = createLeftoverWatch({
-      scan: async () => [{ pid: 4242, pgid: 4242, startedAt: Date.now() - 120_000, ageMs: 120_000, rssMb: 85, command: "node \u001b[31mserver.js", groupOnly: true }],
+      scan: async () => [
+        { pid: 4242, pgid: 4242, startedAt: Date.now() - 120_000, startKey: 0, ageMs: 120_000, rssMb: 85, command: "node \u001b[31mserver.js", groupOnly: true },
+      ],
     });
     const { RootLayout: Layout } = await import("../layouts/root-layout");
     const router = createMemoryRouter([{ path: "/", element: <Layout />, children: [{ index: true, element: <PsDialogContent leftovers={watch} /> }] }]);
@@ -213,6 +215,44 @@ describe("/ps (S3)", () => {
     expect(shown).toMatch(/Leftover processes .*4242 2m 85 MB node \\u001b\[31mserver\.js|Leftover processes .*4242 2m 85 MB node .*server\.js/);
     // The escape is shown, never sent to the terminal.
     expect(shown).not.toContain("\u001b");
+  }, 30000);
+
+  // R1-1 / R1-2 / R3-3: a failed scan says so, a stop that fails says why, and what may be the user's own is marked.
+  test("/ps says when the scan failed, shows a failed stop, and marks a process that may be yours", async () => {
+    const { PsDialogContent } = await import("../components/dialogs/ps-dialog");
+    const { createLeftoverWatch } = await import("../lib/background/leftover-watch");
+    let fail = false;
+    const watch = createLeftoverWatch({
+      scan: async () => {
+        if (fail) throw new Error("ps timed out");
+        return [
+          { pid: 4242, pgid: 4242, startedAt: Date.now() - 120_000, startKey: 0, ageMs: 120_000, rssMb: 85, command: "tmux", groupOnly: true, possiblyYours: "it leads its own session" },
+        ];
+      },
+      stop: async () => {
+        throw new Error("the table could not be read");
+      },
+    });
+    const { RootLayout: Layout } = await import("../layouts/root-layout");
+    const { useDialog } = await import("../providers/dialog");
+    const { useEffect } = await import("react");
+    // Opened as /ps opens it, so its keys reach it.
+    function Open() {
+      const dialog = useDialog();
+      useEffect(() => {
+        dialog.open({ title: "Leftover processes", children: <PsDialogContent leftovers={watch} /> });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      return null;
+    }
+    const router = createMemoryRouter([{ path: "/", element: <Layout />, children: [{ index: true, element: <Open /> }] }]);
+    screen = await testRender(<RouterProvider router={router} />, { width: 120, height: 20 });
+    expect(await frameContaining("tmux")).toContain("possibly yours");
+    await type("x");
+    expect(await frameContaining("Could not stop pid 4242")).toContain("the table could not be read");
+    fail = true;
+    await act(async () => void (await watch.refresh({ force: true })));
+    expect(await frameContaining("ps timed out")).toMatch(/The process table could not be read.*ps timed out/);
   }, 30000);
 
   // R3-4: the highlight follows the terminal, not the row: one started meanwhile goes on top without taking it.

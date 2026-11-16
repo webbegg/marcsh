@@ -36,6 +36,8 @@ const { testRender } = await import("@opentui/react/test-utils");
 const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
+const { Home } = await import("./home");
+const { NewSession } = await import("./new-session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { preferencesPath, setAgentId, setDefaultApprovalMode, setDefaultEngine } = await import("../lib/preferences");
@@ -259,6 +261,37 @@ describe("a pack command that names its agent (M2)", () => {
 
     // /tmp/marcsh-cwd is no feature branch: auto acts as normal there.
     expect(calls[0]!.options.env).toMatchObject({ MARCSH_APPROVAL_MODE: "normal", MARCSH_AGENT: "acme/flows/asdd" });
+  });
+
+  // R1-3: a pack command never widens the selected agent's tools: the command's agent runs with the selected agent's denials added.
+  test("from an agent without the shell, /spec runs as ASDD still without the shell", async () => {
+    writeFileSync(join(process.env.MARCSH_AGENTS_DIR!, "noshell.md"), "---\nname: No shell\npermission: build\ntools:\n  bash: false\n---\nNo shell.");
+    await openIdle("user/noshell");
+    await type("/spec x");
+    await enter();
+    await until(() => calls.length > 0, "the /spec turn");
+
+    expect(calls[0]!.options.systemPrompt.append).toBe(`Spec first.\n\n${NORMAL_MODE_LINE}`);
+    expect(calls[0]!.options.disallowedTools).toEqual(expect.arrayContaining(["Bash"]));
+  });
+
+  // R1-3: the home screen carries the turn agent's denials through new-session.tsx to the session's first turn.
+  test("typed on the home screen too: the session's first turn keeps the selected agent's denials", async () => {
+    writeFileSync(join(process.env.MARCSH_AGENTS_DIR!, "noshell.md"), "---\nname: No shell\npermission: build\ntools:\n  bash: false\n---\nNo shell.");
+    calls = [];
+    setAgentId("user/noshell");
+    const router = createMemoryRouter(
+      [{ path: "/", element: <RootLayout />, children: [{ index: true, element: <Home /> }, { path: "sessions/new", element: <NewSession /> }, { path: "sessions/:id", element: <Session /> }] }],
+      { initialEntries: ["/"] },
+    );
+    screen = await testRender(<RouterProvider router={router} />, { width: 120, height: 30 });
+    await settle();
+    await type("/spec x");
+    await enter();
+    await until(() => calls.length > 0, "the /spec turn");
+
+    expect(calls[0]!.options.systemPrompt.append).toBe(`Spec first.\n\n${NORMAL_MODE_LINE}`);
+    expect(calls[0]!.options.disallowedTools).toEqual(expect.arrayContaining(["Bash"]));
   });
 
   test("a Build turn has no hook environment", async () => {

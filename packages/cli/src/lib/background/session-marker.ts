@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 
 /** The variable that marks every process this marcsh run starts (see `leftovers.ts`). Its own module: marcsh sets it first thing, before loading anything else. */
 export const SESSION_ENV = "MARCSH_SESSION";
+/** The background terminal (`bt-3`) that started a process: set by `terminals.ts`, read by `leftovers.ts`. */
+export const BG_ENV = "MARCSH_BG";
+/** Set to `1` on what marcsh starts for itself (pi's pack hooks): never listed as a leftover. `pi-pack-hooks.ts` still spells it out. */
+export const INFRA_ENV = "MARCSH_INFRA";
 
 export type SessionMarker = {
   /** The marker's value, fresh for each marcsh process. */
