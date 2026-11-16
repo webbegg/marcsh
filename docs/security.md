@@ -161,17 +161,33 @@ You can trust any project, on either engine. Until you trust a project, marcsh d
   - the `.pi/` folder: settings, extensions, skills, prompt templates, themes, system prompt files, and `.pi/mcp.json` with the project's MCP servers;
   - `.agents/skills` in the project or in a parent folder.
 - **Project commands** (both engines): the files in `.marcsh/commands`. They are not loaded, and a typed `/name` that matches only a project command is sent as typed. See [Project commands and trust](commands.md#project-commands-and-trust).
-- **The git changed-file count** in the status line (both engines). See below.
+- **The git changed-file count** in the status line (both engines). It needs `git status`, which can run programs that the repo's own git settings name. See below.
 
 `AGENTS.md` and `CLAUDE.md` are not part of this. pi reads them as context without asking.
 
-A trust holds only while the project is as you reviewed it. If a pi file or a project command is added, changed or removed afterwards, the trust stops applying to all three until you review the project again. A trust stored before marcsh kept reviews does not hold either: review the project again with `/trust`.
+### What a trust covers
+
+You make one decision and review one list, but the list has three parts, and each part turns on only its own use:
+
+| Part | Listed as | Turns on |
+| --- | --- | --- |
+| pi files | the `.pi/` entries and `.agents/skills` | pi loads the project's files: on the turn, at warm-up and for `marcsh mcp list` |
+| Project commands | `.marcsh/commands/<name>.md — project command /<name>`, with `(agent: …, model: …)` when the command sets them | the project's commands in the `/` menu and when typed |
+| Git settings | `.git/config` (a worktree's config where its `.git` file points), `.gitattributes`, `.git/info/attributes` | the git changed-file count in the status line |
+
+A part holds only while it is as you reviewed it. If something in it is added, changed or removed afterwards, only that part stops applying until you review the project again. A changed project command turns off the project's commands and nothing else; a changed `.git/config` turns off the count and nothing else. Commands never make pi trust a project: a project with only commands gets no pi question. A trust stored before marcsh kept reviews does not hold: review the project again with `/trust`.
+
+The git settings are listed as `git settings: may run programs the repo names (filter drivers)` and `git attributes: which files go through those programs`. The repo's config is where filter drivers are named, so marcsh treats a changed config as new to review. Git itself writes the config sometimes (for example when you set an upstream branch): the count then stays off until you run `/trust` again.
+
+#### After an upgrade
+
+Earlier versions of marcsh reviewed only the pi files. A trust stored by one of them still holds for the pi files, so pi keeps loading them and asks nothing. The project's commands and the git count are not reviewed yet: they stay off until you run `/trust`, and marcsh says once `marcsh now also reviews project commands and git settings: run /trust to use them.` In that `/trust` list the commands and git settings are marked `[not reviewed before]`, which is not a change.
 
 ### The first time
 
-On the first pi turn in a project that has pi files or project commands, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's files?`
+On the first pi turn in a project that has pi files, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's files?`
 
-It lists everything marcsh and pi would load or use, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come last, each as `.marcsh/commands/<name>.md — project command /<name>`.
+It lists everything marcsh and pi would load or use, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come next, then the repo's git settings. Answering trusts all three parts.
 
 | Key | What it does |
 | --- | --- |
@@ -181,23 +197,34 @@ It lists everything marcsh and pi would load or use, most dangerous first: MCP s
 
 Scroll with `Up`, `Down`, `PageUp`, `PageDown` or the mouse wheel. The same typing protection as in approvals applies.
 
-If marcsh cannot read one of the entries, it cannot show you what trusting would run. Those entries are listed first with the reason, and trusting is not offered. A terminal that is too small says `Terminal too small to review the list: make it taller to trust.`
+If marcsh cannot read one of the pi files, it cannot show you what trusting would run. Those entries are listed first with the reason, and trusting is not offered. A command or git settings file it cannot read is listed first too, but trusting is still offered: that file's part stays off until marcsh can read it (`Trusting lets the rest load and run with your permissions; the 1 unreadable stays off.`). A terminal that is too small says `Terminal too small to review the list: make it taller to trust.`
 
 ### When the files change
 
-Trust is tied to what you reviewed. If a pi file or a project command is added, changed or removed afterwards, the next pi turn asks again with the title `This project's files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`. Until you answer, the project's commands are not used and the status line shows no changed-file count. On Claude nothing asks at turn time: run `/trust` to review the project again.
+Trust is tied to what you reviewed, part by part. If a pi file is added, changed or removed afterwards, the next pi turn asks again with the title `This project's files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`. Until you answer, pi does not load the project's files.
+
+A change to a project command or to the git settings asks nothing at turn time. Only that part stops applying, and marcsh says once per project per run why:
+
+- `This project's commands changed since you trusted them: run /trust to use them.` when you open the `/` menu;
+- `This project's git settings changed since you trusted them: run /trust to count its changed files.` when the status line finds them changed.
+
+Run `/trust` to review the project again. Nothing is said for a project you chose not to trust.
+
+Without the interface (`marcsh run`, `marcsh mcp list`) nobody can be asked. If a trusted project's pi files changed, marcsh says so once on standard error (`marcsh: this project's pi files changed since you trusted them, so pi does not load them: run marcsh and /trust`) and goes on without them.
 
 ### Change a decision: /trust
 
-`/trust` opens `Project Trust` for the current folder, on either engine. It shows `Now: trusted`, `Now: not trusted` or `Now: not decided yet`, and how many pi files and project commands it found (`no pi files or project commands found` when there are none). A trust that stopped applying shows as `Now: not trusted (this project's files changed since you trusted them)`. The choices are:
+`/trust` opens `Project Trust` for the current folder, on either engine. It shows `Now: trusted`, `Now: not trusted` or `Now: not decided yet`, and what it found per part, for example `2 pi files found · 1 project command found · git settings found` (`no pi files, project commands or git settings found` when there are none). A trust that stopped applying for every part shows as `Now: not trusted (this project's files changed since you trusted them)`. When only some parts stopped applying, the line names them, for example `Now: trusted, but not for project commands (not reviewed yet)`. The choices are:
 
 - **Don't trust**: don't use the project's pi files, commands or git status.
-- **Trust**: opens the same list as the first-time question. Nothing is saved until you answer `t` and `Enter`. A project with nothing to list is trusted in this one step. If something appeared since the dialog opened, or while you were reading the list, you see the new list instead, and nothing is saved until you answer it.
-- **Forget**: ask again at the next pi turn that needs it.
+- **Trust**: opens the same list as the first-time question. Nothing is saved until you answer `t` and `Enter`. If something appeared or vanished since the dialog opened, or while you were reading the list, you see the new list instead, and nothing is saved until you answer it.
+- **Forget**: back to undecided. The project's commands and the git count stay off, and pi asks again at its next turn that needs it.
 
-Project commands and the git count follow a change at once; pi follows it from the next turn. If marcsh cannot read one of the files, **Trust** is not offered, and the dialog lists the unreadable files. A trust you gave earlier stops applying when the files change after your review. Review them again.
+A project with nothing to review (no pi files, project commands or git settings) shows `Nothing to review` and says what trusting turns on. Press `t`, then `Enter`, to trust it; anything that appears later stays off until you review it.
 
-marcsh never runs `git status` in a folder you have not trusted, on either engine, because `git status` can run programs that a repo's own git settings name. There the status line only reads the branch.
+Project commands and the git count follow a change at once; pi follows it from the next turn. If marcsh cannot read one of the pi files, **Trust** is not offered, and the dialog lists the unreadable files.
+
+marcsh never runs `git status` in a folder whose git settings you have not trusted as they are now, on either engine, because `git status` can run programs that a repo's own git settings name. There the status line only reads the branch.
 
 ### On Claude
 

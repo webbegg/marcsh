@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { TextAttributes, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { EmptyBorder } from "./border";
-import { escapeProjectText, unreadableResources } from "../lib/engine/pi-trust";
+import { escapeProjectText, hasRealChanges, unreadablePiFiles, unreadableResources, type EntryChange } from "../lib/engine/pi-trust";
 import { useQuietWindow } from "../hooks/use-quiet-window";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { LOCKED_LINE, usePromptLock } from "../lib/prompt-lock";
@@ -31,8 +31,10 @@ function reachedEnd({ top, total, viewport }: View, entries: number): boolean {
 }
 
 
-// The project's pi files and its own commands (.marcsh/commands) are reviewed and trusted together.
+// The project's pi files, its own commands (.marcsh/commands) and its git settings are reviewed and trusted together.
 const TITLE = "Trust this project's files?";
+// How each entry is marked against the earlier review: "unreviewed" is a part that review did not cover, not a change.
+const MARKS: Record<EntryChange, string> = { added: "added", changed: "changed", unchanged: "unchanged", unreviewed: "not reviewed before" };
 const CHANGED_TITLE = "This project's files changed since you trusted them. Trust them again?";
 const NO_RECORD_NOTICE = "No record of your earlier review: marcsh cannot tell which files changed.";
 
@@ -50,7 +52,9 @@ type Props = {
  * holds, then `t` to trust (arms Enter), `d` not to, Esc to leave this one turn untrusted without remembering.
  * A project trusted before whose files changed since is asked again in the same way, with a title that says so, each entry
  * marked [added], [changed] or [unchanged], and the paths that are gone listed as [removed] (a trust stored before reviews were
- * kept has nothing to compare with: no marks, and a notice says so).
+ * kept has nothing to compare with: no marks, and a notice says so). Entries of a part the earlier review did not cover (commands
+ * and git settings, reviewed since an upgrade) are marked [not reviewed before], which alone is no change.
+ * Commands and git settings marcsh could not read stay off whatever the answer; only an unreadable pi file keeps `t` from trusting.
  * Like an approval it ignores keys until the keyboard has been quiet, so typing ahead cannot answer it, and
  * `t` alone trusts nothing: trusting lets the project's code run, so it only works once the whole list has been on screen.
  * When marcsh could not read an entry, it cannot show what trusting would run: those entries are listed first with the
@@ -79,13 +83,14 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   const [endSeen, setEndSeen] = useState(false);
   const endSeenRef = useRef(false);
   const unreadable = unreadableResources(request.resources).length;
-  const reviewable = unreadable === 0;
+  // Only a pi file marcsh could not read keeps the project from being trusted: an unreadable command or git file just stays off.
+  const reviewable = unreadablePiFiles(request.resources).length === 0;
   const changes = request.changes;
-  const title = changes ? CHANGED_TITLE : TITLE;
+  const title = changes && hasRealChanges(changes) ? CHANGED_TITLE : TITLE;
 
   // What the project supplies, one escaped line each; what could not be read comes first: it is the part the user cannot judge.
   const marked = (resource: (typeof request.resources)[number]) => {
-    const mark = changes?.known ? `[${changes.status.get(resource.path) ?? "added"}] ` : "";
+    const mark = changes?.known ? `[${MARKS[changes.status.get(resource.path) ?? "added"]}] ` : "";
     return escapeProjectText(`${mark}${resource.detail ? `${resource.path} — ${resource.detail}` : resource.path}`);
   };
   const rows = [
@@ -222,6 +227,10 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
   );
   const smallNotice = "Terminal too small to review the list: make it taller to trust.";
   const unreadableNotice = `Could not read ${unreadable} of these files (listed first): trusting is not offered.`;
+  const trustingLine =
+    unreadable === 0
+      ? "Trusting lets these files load and run with your permissions."
+      : `Trusting lets the rest load and run with your permissions; the ${unreadable} unreadable ${unreadable === 1 ? "stays" : "stay"} off.`;
 
   // A hosted prompt sits where its dialog put it; the zero-size anchor tells how far that is from the screen's corner.
   const withAnchor = (screenBox: ReactNode) =>
@@ -314,7 +323,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
           </text>
         ) : null}
         <text attributes={TextAttributes.DIM}>
-          {reviewable ? "Trusting lets these files load and run with your permissions." : unreadableNotice}
+          {reviewable ? trustingLine : unreadableNotice}
         </text>
         <box flexDirection="row" gap={2}>
           {keyHints}
