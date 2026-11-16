@@ -22,6 +22,8 @@ process.env.MARCSH_SNAPSHOTS = "off";
 // The status line reads no git state unless a test gives it a reader: the home screen would read the checkout the tests run in
 // (its branch name then changes what fits the line) and every screen would spawn git every few seconds.
 process.env.MARCSH_GIT_STATUS = "off";
+// Nor does it scan for leftover processes on its own (`ps` every 30 s on every screen); `/ps` and the proc tools still scan when used.
+process.env.MARCSH_LEFTOVERS = "off";
 // Packs come from https://github.com unless a test sets a file:// base itself.
 delete process.env.MARCSH_PACK_URL_BASE;
 

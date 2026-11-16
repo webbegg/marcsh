@@ -2,6 +2,8 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { isPiToolDenied } from "../agent-tools";
+import { agentModelFits } from "../agents";
 import { branchState } from "../git-branch";
 import { Mode } from "../modes";
 import { referenceText, splitAttachments } from "../attachments";
@@ -10,20 +12,23 @@ import { marcshPluginPath } from "../plugin";
 import { getStorage } from "../storage";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
 import { applyPiEvent, createErrorTracker, createReplyFeed, isStreamDelta, withDuration } from "./pi-events";
-import { narrowForTurn } from "./pi-agent-tools";
+import { createDeniedToolsExtension, narrowForTurn } from "./pi-agent-tools";
 import { ASK_USER_TOOL, createAskUserExtension } from "./pi-ask-user";
 import { BG_PLAN_TOOLS, BG_START_TOOL, createBackgroundTerminalsExtension } from "./pi-bg-tools";
 import type { Guard } from "./pi-guard";
 import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMenuCommands } from "./pi-commands";
 import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS, type RuleStore } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
-import { createPackHooksExtension } from "./pi-pack-hooks";
+import { branchPerCall, createPackHooksExtension } from "./pi-pack-hooks";
+import { createProcToolsExtension, PROC_PLAN_TOOLS, type ProcToolsOptions } from "./pi-proc-tools";
+import type { HookPermissionMode } from "../pack-hooks";
+import { effectiveApprovalMode } from "../approval-policy";
 import { createPiUiContext } from "./pi-ui";
 import { type BackgroundRunChild, createSubagentExtension, runChildSession, type RunChild, TASK_PLAN_TOOLS, TASK_TOOL } from "./pi-subagent";
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import { backgroundMessageText, type BackgroundBatch } from "../background/hub";
-import { systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest } from "./types";
+import { approvalLineMode, systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -76,6 +81,8 @@ export type PiEngineOptions = {
   pluginPath?: string | null;
   /** How long a foreground `bash` or `Task` call may run (see `pi-tool-timeout.ts`). Default: 3 minutes; tests use less. */
   toolTimeoutMs?: number;
+  /** How `proc_list` and `proc_stop` find and stop this run's leftover processes. Default: this process's marker and process table (tests inject them). */
+  leftovers?: ProcToolsOptions;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -310,9 +317,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       systemPromptAppend,
       approvalMode,
       currentApprovalMode,
+      noApprover,
       currentPlanMode,
       packPluginPath,
+      agentId,
       deniedTools,
+      subagents,
       resumeRef,
       background,
       promptKind,
@@ -442,41 +452,93 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         approvalMode,
         currentApprovalMode,
       };
-      // Plan mode stays read-only whatever the approval mode, so it gets no mode line. The line says whether the mode is active or paused on the branch the turn starts on; each call reads the branch again.
-      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, () => branchState(cwd));
+      // Plan mode stays read-only whatever the approval mode, so it gets the plan line, never an approval mode line. Auto's and yolo's say whether
+      // the mode is active or paused on the branch the turn starts on; each call reads the branch again.
+      const lineMode = approvalLineMode(approvalMode, noApprover);
+      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : lineMode, () => branchState(cwd));
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
-      const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>) =>
-        packTurn?.hooks ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: hookSignal, notify })] : [];
-      const packHooks = packHooksFor(turnEnded.signal, (message, level) => host.notify?.(message, level));
+      // The hooks are told the mode at each call: plan for a plan turn or a read-only child (and a background child once the session is in
+      // plan, as its calls then are), else the session's approval mode as it is then and as it is enforced (normal while auto or yolo is
+      // paused off a feature branch). The branch is read once per tool call (only for auto and yolo), shared by its hooks before and after it.
+      const branchForCall = branchPerCall(() => branchState(cwd));
+      const hookMode = (readOnly: boolean, followsSession: boolean) => (toolCallId: string): HookPermissionMode =>
+        mode === Mode.PLAN || readOnly || (followsSession && currentPlanMode?.() === true)
+          ? "plan"
+          : effectiveApprovalMode(currentApprovalMode?.() ?? approvalMode ?? "normal", cwd, () => branchForCall(toolCallId));
+      const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>, readOnly = false, followsSession = false) =>
+        packTurn?.hooks
+          ? [
+              createPackHooksExtension({
+                config: packTurn.hooks.config,
+                view: packPluginPath!,
+                cwd,
+                signal: hookSignal,
+                notify,
+                permissionMode: hookMode(readOnly, followsSession),
+                ...(agentId ? { agent: agentId } : {}),
+              }),
+            ]
+          : [];
+      const notifyHost: NonNullable<TurnHost["notify"]> = (message, level) => host.notify?.(message, level);
+      const packHooks = packHooksFor(turnEnded.signal, notifyHost);
+      // A named subagent's model, when the engine has it and a login for its provider; else undefined (the parent's is used).
+      const subagentModel = async (wantedModel: string | undefined) => {
+        const ref = wantedModel && agentModelFits(wantedModel, "pi") ? parseModel(wantedModel) : undefined;
+        const found = ref ? models.getModel(ref.provider, ref.id) : undefined;
+        if (!found) return undefined;
+        try {
+          return (await models.getAuth(found)) ? found : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      // A child's prompt: a named subagent's own, then the mode line (as the parent's; a plain child gets the line alone) and, for a
+      // subagent of the pack this turn loaded, that pack's skills.
+      const childResources = (subagent: TurnSubagent | undefined, readOnly: boolean) => {
+        const append = systemPromptWithMode(subagent?.prompt, readOnly ? "plan" : lineMode, () => branchState(cwd));
+        if (!subagent) return append ? { appendSystemPrompt: append } : {};
+        const packSkills = subagent.pluginDir && subagent.pluginDir === packPluginPath && packTurn?.view ? join(packTurn.view, "skills") : undefined;
+        return { ...(append ? { appendSystemPrompt: append } : {}), ...(packSkills && existsSync(packSkills) ? { skillPaths: [packSkills] } : {}) };
+      };
       // A child session has the parent turn's rules, guard, mode and agent narrowing; in plan mode it only reads. It never gets the
       // background hub, so it has no bg tools, no task tools and cannot start background subagents.
-      const runChild = (request: Parameters<RunChild>[0], approvalAndHooks: ExtensionFactory[]) =>
-        runChildSession(pi, {
+      // A named subagent only narrows that: its denied groups are added to the parent's, and a read-only one gets plan's rules and tools.
+      // `approvalAndHooks` gets whether the child is read-only, for its approval extension.
+      const runChild = async ({ subagent, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[]) => {
+        const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
+        const own = subagent?.deniedTools ?? [];
+        const childDenied = own.length > 0 ? [...new Set([...denied, ...own])] : denied;
+        const narrowing = own.length > 0 ? [createDeniedToolsExtension(childDenied)] : tools.childExtensions;
+        const allowed = (name: string) => !isPiToolDenied(name, childDenied);
+        const model = (subagent && (await subagentModel(subagent.model))) || resolved;
+        return runChildSession(pi, {
           ...request,
           cwd,
           agentDir,
           models,
-          model: resolved,
+          model,
           projectTrusted,
-          extensions: [...tools.childExtensions, ...approvalAndHooks, ...tools.childExtensions],
-          ...(mode === Mode.PLAN ? { tools: READ_ONLY_TOOLS.filter(tools.allowed) } : buildToolsOption(settingsManager)),
+          extensions: [...narrowing, ...approvalAndHooks(readOnly), ...narrowing],
+          ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
+          ...childResources(subagent, readOnly),
         });
+      };
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
       // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
       // It follows the session's plan mode as it is at each call: once the session is in plan, only its read-only calls run.
       const runBackgroundChild: BackgroundRunChild | undefined =
         background &&
-        (({ description, prompt, signal: childSignal, onProgress, onEvent }) => {
+        (({ description, prompt, subagent, signal: childSignal, onProgress, onEvent }) => {
           const askHost: Pick<TurnHost, "askPermission"> = {
             askPermission: (ask, askSignal) =>
               background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
-          return runChild({ prompt, signal: childSignal, onProgress, onEvent }, [
-            ...packHooksFor(childSignal, notify),
-            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, ...(currentPlanMode ? { currentPlanMode } : {}) }),
+          return runChild({ prompt, ...(subagent ? { subagent } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
+            ...packHooksFor(childSignal, notify, readOnly, true),
+            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
           ]);
         });
       const resourceLoader = new pi.DefaultResourceLoader({
@@ -498,7 +560,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
           // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
-          ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd })] : []),
+          // The leftover-process tools come with them (see `pi-proc-tools.ts`).
+          ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd }), createProcToolsExtension(options.leftovers)] : []),
           // A foreground child has the parent turn's host, so it asks the same way; the call's clock stops while the user is asked.
           // A turn with a hub also offers the task tools; plan mode starts no background child.
           createSubagentExtension({
@@ -506,8 +569,13 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             signal: turnEnded.signal,
             timeoutMs: options.toolTimeoutMs,
             runChild: ({ holdClock, ...request }) =>
-              runChild(request, [...packHooks, createApprovalExtension(holdClock ? { ...approval, host: holdingClock(host, holdClock) } : approval)]),
+              runChild(request, (readOnly) => [
+                // A read-only child's hooks are told plan, as its calls are held to plan's rules.
+                ...(readOnly && mode !== Mode.PLAN ? packHooksFor(turnEnded.signal, notifyHost, true) : packHooks),
+                createApprovalExtension({ ...approval, planMode: readOnly, ...(holdClock ? { host: holdingClock(host, holdClock) } : {}) }),
+              ]),
             ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),
+            ...(subagents && subagents.length > 0 ? { subagents } : {}),
           }),
         ],
       });
@@ -523,7 +591,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS, ...PROC_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) {

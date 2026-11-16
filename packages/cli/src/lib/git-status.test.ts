@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatGit, parseGitStatus, readGitStatus } from "./git-status";
+import { formatGit, parseGitStatus, readGitBranchState, readGitStatus, readGitWorktree } from "./git-status";
 
 // S6: the status bar shows the branch (or short SHA when detached), read from HEAD alone; how many files changed only in a
 // trusted project, from one `git status` call (which can run the repo's filter drivers).
@@ -49,6 +49,12 @@ describe("formatGit", () => {
 
   test("shows the branch alone when the files were not counted", () => {
     expect(formatGit({ branch: "main", changed: null })).toBe("main");
+  });
+
+  // M5: a linked worktree is named after the branch, before the count.
+  test("names a linked worktree after the branch", () => {
+    expect(formatGit({ branch: "feat/x", changed: null, worktree: "pack-integration" })).toBe("feat/x · wt pack-integration");
+    expect(formatGit({ branch: "feat/x", changed: 2, worktree: "pack-integration" })).toBe("feat/x · wt pack-integration · 2 files changed");
   });
 });
 
@@ -126,6 +132,206 @@ describe("readGitStatus", () => {
     } finally {
       git("config", "--unset", "core.fsmonitor");
     }
+  });
+});
+
+// M5: in a linked worktree (`--git-dir` differs from `--git-common-dir`) the status names the worktree's folder; the main
+// checkout gets no name. Read from HEAD-only git calls, so it shows in untrusted folders and runs nothing the repo names.
+describe("readGitStatus in a linked worktree", () => {
+  let dir: string;
+  let repo: string;
+  let linked: string;
+  const gitIn = (cwd: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    return result.stdout.toString().trim();
+  };
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-git-worktree-"));
+    repo = join(dir, "repo");
+    linked = join(dir, "pack-integration");
+    mkdirSync(repo);
+    gitIn(repo, "init", "--quiet", "--initial-branch=trunk");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+    gitIn(repo, "add", ".");
+    gitIn(repo, "commit", "--quiet", "-m", "first");
+    gitIn(repo, "worktree", "add", "--quiet", "-b", "feat/x", linked);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("an untrusted linked worktree: the branch and the worktree's folder name", async () => {
+    expect(await readGitStatus(linked)).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+  });
+
+  test("a trusted linked worktree: the count as well", async () => {
+    expect(await readGitStatus(linked, { trusted: true })).toEqual({ branch: "feat/x", changed: 0, worktree: "pack-integration" });
+  });
+
+  test("from a subfolder of the worktree, still the worktree's own folder name", async () => {
+    expect(await readGitStatus(join(linked, "sub"))).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+  });
+
+  test("the main checkout gets no worktree name", async () => {
+    expect(await readGitStatus(repo)).toEqual({ branch: "trunk", changed: null });
+    expect(await readGitStatus(repo, { trusted: true })).toEqual({ branch: "trunk", changed: 0 });
+    expect(await readGitStatus(join(repo, "sub"))).toEqual({ branch: "trunk", changed: null });
+  });
+
+  test("an untrusted linked worktree runs no fsmonitor or filter driver its config names", async () => {
+    const marker = join(dir, "ran");
+    const script = join(dir, "evil.sh");
+    writeFileSync(script, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`);
+    chmodSync(script, 0o755);
+    writeFileSync(join(repo, ".git", "info", "attributes"), "* filter=evil\n");
+    gitIn(repo, "config", "core.fsmonitor", script);
+    gitIn(repo, "config", "filter.evil.clean", script);
+    gitIn(repo, "config", "filter.evil.process", script);
+    gitIn(repo, "config", "filter.evil.required", "true");
+    const later = new Date(Date.now() + 120_000);
+    utimesSync(join(linked, "a.txt"), later, later);
+    try {
+      const status = await readGitStatus(linked);
+      expect(existsSync(marker)).toBe(false);
+      expect(status).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+    } finally {
+      for (const key of ["core.fsmonitor", "filter.evil.clean", "filter.evil.process", "filter.evil.required"]) gitIn(repo, "config", "--unset", key);
+      rmSync(join(repo, ".git", "info", "attributes"));
+    }
+  });
+});
+
+// R3-1: git before 2.31 has no `--path-format` and `rev-parse` echoes an option it does not know as a line of its output (exit 0).
+// A fake git that does exactly that, in front of the real one, must never make the main checkout look like a linked worktree.
+describe("readGitStatus with a git that echoes options it does not know (git < 2.31)", () => {
+  let dir: string;
+  let repo: string;
+  let linked: string;
+  let bin: string;
+  let log: string;
+  let path: string | undefined;
+  const realGit = Bun.which("git")!;
+  const gitIn = (cwd: string, ...args: string[]) => {
+    const result = Bun.spawnSync([realGit, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    return result.stdout.toString().trim();
+  };
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-git-old-"));
+    repo = join(dir, "repo");
+    linked = join(dir, "old-linked");
+    bin = join(dir, "bin");
+    log = join(dir, "calls.log");
+    mkdirSync(repo);
+    mkdirSync(bin);
+    gitIn(repo, "init", "--quiet", "--initial-branch=trunk");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+    gitIn(repo, "add", ".");
+    gitIn(repo, "commit", "--quiet", "-m", "first");
+    gitIn(repo, "worktree", "add", "--quiet", "-b", "feat/old", linked);
+    // Logs each call, prints every `--path-format=...` as old git's rev-parse does, and runs the real git without it.
+    writeFileSync(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        `echo "$*" >> '${log}'`,
+        "for arg; do",
+        "  shift",
+        '  case "$arg" in --path-format=*) echo "$arg"; continue;; esac',
+        '  set -- "$@" "$arg"',
+        "done",
+        `exec '${realGit}' "$@"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+  });
+  afterAll(() => {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  beforeEach(() => rmSync(log, { force: true }));
+
+  test("the main checkout gets no worktree name, from its top and from a subfolder", async () => {
+    expect(await readGitStatus(repo)).toEqual({ branch: "trunk", changed: null });
+    expect(await readGitStatus(join(repo, "sub"), { trusted: true })).toEqual({ branch: "trunk", changed: 0 });
+    // The fake git was the one that ran.
+    expect(existsSync(log)).toBe(true);
+  });
+
+  test("a linked worktree is still named", async () => {
+    expect(await readGitStatus(linked)).toEqual({ branch: "feat/old", changed: null, worktree: "old-linked" });
+  });
+
+  // R4-8: the worktree of a folder does not change, so it is read once per folder, not at every poll.
+  test("the worktree is read once per folder", async () => {
+    const sub = join(linked, "sub");
+    for (let i = 0; i < 3; i++) expect(await readGitWorktree(sub)).toBe("old-linked");
+    const calls = Bun.file(log).size > 0 ? (await Bun.file(log).text()).split("\n").filter((line) => line.includes("rev-parse")) : [];
+    expect(calls.length).toBe(1);
+  });
+});
+
+// R1-8: a folder name may hold any character but `/`; a newline in one of the paths would shift the lines git prints.
+describe("readGitWorktree with a newline in a path", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-git-nl-"));
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    const run = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdout: "ignore", stderr: "ignore" });
+    run(repo, "init", "--quiet", "--initial-branch=trunk");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    run(repo, "add", ".");
+    run(repo, "commit", "--quiet", "-m", "first");
+    run(repo, "worktree", "add", "--quiet", "-b", "feat/nl", join(dir, "evil\nname"));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("is refused: no name rather than a wrong one", async () => {
+    const worktree = join(dir, "evil\nname");
+    expect(existsSync(worktree)).toBe(true);
+    expect(await readGitWorktree(worktree)).toBeNull();
+  });
+});
+
+// R3-2: the status line's paused mode comes from an async read of where the checkout stands, the same states as `branchState`.
+describe("readGitBranchState", () => {
+  let dir: string;
+  const gitIn = (cwd: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    return result.stdout.toString().trim();
+  };
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "marcsh-git-state-"));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("a feature branch, the default branch (main, or origin/HEAD's), a detached HEAD, no repository", async () => {
+    const repo = join(dir, "repo");
+    mkdirSync(repo);
+    gitIn(repo, "init", "--quiet", "--initial-branch=main");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    gitIn(repo, "add", ".");
+    gitIn(repo, "commit", "--quiet", "-m", "first");
+    expect(await readGitBranchState(repo)).toEqual({ kind: "default", branch: "main" });
+    gitIn(repo, "checkout", "--quiet", "-b", "develop");
+    expect(await readGitBranchState(repo)).toEqual({ kind: "feature", branch: "develop" });
+    gitIn(repo, "update-ref", "refs/remotes/origin/develop", "HEAD");
+    gitIn(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop");
+    expect(await readGitBranchState(repo)).toEqual({ kind: "default", branch: "develop" });
+    gitIn(repo, "checkout", "--quiet", "--detach");
+    expect(await readGitBranchState(repo)).toEqual({ kind: "none", reason: "detached HEAD" });
+    expect((await readGitBranchState(dir)).kind).toBe("none");
+    expect((await readGitBranchState(repo, { timeoutMs: 0 })).kind).toBe("none");
   });
 });
 

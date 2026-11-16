@@ -18,6 +18,10 @@ const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { createPiEngine } = await import("../lib/engine/pi");
 const { terminalsFor } = await import("../lib/background/session-terminals");
+const { clearSessionMarker, startSessionMarker } = await import("../lib/background/leftovers");
+const { leftoverWatch } = await import("../lib/background/leftover-watch");
+const { execFileSync } = await import("node:child_process");
+const { chmodSync, copyFileSync } = await import("node:fs");
 type TurnRequest = import("../lib/engine/types").TurnRequest;
 type BackgroundHub = import("../lib/background/hub").BackgroundHub;
 
@@ -141,6 +145,114 @@ describe("/ps (S3)", () => {
     expect(older.status).toBe("killed");
     expect(newer.status).toBe("running");
     expect(await frameContaining("1 running of 2")).toContain("killed older");
+  }, 30000);
+
+  // M6: what this run's tools left running is listed under the terminals; x stops the highlighted one; the status line counts them.
+  test("lists this run's leftover processes, and x stops the highlighted one", async () => {
+    const savedMarker = process.env.MARCSH_SESSION;
+    const marker = startSessionMarker();
+    // macOS hides the environment of its own binaries from ps: a copy of sleep is not one.
+    const sleeper = join(dir, "sleeper");
+    copyFileSync(Bun.which("sleep")!, sleeper);
+    chmodSync(sleeper, 0o755);
+    const pid = Number(execFileSync("/bin/sh", ["-c", `${sleeper} 45 >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }).trim());
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      expect(process.env.MARCSH_SESSION).toBe(marker.id);
+      const terminals = await openPiSession();
+      await act(async () => terminals.start({ command: "sleep 30", title: "dev server", cwd }));
+      await frameContaining("1 background terminal running");
+
+      await type("/ps");
+      await press("RETURN");
+      const list = await frameContaining("Leftover processes");
+      // Pid, age, memory, and the command (here a long temp path, cut to the dialog's width).
+      expect(list).toMatch(new RegExp(`Leftover processes .* ${pid} \\d+s [\\d.]+ MB /`));
+      // The terminal's own sleep is in /ps already: it is not a leftover.
+      expect(list).not.toMatch(/Leftover processes .*sleep 30/);
+      // The status line's count reads the same scan (its wording is in status-bar.background.test.tsx; this line is too narrow for it).
+      expect(leftoverWatch.list().map((left) => left.pid)).toEqual([pid]);
+
+      // Newest first, then the leftovers: the second row.
+      await act(async () => screen!.mockInput.pressArrow("down"));
+      await settle(80);
+      await type("x");
+      await frameWhere(() => !alive(), 8000);
+      expect(alive()).toBe(false);
+      expect(await frameWhere((current) => !current.includes("Leftover processes"))).not.toContain(String(pid));
+      expect(terminals.running()).toBe(1);
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+      clearSessionMarker();
+      await leftoverWatch.refresh({ force: true });
+      if (savedMarker === undefined) delete process.env.MARCSH_SESSION;
+      else process.env.MARCSH_SESSION = savedMarker;
+    }
+  }, 30000);
+
+  test("/ps on a session without background terminals lists the leftovers alone", async () => {
+    const { PsDialogContent } = await import("../components/dialogs/ps-dialog");
+    const { createLeftoverWatch } = await import("../lib/background/leftover-watch");
+    const watch = createLeftoverWatch({
+      scan: async () => [
+        { pid: 4242, pgid: 4242, startedAt: Date.now() - 120_000, startKey: 0, ageMs: 120_000, rssMb: 85, command: "node \u001b[31mserver.js", groupOnly: true },
+      ],
+    });
+    const { RootLayout: Layout } = await import("../layouts/root-layout");
+    const router = createMemoryRouter([{ path: "/", element: <Layout />, children: [{ index: true, element: <PsDialogContent leftovers={watch} /> }] }]);
+    screen = await testRender(<RouterProvider router={router} />, { width: 120, height: 20 });
+    const shown = await frameContaining("node");
+    expect(shown).toContain("Background terminals run in pi sessions only.");
+    expect(shown).toMatch(/Leftover processes .*4242 2m 85 MB node \\u001b\[31mserver\.js|Leftover processes .*4242 2m 85 MB node .*server\.js/);
+    // The escape is shown, never sent to the terminal.
+    expect(shown).not.toContain("\u001b");
+  }, 30000);
+
+  // R1-1 / R1-2 / R3-3: a failed scan says so, a stop that fails says why, and what may be the user's own is marked.
+  test("/ps says when the scan failed, shows a failed stop, and marks a process that may be yours", async () => {
+    const { PsDialogContent } = await import("../components/dialogs/ps-dialog");
+    const { createLeftoverWatch } = await import("../lib/background/leftover-watch");
+    let fail = false;
+    const watch = createLeftoverWatch({
+      scan: async () => {
+        if (fail) throw new Error("ps timed out");
+        return [
+          { pid: 4242, pgid: 4242, startedAt: Date.now() - 120_000, startKey: 0, ageMs: 120_000, rssMb: 85, command: "tmux", groupOnly: true, possiblyYours: "it leads its own session" },
+        ];
+      },
+      stop: async () => {
+        throw new Error("the table could not be read");
+      },
+    });
+    const { RootLayout: Layout } = await import("../layouts/root-layout");
+    const { useDialog } = await import("../providers/dialog");
+    const { useEffect } = await import("react");
+    // Opened as /ps opens it, so its keys reach it.
+    function Open() {
+      const dialog = useDialog();
+      useEffect(() => {
+        dialog.open({ title: "Leftover processes", children: <PsDialogContent leftovers={watch} /> });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      return null;
+    }
+    const router = createMemoryRouter([{ path: "/", element: <Layout />, children: [{ index: true, element: <Open /> }] }]);
+    screen = await testRender(<RouterProvider router={router} />, { width: 120, height: 20 });
+    expect(await frameContaining("tmux")).toContain("possibly yours");
+    await type("x");
+    expect(await frameContaining("Could not stop pid 4242")).toContain("the table could not be read");
+    fail = true;
+    await act(async () => void (await watch.refresh({ force: true })));
+    expect(await frameContaining("ps timed out")).toMatch(/The process table could not be read.*ps timed out/);
   }, 30000);
 
   // R3-4: the highlight follows the terminal, not the row: one started meanwhile goes on top without taking it.

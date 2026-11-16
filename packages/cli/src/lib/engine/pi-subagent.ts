@@ -10,7 +10,7 @@ import { createErrorTracker } from "./pi-events";
 import { disposePiSession } from "./pi-mcp";
 import type { ToolSource } from "./pi-permissions";
 import { isBackgroundCall, runWithToolTimeout, TOOL_CALL_TIMEOUT_MS, ToolCallTimeoutError, type ToolClock } from "./pi-tool-timeout";
-import type { TurnHost } from "./types";
+import type { TurnHost, TurnSubagent } from "./types";
 
 export const TASK_TOOL = "Task";
 /** The tools that look after background subagents. */
@@ -28,6 +28,9 @@ const INTERRUPTED = "The subagent was interrupted.";
 const NO_TEXT = "The subagent finished without returning any text.";
 const INVALID_INPUT = "Invalid Task input. Pass `description` (3-5 words) and `prompt` (what the subagent should do), both non-empty strings.";
 const MAX_SUMMARY = 280;
+/** The named subagents the Task description lists, and how much of each description: the rest are still accepted by name. */
+const MAX_LISTED_SUBAGENTS = 20;
+const MAX_SUBAGENT_DESCRIPTION = 150;
 
 /**
  * Whether pi's tool is marcsh's own `Task`. The name alone proves nothing: an extension can register a
@@ -67,6 +70,8 @@ export type ChildRun = ChildProgress & { text: string; costUsd: number };
 
 export type RunChild = (request: {
   prompt: string;
+  /** The named subagent the child runs as (`Task` `agent`); absent for a plain child. */
+  subagent?: TurnSubagent;
   /** Aborts when the turn is interrupted or over, when pi aborts the Task call, or when the call runs too long. */
   signal: AbortSignal;
   onProgress(progress: ChildProgress): void;
@@ -80,7 +85,7 @@ export type RunChild = (request: {
 }) => Promise<ChildRun>;
 
 /** Runs a background child: it is not bound to the turn, and its approvals go to the session's ask channel. */
-export type BackgroundRunChild = (request: { description: string; prompt: string } & SubagentRunContext) => Promise<ChildRun>;
+export type BackgroundRunChild = (request: { description: string; prompt: string; subagent?: TurnSubagent } & SubagentRunContext) => Promise<ChildRun>;
 
 export type BackgroundSubagentOptions = {
   /** The session's hub: its subagents (`subagentsFor`) and where their results go. */
@@ -101,6 +106,8 @@ export type SubagentOptions = {
   timeoutMs?: number;
   /** Background subagents (a turn with a background hub only): `Task` takes `background`, and the task tools are offered. */
   background?: BackgroundSubagentOptions;
+  /** The named subagents `Task` can start by `agent`. None (or empty): `Task` has no `agent`, exactly as before. */
+  subagents?: readonly TurnSubagent[];
 };
 
 /** The child's text as one short line for the task line. */
@@ -109,10 +116,33 @@ function summarize(text: string): string {
   return line.length > MAX_SUMMARY ? `${line.slice(0, MAX_SUMMARY - 1)}…` : line;
 }
 
-function parseTaskInput(params: unknown): { description: string; prompt: string } {
-  const { description, prompt } = (params ?? {}) as Record<string, unknown>;
+function parseTaskInput(params: unknown, subagents: readonly TurnSubagent[]): { description: string; prompt: string; subagent?: TurnSubagent } {
+  const { description, prompt, agent } = (params ?? {}) as Record<string, unknown>;
   if (typeof description !== "string" || typeof prompt !== "string" || !description.trim() || !prompt.trim()) throw new Error(INVALID_INPUT);
-  return { description: description.trim(), prompt };
+  if (agent !== undefined && agent !== null && typeof agent !== "string") throw new Error(`${INVALID_INPUT} \`agent\`, when given, is a subagent name.`);
+  const name = typeof agent === "string" ? agent.trim() : "";
+  if (!name) return { description: description.trim(), prompt };
+  if (subagents.length === 0) throw new Error(`No named subagents are available here. Run the Task without \`agent\`.`);
+  const subagent = subagents.find((candidate) => candidate.name === name);
+  if (!subagent) throw new Error(`Unknown subagent "${name}". Available: ${subagents.map((candidate) => candidate.name).join(", ")}.`);
+  return { description: description.trim(), prompt, subagent };
+}
+
+const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** The part of the Task description that names the subagents `agent` takes: one line each, bounded. */
+function subagentList(subagents: readonly TurnSubagent[]): string {
+  if (subagents.length === 0) return "";
+  const lines = subagents.slice(0, MAX_LISTED_SUBAGENTS).map((sub) => {
+    const about = sub.description?.replace(/\s+/g, " ").trim();
+    return `- ${sub.name}${about ? `: ${cut(about, MAX_SUBAGENT_DESCRIPTION)}` : ""}${sub.readOnly ? " (read-only)" : ""}`;
+  });
+  const more = subagents.length > MAX_LISTED_SUBAGENTS ? [`(and ${subagents.length - MAX_LISTED_SUBAGENTS} more)`] : [];
+  return (
+    "\n\nPass `agent` to run it as one of these named subagents: it gets that subagent's instructions, model and tools " +
+    "(never more tools than you have). Leave `agent` out for a plain subagent.\n" +
+    [...lines, ...more].join("\n")
+  );
 }
 
 const baseProperties = {
@@ -120,12 +150,24 @@ const baseProperties = {
   prompt: { type: "string", description: "The task for the subagent to perform. It starts with no memory of this conversation, so include everything it needs." },
 };
 
-const parametersFor = (background: boolean) =>
+const agentProperty = (subagents: readonly TurnSubagent[]) =>
+  subagents.length > 0
+    ? { agent: { type: "string", description: `The named subagent to run, one of: ${listedNames(subagents)}. Leave it out for a plain subagent.` } }
+    : {};
+
+/** The subagents' names for the `agent` parameter, bounded like the Task description's list. */
+function listedNames(subagents: readonly TurnSubagent[]): string {
+  const names = subagents.slice(0, MAX_LISTED_SUBAGENTS).map((sub) => sub.name).join(", ");
+  return subagents.length > MAX_LISTED_SUBAGENTS ? `${names} …and ${subagents.length - MAX_LISTED_SUBAGENTS} more` : names;
+}
+
+const parametersFor = (background: boolean, subagents: readonly TurnSubagent[]) =>
   ({
     type: "object",
     properties: background
       ? {
           ...baseProperties,
+          ...agentProperty(subagents),
           background: {
             type: "boolean",
             description:
@@ -133,7 +175,7 @@ const parametersFor = (background: boolean) =>
               "finishes; task_wait collects it sooner, task_check peeks, task_cancel stops it.",
           },
         }
-      : baseProperties,
+      : { ...baseProperties, ...agentProperty(subagents) },
     required: ["description", "prompt"],
   }) as unknown as ToolDefinition["parameters"];
 
@@ -141,7 +183,7 @@ const toolText = (value: string, details: unknown) => ({ content: [{ type: "text
 
 const NO_BACKGROUND = "Background subagents are not available here. Run the Task without `background`.";
 
-export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS, background }: SubagentOptions): ToolDefinition {
+export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS, background, subagents = [] }: SubagentOptions): ToolDefinition {
   const canStart = background?.canStart === true;
   return {
     name: TASK_TOOL,
@@ -150,11 +192,13 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
       "Launch a subagent to handle a self-contained task, such as researching or exploring the codebase, and get back its final " +
       "answer. The subagent works on its own with the same tools and permissions as you but does not see this conversation, " +
       "so give it a complete prompt. It cannot start further subagents. Launch several in one message to run them in parallel." +
-      (canStart ? ` Pass \`background: true\` for long work: at most ${MAX_RUNNING_SUBAGENTS} background subagents run at once.` : ""),
+      (canStart ? ` Pass \`background: true\` for long work: at most ${MAX_RUNNING_SUBAGENTS} background subagents run at once.` : "") +
+      subagentList(subagents),
     promptSnippet: "Launch a subagent for a self-contained task and get its final answer",
-    parameters: parametersFor(canStart),
+    parameters: parametersFor(canStart, subagents),
     async execute(toolCallId, params, toolSignal) {
-      const { description, prompt } = parseTaskInput(params);
+      const { description, prompt, subagent } = parseTaskInput(params, subagents);
+      const as = subagent ? { subagent } : {};
       const signal = toolSignal ? AbortSignal.any([toolSignal, turnEnded]) : turnEnded;
       if (signal.aborted) throw new Error(INTERRUPTED);
 
@@ -162,7 +206,7 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
         // Only a turn that can start one: never headless, a child session, or plan mode. Never run as an untimed foreground call.
         if (!background || !canStart) throw new Error(NO_BACKGROUND);
         // Not bound to the turn or the call: it runs until it ends, is cancelled, or the session is left. Throws at the cap.
-        const snapshot = subagentsFor(background.hub).start({ description, prompt, run: (context) => background.runChild({ description, prompt, ...context }) });
+        const snapshot = subagentsFor(background.hub).start({ description, prompt, run: (context) => background.runChild({ description, prompt, ...as, ...context }) });
         return toolText(
           `Started background subagent ${snapshot.id} "${description}". Its result is delivered to you when it finishes. ` +
             `Use task_wait to wait for it, task_check to peek, task_cancel to stop it.`,
@@ -175,7 +219,7 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
 
       update({ description, status: "running" });
       const start = (childSignal: AbortSignal, clock: ToolClock) =>
-        runChild({ prompt, signal: childSignal, onProgress: (progress) => update(progress), holdClock: () => clock.hold() });
+        runChild({ prompt, ...as, signal: childSignal, onProgress: (progress) => update(progress), holdClock: () => clock.hold() });
       let run: ChildRun;
       try {
         // A foreground call is aborted once it runs too long (a background one returned above, untimed); waiting for the user does not count.
@@ -390,6 +434,10 @@ export type ChildSessionOptions = {
   extensions: InlineExtension[];
   /** Restricts the child's active tools by name (plan mode), or `+name` entries added to the defaults; default: pi's defaults. */
   tools?: string[];
+  /** A named subagent's prompt: added to the child's system prompt, never in place of it. Default: none. */
+  appendSystemPrompt?: string;
+  /** The only skill folders the child loads (a named subagent's pack skills). Default: none. */
+  skillPaths?: string[];
   prompt: string;
   signal: AbortSignal;
   onProgress(progress: ChildProgress): void;
@@ -420,6 +468,9 @@ export async function runChildSession(pi: PiModule, options: ChildSessionOptions
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
+    // With `noSkills`, pi loads only these folders, never the user's own skills.
+    ...(options.skillPaths && options.skillPaths.length > 0 ? { additionalSkillPaths: options.skillPaths } : {}),
+    ...(options.appendSystemPrompt ? { appendSystemPromptOverride: (base: string[]) => [...base, options.appendSystemPrompt!] } : {}),
     extensionFactories: options.extensions,
   });
   await resourceLoader.reload();

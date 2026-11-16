@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileMatcher, type HooksConfig } from "../pack-hooks";
 import {
+  branchPerCall,
   createPackHooksExtension,
   judgePostToolUse,
   judgePreToolUse,
@@ -235,21 +236,61 @@ describe("judgePostToolUse", () => {
 
 type Handler = (event: any, ctx: any) => any;
 
-function load(config: HooksConfig, options: { notify?: (message: string, level: string) => void; signal?: AbortSignal } = {}) {
+function load(
+  config: HooksConfig,
+  options: { notify?: (message: string, level: string) => void; signal?: AbortSignal; permissionMode?: (toolCallId: string) => "normal" | "auto" | "yolo" | "plan"; agent?: string } = {},
+) {
   const handlers = new Map<string, Handler>();
-  createPackHooksExtension({ config, view, cwd, signal: options.signal ?? new AbortController().signal, notify: options.notify as any })({
+  createPackHooksExtension({
+    config,
+    view,
+    cwd,
+    signal: options.signal ?? new AbortController().signal,
+    notify: options.notify as any,
+    ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+    ...(options.agent ? { agent: options.agent } : {}),
+  })({
     on: (name: string, handler: Handler) => void handlers.set(name, handler),
   } as any);
   const ctx = { sessionManager: { getSessionId: () => "session-1" } };
   return {
     handlers,
-    call: (toolName: string, input: Record<string, unknown> = {}) => handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "c1", toolName, input }, ctx),
-    result: (toolName: string, input: Record<string, unknown>, text: string, isError = false) =>
-      handlers.get("tool_result")?.({ type: "tool_result", toolCallId: "c1", toolName, input, content: [{ type: "text", text }], isError, details: undefined }, ctx),
+    call: (toolName: string, input: Record<string, unknown> = {}, toolCallId = "c1") => handlers.get("tool_call")?.({ type: "tool_call", toolCallId, toolName, input }, ctx),
+    result: (toolName: string, input: Record<string, unknown>, text: string, isError = false, toolCallId = "c1") =>
+      handlers.get("tool_result")?.({ type: "tool_result", toolCallId, toolName, input, content: [{ type: "text", text }], isError, details: undefined }, ctx),
   };
 }
 
 const group = (command: string, matcher?: string, timeout?: number) => [{ ...(matcher === undefined ? {} : { matcher }), hooks: [{ command, ...(timeout === undefined ? {} : { timeout }) }] }];
+
+// R4-3: a pack hook's `permission_mode` needs where the checkout stands; it is read once per tool call (its PreToolUse and
+// PostToolUse share it), and again for the next call, so a branch switch during the turn is what the next call's hooks are told.
+describe("branchPerCall", () => {
+  test("reads once per call ID, again for another call", () => {
+    let reads = 0;
+    let branch = "feat/x";
+    const forCall = branchPerCall(() => (reads++, { kind: "feature" as const, branch }));
+    expect(forCall("a")).toEqual({ kind: "feature", branch: "feat/x" });
+    expect(forCall("a")).toEqual({ kind: "feature", branch: "feat/x" });
+    expect(reads).toBe(1);
+    branch = "feat/y";
+    expect(forCall("b")).toEqual({ kind: "feature", branch: "feat/y" });
+    expect(reads).toBe(2);
+  });
+
+  test("without a call ID it reads every time, and it keeps only the latest calls", () => {
+    let reads = 0;
+    const forCall = branchPerCall(() => (reads++, { kind: "none" as const, reason: "detached HEAD" }), 2);
+    forCall(undefined);
+    forCall(undefined);
+    expect(reads).toBe(2);
+    forCall("a");
+    forCall("b");
+    forCall("c");
+    forCall("a");
+    expect(reads).toBe(6);
+  });
+});
 
 describe("createPackHooksExtension", () => {
   test("registers nothing for events pi does not run", () => {
@@ -305,6 +346,59 @@ describe("createPackHooksExtension", () => {
       tool_name: "Bash",
       tool_input: { command: "ls -la" },
     });
+  });
+
+  test("the payload names the approval mode and the turn's agent, read at each call, and the hook's environment has them too", async () => {
+    const out = join(dir, "stdin.json");
+    const env = join(dir, "env.txt");
+    let mode: "normal" | "auto" | "yolo" | "plan" = "auto";
+    const hooks = { PreToolUse: group(`cat > ${out}; printf '%s|%s' "$MARCSH_APPROVAL_MODE" "$MARCSH_AGENT" > ${env}`), PostToolUse: group(`cat > ${out}.post`) };
+    const { call, result } = load(hooks, { permissionMode: () => mode, agent: "acme/flows/asdd" });
+
+    await call("bash", { command: "ls" });
+    expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({
+      session_id: "session-1",
+      cwd,
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      permission_mode: "auto",
+      agent: "acme/flows/asdd",
+    });
+    expect(readFileSync(env, "utf8")).toBe("auto|acme/flows/asdd");
+
+    // A switch with /permissions during the turn is what the next call's hooks are told.
+    mode = "yolo";
+    await call("bash", { command: "ls" });
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ permission_mode: "yolo" });
+    expect(readFileSync(env, "utf8")).toBe("yolo|acme/flows/asdd");
+
+    mode = "plan";
+    await result("bash", { command: "ls" }, "ok");
+    expect(JSON.parse(readFileSync(`${out}.post`, "utf8"))).toMatchObject({ hook_event_name: "PostToolUse", permission_mode: "plan", agent: "acme/flows/asdd" });
+  });
+
+  // R4-3: the mode is asked with the call's ID, so the branch behind it is read once per call (see `branchPerCall`).
+  test("the mode is asked with the tool call's ID, before and after the call", async () => {
+    const asked: string[] = [];
+    const { call, result } = load({ PreToolUse: group("true"), PostToolUse: group("true") }, { permissionMode: (id) => (asked.push(id), "auto") });
+    await call("bash", { command: "ls" }, "call-7");
+    await result("bash", { command: "ls" }, "ok", false, "call-7");
+    await call("bash", { command: "ls" }, "call-8");
+    expect(asked).toEqual(["call-7", "call-7", "call-8"]);
+  });
+
+  test("without a mode or agent the payload and environment are as before", async () => {
+    const env = join(dir, "env.txt");
+    await load({ PreToolUse: group(`printf '%s|%s' "\${MARCSH_APPROVAL_MODE-unset}" "\${MARCSH_AGENT-unset}" > ${env}`) }).call("bash", { command: "ls" });
+    // The test process itself may export them; the hook gets exactly what marcsh had.
+    expect(readFileSync(env, "utf8")).toBe(`${process.env.MARCSH_APPROVAL_MODE ?? "unset"}|${process.env.MARCSH_AGENT ?? "unset"}`);
+  });
+
+  test("a hook is marked as marcsh's own process (MARCSH_INFRA), so what it leaves running is no leftover of the agent's tools (M6)", async () => {
+    const env = join(dir, "infra.txt");
+    await load({ PreToolUse: group(`printf '%s' "\${MARCSH_INFRA-unset}" > ${env}`) }).call("bash", { command: "ls" });
+    expect(readFileSync(env, "utf8")).toBe("1");
   });
 
   test("a Bash matcher runs on bg_start too, which the hook is told is Bash with its command (A9)", async () => {
