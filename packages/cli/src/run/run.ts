@@ -15,6 +15,10 @@ import { primeWithTranscript } from "../hooks/transcript-primer";
 import { priorCumulativeCost } from "../hooks/use-chat";
 import { getStorage, type Storage, type StoredSession } from "../lib/storage";
 import { latestSessionForCwd } from "../startup/launch";
+import { COMMAND_NAMES } from "../components/command-menu/commands";
+import { engineCommandNames } from "../components/command-menu/use-command-menu";
+import { userCommandTurn } from "../lib/user-commands";
+import { composeRequest, missingRequired, prefillFromArguments, readFacts } from "../lib/command-questions";
 
 /** What `marcsh run` was asked: the parsed arguments plus the standard input (when it was not a terminal) and the folder. */
 export type RunOptions = Omit<RunArgs, "kind"> & { stdin?: string; cwd?: string };
@@ -73,6 +77,32 @@ async function pickModel(engineId: string, flag: string | undefined, agent: Agen
   }
 }
 
+/**
+ * `prompt` when it is one of the user's commands (`/name args`), expanded as the interface expands it: its prompt, its agent and its model.
+ * A command with questions takes the typed text (as the first answer, like the interface's prefill) and the defaults as its answers,
+ * because nobody is there to answer the rest. Null when the prompt is not a command, so it is sent as typed.
+ */
+function commandTurn(
+  prompt: string,
+  { cwd, engine, agents, selected }: { cwd: string; engine: string; agents: readonly Agent[]; selected: Agent },
+): { error: string } | { text: string; agent?: Agent; model?: string; said: string } | null {
+  const turn = userCommandTurn(prompt, { cwd, engine, agents, selected, builtinNames: COMMAND_NAMES, engineNames: engineCommandNames(engine) });
+  if (!turn) return null;
+  if (turn.error !== undefined) return { error: turn.error };
+  let text = turn.text;
+  if (turn.form) {
+    const facts = readFacts(cwd);
+    const answers = prefillFromArguments(turn.form.questions, turn.form.args);
+    const missing = missingRequired(turn.form.questions, answers, facts);
+    if (missing.length > 0) {
+      const labels = missing.map((question) => `“${question.label}”`).join(", ");
+      return { error: `/${turn.form.name} needs an answer to ${labels}, which a headless run cannot ask; type the first answer after the command, or run it in the interface` };
+    }
+    text = composeRequest(turn.form, answers, facts, turn.form.args);
+  }
+  return { text, agent: turn.agent, model: turn.model, said: [turn.warning, turn.notice].filter(Boolean).join(" ") };
+}
+
 /** The final text of the last reply: what it says after its last tool or task, thinking left out. */
 export function finalText(messages: readonly ChatMessage[]): string {
   const reply = messages.findLast((message) => message.role === "assistant");
@@ -102,11 +132,16 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   const prompt = joinMessage(options.message, options.stdin);
   if (!prompt) return usage("no message: pass it as arguments or on standard input");
 
-  const agent = pickAgent(loadAgents(), options.agent);
-  if (!agent) return usage(`no agent "${options.agent}"`);
+  const agents = loadAgents();
+  const picked = pickAgent(agents, options.agent);
+  if (!picked) return usage(`no agent "${options.agent}"`);
+  let agent = picked;
 
   let storage: RunDeps["storage"];
   let session: StoredSession;
+  // What a typed command expands to (else the prompt as typed), and the model it names.
+  let expanded = prompt;
+  let commandModel: string | undefined;
   try {
     storage = deps.storage ?? getStorage();
     let found: StoredSession | null = null;
@@ -117,8 +152,18 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
       const latest = latestSessionForCwd(storage.listSessions(), cwd);
       found = latest ? storage.getSession(latest.id) : null;
     }
+    // A typed command is expanded before anything is created: one that cannot run sends nothing and leaves no session behind.
+    const engineId = found?.engine ?? options.engine ?? getDefaultEngine();
+    const command = commandTurn(prompt, { cwd: found?.cwd ?? cwd, engine: engineId, agents, selected: agent });
+    if (command && "error" in command) return usage(command.error);
+    if (command) {
+      if (command.said) note(command.said);
+      expanded = command.text;
+      if (command.agent) agent = command.agent;
+      commandModel = command.model;
+    }
     // A new session is created as the new-session screen creates it.
-    session = found ?? storage.createSession({ title: prompt.slice(0, 100), cwd, engine: options.engine ?? getDefaultEngine() });
+    session = found ?? storage.createSession({ title: prompt.slice(0, 100), cwd, engine: engineId });
     if (found && options.engine && options.engine !== found.engine) {
       note(`the session uses the ${found.engine} engine, so --engine ${options.engine} is ignored`);
     }
@@ -128,7 +173,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   }
 
   const engine = getEngine(session.engine) ?? unknownEngine(session.engine);
-  const model = await pickModel(session.engine, options.model, agent);
+  const model = await pickModel(session.engine, options.model ?? commandModel, agent);
   const json = options.format === "json";
   const writeJson = (value: Record<string, unknown>) => io.stdout(`${JSON.stringify(value)}\n`);
 
@@ -138,12 +183,12 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   const replyIds: string[] = [replyId];
   let messages: ChatMessage[] = [
     ...session.messages,
-    { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: prompt }], metadata },
+    { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: expanded }], metadata },
     { id: replyId, role: "assistant", parts: [], metadata },
   ];
   let resumeRef = session.engineSessionRef ?? undefined;
   // A session with messages but no engine conversation (a fork) starts one primed with what was said; what is saved is what was typed.
-  const enginePrompt = !resumeRef && session.messages.length > 0 ? primeWithTranscript(prompt, session, session.messages) : prompt;
+  const enginePrompt = !resumeRef && session.messages.length > 0 ? primeWithTranscript(expanded, session, session.messages) : expanded;
   // A resumed Claude conversation reports its running total: the turn subtracts what the session had cost already.
   const priorCostUsd = resumeRef ? priorCumulativeCost(session.messages) : undefined;
   const errors: string[] = [];
