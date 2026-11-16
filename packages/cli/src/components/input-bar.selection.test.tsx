@@ -343,3 +343,170 @@ describe("selections over wide characters", () => {
     expect(await send()).toBe(`日本語${LINES} c`);
   });
 });
+
+// A placeholder is one piece: the cursor stops at its ends only. OpenTUI 0.9 moved Left from just after one to a cell before it.
+describe("moving over a paste placeholder", () => {
+  // `ab[Pasted ~5 lines: one] cd`, the cursor at the end: Left 3 times puts it just after the placeholder, 4 times just before it.
+  async function withPlaceholder(before = "ab") {
+    await open();
+    await type(before);
+    await paste(LINES);
+    await type("cd");
+    expect(frame()).toContain(`${before}[Pasted ~5 lines: one] cd`);
+  }
+
+  test("Left from just after it lands just before it", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 4);
+
+    await type("X");
+
+    expect(await send()).toBe(`abX${LINES} cd`);
+  });
+
+  test("Left past it moves one character on", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 5);
+
+    await type("X");
+
+    expect(await send()).toBe(`aXb${LINES} cd`);
+  });
+
+  test("Left up to it stops just after it", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 3);
+
+    await type("X");
+
+    expect(await send()).toBe(`ab${LINES}X cd`);
+  });
+
+  test("Right from just before it lands just after it", async () => {
+    await withPlaceholder();
+    await key("HOME");
+    await key("ARROW_RIGHT", {}, 3);
+
+    await type("X");
+
+    expect(await send()).toBe(`ab${LINES}X cd`);
+  });
+
+  test("Shift+Left from just after it selects just it", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 3);
+    await key("ARROW_LEFT", shift);
+
+    await type("Q");
+
+    expect(await send()).toBe("abQ cd");
+  });
+
+  test("Shift+Left across it selects it and what was moved over", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 1);
+    await key("ARROW_LEFT", shift, 4);
+
+    await type("Q");
+
+    expect(await send()).toBe("aQd");
+  });
+
+  test("Shift+Right from just before it selects just it", async () => {
+    await withPlaceholder();
+    await key("HOME");
+    await key("ARROW_RIGHT", {}, 2);
+    await key("ARROW_RIGHT", shift);
+
+    await type("Q");
+
+    expect(await send()).toBe("abQ cd");
+  });
+
+  test("Backspace just after it deletes just it", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 3);
+
+    await key("BACKSPACE");
+
+    expect(await send()).toBe("ab cd");
+  });
+
+  test("Delete just before it deletes just it", async () => {
+    await withPlaceholder();
+    await key("HOME");
+    await key("ARROW_RIGHT", {}, 2);
+
+    await key("DELETE");
+
+    expect(await send()).toBe("ab cd");
+  });
+
+  test("Alt+Left from the word after it lands just before it", async () => {
+    await withPlaceholder();
+    await key("ARROW_LEFT", {}, 2);
+
+    await key("ARROW_LEFT", { meta: true });
+    await type("X");
+
+    expect(await send()).toBe(`abX${LINES} cd`);
+  });
+
+  test("Alt+Right from just before it lands just after it", async () => {
+    await withPlaceholder();
+    await key("HOME");
+    await key("ARROW_RIGHT", {}, 2);
+
+    await key("ARROW_RIGHT", { meta: true });
+    await type("X");
+
+    expect(await send()).toBe(`ab${LINES}X cd`);
+  });
+
+  test("Left over it after CJK characters", async () => {
+    await withPlaceholder("日本");
+    await key("ARROW_LEFT", {}, 4);
+
+    await type("X");
+
+    expect(await send()).toBe(`日本X${LINES} cd`);
+  });
+
+  test("Shift+Left over it after CJK characters selects just it", async () => {
+    await withPlaceholder("日本");
+    await key("ARROW_LEFT", {}, 3);
+    await key("ARROW_LEFT", shift);
+
+    await type("Q");
+
+    expect(await send()).toBe("日本Q cd");
+  });
+
+  test("Up from the line below does not land inside it", async () => {
+    await withPlaceholder();
+    await key("RETURN", shift);
+    await type("xxxxxxxxxx");
+
+    await key("ARROW_UP");
+    await type("Q");
+
+    expect([`abQ${LINES} cd\nxxxxxxxxxx`, `ab${LINES}Q cd\nxxxxxxxxxx`]).toContain((await send())!);
+  });
+
+  test("Down from the line above does not land inside it", async () => {
+    await open();
+    await type("xxxxxxxxxx");
+    await key("RETURN", shift);
+    await type("ab");
+    await paste(LINES);
+    await key("ARROW_UP");
+    await key("HOME");
+    await key("ARROW_RIGHT", {}, 10);
+
+    await key("ARROW_DOWN");
+    await type("Q");
+
+    // What is sent is trimmed: the placeholder's trailing space goes.
+    expect([`xxxxxxxxxx\nabQ${LINES}`, `xxxxxxxxxx\nab${LINES}Q`]).toContain((await send())!);
+  });
+});

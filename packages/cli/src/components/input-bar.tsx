@@ -342,19 +342,117 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
 // too many (Shift+Left did on 0.1.97 already), and typing or pasting over it deleted that one too. marcsh selects instead: each select
 // action makes its plain move, and the selection runs from where it started to the cursor, both in cells.
 const SELECT_MOVES: Record<string, (textarea: TextareaRenderable) => unknown> = {
-  "select-left": (textarea) => textarea.moveCursorLeft(),
-  "select-right": (textarea) => textarea.moveCursorRight(),
-  "select-up": (textarea) => textarea.moveCursorUp(),
-  "select-down": (textarea) => textarea.moveCursorDown(),
+  "select-left": (textarea) => moveLeft(textarea),
+  "select-right": (textarea) => moveRight(textarea),
+  "select-up": (textarea) => moveVertically(textarea, "up"),
+  "select-down": (textarea) => moveVertically(textarea, "down"),
   "select-line-home": (textarea) => textarea.gotoLineHome(),
   "select-line-end": (textarea) => textarea.gotoLineEnd(),
   "select-visual-line-home": (textarea) => textarea.gotoVisualLineHome(),
   "select-visual-line-end": (textarea) => textarea.gotoVisualLineEnd(),
   "select-buffer-home": (textarea) => textarea.gotoBufferHome(),
   "select-buffer-end": (textarea) => textarea.gotoBufferEnd(),
-  "select-word-forward": (textarea) => textarea.moveWordForward(),
-  "select-word-backward": (textarea) => textarea.moveWordBackward(),
+  "select-word-forward": (textarea) => moveWordForward(textarea),
+  "select-word-backward": (textarea) => moveWordBackward(textarea),
   "select-all": (textarea) => textarea.gotoBufferEnd(),
+};
+
+// OpenTUI 0.9 moves the cursor one stop too far around a placeholder (a virtual extmark, see insertPlaceholder): Left from just after
+// one lands before the character before it, Right from the character before it lands after it, Up or Down into it lands before the
+// character before it, and Alt+Right from just before it goes to the end. marcsh moves around placeholders itself, in cells: the
+// cursor stops at a placeholder's ends only, and steps over it as one character (and one word).
+
+/** Left: from just after a placeholder to just before it, else one character, stopping just after a placeholder. */
+function moveLeft(textarea: TextareaRenderable) {
+  const before = textarea.cursorOffset;
+  const ranges = pastedRanges(textarea);
+  const range = ranges.find((range) => range.end === before);
+  if (range) {
+    textarea.cursorOffset = range.start;
+    return;
+  }
+  textarea.moveCursorLeft();
+  const after = textarea.cursorOffset;
+  const reached = ranges.find((range) => after < range.end && range.end < before);
+  if (reached) textarea.cursorOffset = reached.end;
+}
+
+/** Right: from just before a placeholder to just after it, else one character, stopping just before a placeholder. */
+function moveRight(textarea: TextareaRenderable) {
+  const before = textarea.cursorOffset;
+  const ranges = pastedRanges(textarea);
+  const range = ranges.find((range) => range.start === before);
+  if (range) {
+    textarea.cursorOffset = range.end;
+    return;
+  }
+  textarea.moveCursorRight();
+  const after = textarea.cursorOffset;
+  const reached = ranges.find((range) => before < range.start && range.start < after);
+  if (reached) textarea.cursorOffset = reached.start;
+}
+
+const blank = (textarea: TextareaRenderable, start: number, end: number) => start >= end || textarea.getTextRange(start, end).trim() === "";
+
+/** Alt+Left: a placeholder is a word, so the move stops just before it when it would go into or past it. */
+function moveWordBackward(textarea: TextareaRenderable) {
+  const before = textarea.cursorOffset;
+  textarea.moveWordBackward();
+  const after = textarea.cursorOffset;
+  // The nearest placeholder the move reached or went into.
+  const range = pastedRanges(textarea)
+    .filter((range) => range.end <= before && after <= range.end && range.start < before)
+    .sort((a, b) => b.end - a.end)[0];
+  if (!range) return;
+  // With only blanks between, the placeholder is the word before; else the move ends at the word after it.
+  if (blank(textarea, range.end, before)) textarea.cursorOffset = range.start;
+  else if (after < range.end) textarea.cursorOffset = range.end;
+}
+
+/** Alt+Right: a placeholder is a word, so the move stops just after it when it starts before it, else just before it. */
+function moveWordForward(textarea: TextareaRenderable) {
+  const before = textarea.cursorOffset;
+  textarea.moveWordForward();
+  const after = textarea.cursorOffset;
+  const range = pastedRanges(textarea)
+    .filter((range) => before <= range.start && range.start < after)
+    .sort((a, b) => a.start - b.start)[0];
+  if (!range) return;
+  textarea.cursorOffset = blank(textarea, before, range.start) ? range.end : range.start;
+}
+
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Up and Down: a move that would end inside a placeholder ends at its nearer end. */
+function moveVertically(textarea: TextareaRenderable, direction: "up" | "down") {
+  const column = textarea.visualCursor.visualCol;
+  if (direction === "up") textarea.moveCursorUp();
+  else textarea.moveCursorDown();
+  const after = textarea.cursorOffset;
+  const landed = textarea.visualCursor.visualCol;
+  for (const range of pastedRanges(textarea)) {
+    if (range.start < after && after < range.end) {
+      textarea.cursorOffset = after - range.start < range.end - after ? range.start : range.end;
+      return;
+    }
+    // OpenTUI puts the cursor before the character before the placeholder instead, short of the column it was in.
+    const previous = after < range.start ? textarea.getTextRange(after, range.start) : "";
+    if (landed >= column || previous === "" || previous.includes("\n") || [...GRAPHEMES.segment(previous)].length !== 1) continue;
+    const into = column - (landed + range.start - after);
+    if (into >= range.end - range.start) continue;
+    textarea.cursorOffset = into < range.end - range.start - into ? range.start : range.end;
+    return;
+  }
+}
+
+/** The textarea's own moves marcsh makes itself around placeholders, when nothing is selected (Backspace and Delete are exact already). */
+const PLACEHOLDER_ACTIONS: Record<string, (textarea: TextareaRenderable) => unknown> = {
+  "move-left": moveLeft,
+  "move-right": moveRight,
+  "move-up": (textarea) => moveVertically(textarea, "up"),
+  "move-down": (textarea) => moveVertically(textarea, "down"),
+  "word-backward": moveWordBackward,
+  "word-forward": moveWordForward,
 };
 
 // The textarea's own bindings (marcsh's over its defaults), keyed the way it matches a key, to know which keys it selects with.
@@ -365,6 +463,13 @@ const TEXTAREA_ACTIONS = new Map<string, string>([...defaultTextareaKeyBindings,
 function selectAction(key: KeyEvent): string | undefined {
   const action = TEXTAREA_ACTIONS.get(bindingKey(key));
   return action !== undefined && action in SELECT_MOVES ? action : undefined;
+}
+
+/** The placeholder action (see PLACEHOLDER_ACTIONS) `key` makes, when the input holds a placeholder and nothing is selected. */
+function placeholderAction(key: KeyEvent, textarea: TextareaRenderable): string | undefined {
+  const action = TEXTAREA_ACTIONS.get(bindingKey(key));
+  if (action === undefined || !(action in PLACEHOLDER_ACTIONS) || textarea.hasSelection()) return undefined;
+  return pastedRanges(textarea).length > 0 ? action : undefined;
 }
 
 /** The selection marcsh made last: its anchor (where it started), and its range, to tell it from one made since (the mouse's). */
@@ -1214,6 +1319,12 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   useKeyboard((key) => {
     const textarea = textareaRef.current;
     if (key.defaultPrevented || !textarea?.focused) return;
+    const move = placeholderAction(key, textarea);
+    if (move) {
+      key.preventDefault();
+      PLACEHOLDER_ACTIONS[move]!(textarea);
+      return;
+    }
     const action = selectAction(key);
     if (!action) return;
     key.preventDefault();
