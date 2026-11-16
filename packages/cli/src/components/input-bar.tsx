@@ -3,9 +3,9 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 import { createContext, useContext, useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
-import { decodePasteBytes, TextAttributes } from "@opentui/core";
+import { decodePasteBytes, defaultTextareaKeyBindings, TextAttributes } from "@opentui/core";
 
-import type { PasteEvent, TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
+import type { KeyEvent, PasteEvent, TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { KeyBinding } from "@opentui/core";
 import { useNavigate } from "react-router";
@@ -337,6 +337,58 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", shift: true, action: "newline" },
   { name: "enter", shift: true, action: "newline" },
 ];
+
+// OpenTUI 0.9 builds a keyboard selection from a mouse cell selection with both ends inclusive, so Shift+Right took one character
+// too many (Shift+Left did on 0.1.97 already), and typing or pasting over it deleted that one too. marcsh selects instead: each select
+// action makes its plain move, and the selection runs from where it started to the cursor, both in cells.
+const SELECT_MOVES: Record<string, (textarea: TextareaRenderable) => unknown> = {
+  "select-left": (textarea) => textarea.moveCursorLeft(),
+  "select-right": (textarea) => textarea.moveCursorRight(),
+  "select-up": (textarea) => textarea.moveCursorUp(),
+  "select-down": (textarea) => textarea.moveCursorDown(),
+  "select-line-home": (textarea) => textarea.gotoLineHome(),
+  "select-line-end": (textarea) => textarea.gotoLineEnd(),
+  "select-visual-line-home": (textarea) => textarea.gotoVisualLineHome(),
+  "select-visual-line-end": (textarea) => textarea.gotoVisualLineEnd(),
+  "select-buffer-home": (textarea) => textarea.gotoBufferHome(),
+  "select-buffer-end": (textarea) => textarea.gotoBufferEnd(),
+  "select-word-forward": (textarea) => textarea.moveWordForward(),
+  "select-word-backward": (textarea) => textarea.moveWordBackward(),
+  "select-all": (textarea) => textarea.gotoBufferEnd(),
+};
+
+// The textarea's own bindings (marcsh's over its defaults), keyed the way it matches a key, to know which keys it selects with.
+const bindingKey = (key: { name: string; ctrl?: boolean; shift?: boolean; meta?: boolean; super?: boolean }) =>
+  `${key.name}:${key.ctrl ? 1 : 0}:${key.shift ? 1 : 0}:${key.meta ? 1 : 0}:${key.super ? 1 : 0}`;
+const TEXTAREA_ACTIONS = new Map<string, string>([...defaultTextareaKeyBindings, ...TEXTAREA_KEY_BINDINGS].map((binding) => [bindingKey(binding), binding.action]));
+
+function selectAction(key: KeyEvent): string | undefined {
+  const action = TEXTAREA_ACTIONS.get(bindingKey(key));
+  return action !== undefined && action in SELECT_MOVES ? action : undefined;
+}
+
+/** The selection marcsh made last: its anchor (where it started), and its range, to tell it from one made since (the mouse's). */
+type KeyboardSelection = { anchor: number; start: number; end: number };
+
+/** Runs a select action (see SELECT_MOVES) and returns the selection it leaves, if any. */
+function extendSelection(textarea: TextareaRenderable, action: string, last: KeyboardSelection | null): KeyboardSelection | null {
+  const selection = textarea.hasSelection() ? textarea.getSelection() : null;
+  let anchor = textarea.cursorOffset;
+  if (action === "select-all") anchor = 0;
+  else if (selection && last && last.start === selection.start && last.end === selection.end) anchor = last.anchor;
+  // A selection made otherwise (the mouse) grows from its end away from the cursor.
+  else if (selection) anchor = textarea.cursorOffset === selection.start ? selection.end : selection.start;
+  // With no selection the plain move moves the cursor (with one, it would only end the selection).
+  textarea.clearSelection();
+  if (action === "select-all") textarea.gotoBufferHome();
+  SELECT_MOVES[action]!(textarea);
+  const cursor = textarea.cursorOffset;
+  if (cursor === anchor) return null;
+  const start = Math.min(anchor, cursor);
+  const end = Math.max(anchor, cursor);
+  textarea.setSelection(start, end);
+  return { anchor, start, end };
+}
 
 /** How long one paste may take (reading the clipboard, looking up pasted paths, saving an image) before it is dropped. */
 const PASTE_TIMEOUT_MS = 5000;
@@ -1155,6 +1207,17 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         return nextIndex;
       });
     }
+  });
+
+  // Last, so that a keybind or a menu that took the key keeps it.
+  const keyboardSelectionRef = useRef<KeyboardSelection | null>(null);
+  useKeyboard((key) => {
+    const textarea = textareaRef.current;
+    if (key.defaultPrevented || !textarea?.focused) return;
+    const action = selectAction(key);
+    if (!action) return;
+    key.preventDefault();
+    keyboardSelectionRef.current = extendSelection(textarea, action, keyboardSelectionRef.current);
   });
 
   return (
