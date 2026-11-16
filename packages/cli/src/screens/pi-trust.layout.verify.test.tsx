@@ -67,7 +67,7 @@ test("S18: at 80x24 the title, folder, item count and key hints are all on scree
   await openPrompt(80, 24);
 
   const text = flat();
-  expect(text).toContain("Trust this project's pi files?");
+  expect(text).toContain("Trust this project's files?");
   expect(text).toContain("items pi would load or run");
   expect(text).toContain("d don't trust");
   expect(text).toContain("server evil: sh -c echo");
@@ -86,7 +86,7 @@ for (const [label, name] of [
     await openPrompt(80, 40);
 
     const text = flat();
-    expect(text).toContain("Trust this project's pi files?");
+    expect(text).toContain("Trust this project's files?");
     expect(text.includes("zz-evil.ts") || text.includes("PgUp/PgDn scroll")).toBe(true);
   }, 30000);
 }

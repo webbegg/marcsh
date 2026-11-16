@@ -31,8 +31,9 @@ function reachedEnd({ top, total, viewport }: View, entries: number): boolean {
 }
 
 
-const TITLE = "Trust this project's pi files?";
-const CHANGED_TITLE = "This project's pi files changed since you trusted them. Trust them again?";
+// The project's pi files and its own commands (.marcsh/commands) are reviewed and trusted together.
+const TITLE = "Trust this project's files?";
+const CHANGED_TITLE = "This project's files changed since you trusted them. Trust them again?";
 const NO_RECORD_NOTICE = "No record of your earlier review: marcsh cannot tell which files changed.";
 
 type Props = {

@@ -25,7 +25,7 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 
 const marker = () => join(cwd, "marker-written.txt");
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
+const TITLE = "Trust this project's files?";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-trust-"));

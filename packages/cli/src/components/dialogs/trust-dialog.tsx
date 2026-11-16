@@ -107,7 +107,7 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
   const offerTrust = useCallback(() => {
     const { resources, record } = reviewProject(cwd);
     if (unreadableResources(resources).length > 0) {
-      toast.show({ variant: "error", message: "marcsh could not read some of this project's pi files, so it cannot show what trusting would run" });
+      toast.show({ variant: "error", message: "marcsh could not read some of this project's files, so it cannot show what trusting would run" });
       dialog.close();
       return;
     }

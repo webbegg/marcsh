@@ -27,8 +27,8 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const marker = () => join(cwd, "marker-written.txt");
 const extension = (name: string) => join(cwd, ".pi", "extensions", name);
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
-const CHANGED = "This project's pi files changed since you trusted them";
+const TITLE = "Trust this project's files?";
+const CHANGED = "This project's files changed since you trusted them";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-review-"));

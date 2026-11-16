@@ -169,7 +169,7 @@ A trust holds only while the project is as you reviewed it. If a pi file or a pr
 
 ### The first time
 
-On the first pi turn in a project that has pi files or project commands, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's pi files?`
+On the first pi turn in a project that has pi files or project commands, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's files?`
 
 It lists everything pi would load or run, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come last, each as `.marcsh/commands/<name>.md — project command /<name>`.
 
@@ -185,7 +185,7 @@ If marcsh cannot read one of the entries, it cannot show you what trusting would
 
 ### When the files change
 
-Trust is tied to what you reviewed. If a pi file or a project command is added, changed or removed afterwards, the next pi turn asks again with the title `This project's pi files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`. Until you answer, the project's commands are not used and the status line shows no changed-file count. On Claude nothing asks at turn time: run `/trust` to review the project again.
+Trust is tied to what you reviewed. If a pi file or a project command is added, changed or removed afterwards, the next pi turn asks again with the title `This project's files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`. Until you answer, the project's commands are not used and the status line shows no changed-file count. On Claude nothing asks at turn time: run `/trust` to review the project again.
 
 ### Change a decision: /trust
 

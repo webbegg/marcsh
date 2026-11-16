@@ -25,7 +25,7 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 
 const marker = () => join(cwd, "marker-written.txt");
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
+const TITLE = "Trust this project's files?";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-trust-"));
@@ -173,7 +173,7 @@ describe("a project file marcsh cannot read is never trusted (verify)", () => {
     pad();
     await type("commands and");
     await press("RETURN");
-    const shown = await frameContaining("could not read some of this project's pi files");
+    const shown = await frameContaining("could not read some of this project's files");
     expect(shown).toContain("cannot show what trusting would run");
     expect(shown).not.toContain(TITLE);
     expect(getStorage().getProjectTrust(cwd)).toBeNull();
