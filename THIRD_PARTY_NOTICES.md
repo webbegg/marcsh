@@ -50,6 +50,11 @@ Upstream: https://github.com/anomalyco/opencode
 Ported or adapted in marcsh (paths under `packages/cli/src/`):
 
 - `components/spinner.tsx`: the spinner renderable follows opencode's TUI spinner
+- `lib/clipboard.ts`: the clipboard reads and writes over OpenTUI follow `packages/tui/src/clipboard.ts`
+- `lib/clipboard.test.ts`: the clipboard service cases follow `packages/tui/test/clipboard.test.ts`
+- `providers/clipboard/index.tsx`: follows `packages/tui/src/context/clipboard.tsx`
+- `components/input-bar.tsx`: the paste queue and the large-paste placeholders follow `enqueuePaste`, the `prompt.paste` command, `onPaste`, `pasteInputText`, `pasteText`, `expandPastedText` and the extmark sync in `packages/tui/src/component/prompt/index.tsx`
+- `lib/paste.ts`: follows `pasteInputText` and `expandTrackedPastedText` in `packages/tui/src/prompt/part.ts`
 
 ```text
 MIT License

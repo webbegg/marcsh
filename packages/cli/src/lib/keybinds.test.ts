@@ -86,6 +86,10 @@ describe("the defaults", () => {
     expect(hints[0]!.length).toBeGreaterThan(hints.at(-1)!.length);
     expect(hints.at(-1)).toContain("ctrl+x");
   });
+  test("ctrl+v pastes from the clipboard", () => {
+    expect(resolveKey(kb, key("v", { ctrl: true }), false)).toEqual({ action: "paste" });
+    expect(resolveKey(kb, key("v"), true)).toBeUndefined();
+  });
   test("a binding reads back as the keys to press", () => {
     expect(formatBinding({ leader: true, chord: { key: "n", ctrl: false, alt: false, shift: false } }, kb.leader)).toBe("ctrl+x n");
     expect(formatBinding({ leader: false, chord: { key: "p", ctrl: true, alt: false, shift: false } }, kb.leader)).toBe("ctrl+p");
@@ -113,6 +117,21 @@ describe("parseKeybinds", () => {
     expect(resolveKey(keybinds, key("m", { meta: true }), false)).toEqual({ action: "command", name: "models" });
     expect(resolveKey(keybinds, key("m"), true)).toBeUndefined();
     expect(resolveKey(keybinds, key("n"), true)).toEqual({ action: "command", name: "new" });
+  });
+
+  test("paste can be moved to another key, or unbound", () => {
+    const moved = parseKeybinds(JSON.stringify({ paste: ["alt+v", "<leader>v"] }), COMMANDS);
+    expect(moved.warnings).toEqual([]);
+    expect(resolveKey(moved.keybinds, key("v", { meta: true }), false)).toEqual({ action: "paste" });
+    expect(resolveKey(moved.keybinds, key("v"), true)).toEqual({ action: "paste" });
+    expect(resolveKey(moved.keybinds, key("v", { ctrl: true }), false)).toBeUndefined();
+    expect(resolveKey(parseKeybinds(JSON.stringify({ paste: [] }), COMMANDS).keybinds, key("v", { ctrl: true }), false)).toBeUndefined();
+  });
+
+  test("a command given ctrl+v takes it from paste", () => {
+    const { keybinds, warnings } = parseKeybinds(JSON.stringify({ models: ["ctrl+v"] }), COMMANDS);
+    expect(warnings).toEqual([]);
+    expect(resolveKey(keybinds, key("v", { ctrl: true }), false)).toEqual({ action: "command", name: "models" });
   });
 
   test("an empty list unbinds the action", () => {

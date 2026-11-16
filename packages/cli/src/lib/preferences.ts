@@ -10,6 +10,10 @@ export type NotifyMode = "bell" | "system" | "off";
 const NOTIFY_MODES: readonly NotifyMode[] = ["bell", "system", "off"];
 export const DEFAULT_NOTIFY_MODE: NotifyMode = "bell";
 
+/** What a large paste shows as in the input: a `[Pasted ~N lines]` placeholder, or the text itself. */
+export type PasteMode = "compact" | "full";
+export const DEFAULT_PASTE_MODE: PasteMode = "compact";
+
 /** Model lists are kept per engine: Claude aliases and pi "provider/id" refs never mix. */
 export type ModelLists = Partial<Record<EngineId, string[]>>;
 
@@ -29,6 +33,8 @@ export type Preferences = {
   recentModels?: ModelLists;
   /** What happens when a turn finishes; see {@link NotifyMode}. */
   notify?: NotifyMode;
+  /** How a large paste shows in the input; see {@link PasteMode}. */
+  paste?: PasteMode;
 };
 
 export function preferencesPath() {
@@ -136,4 +142,9 @@ export function recordRecentModel(engine: EngineId, model: string, path = prefer
 export function getNotifyMode(path = preferencesPath()): NotifyMode {
   const { notify } = readPreferences(path);
   return NOTIFY_MODES.find((mode) => mode === notify) ?? DEFAULT_NOTIFY_MODE;
+}
+
+/** How a large paste shows in the input; a placeholder unless the preference is `full`. */
+export function getPasteMode(path = preferencesPath()): PasteMode {
+  return readPreferences(path).paste === "full" ? "full" : DEFAULT_PASTE_MODE;
 }

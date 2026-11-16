@@ -124,6 +124,8 @@ export function parsePastedPaths(text: string): string[] | null {
 const codeOf = (error: unknown) => (error as { code?: string } | null)?.code ?? (error instanceof Error ? error.message : String(error));
 const unreadable = (path: string, error: unknown) => `Could not read ${basename(path)}: ${codeOf(error)}.`;
 const tooBig = (path: string) => `${basename(path)} is larger than 20 MB`;
+/** Why an image or PDF over the limit was left out. */
+export const tooBigToAttach = (path: string) => `${tooBig(path)}, so it was not attached.`;
 
 export type PasteResolution = { attachments: Attachment[]; problems: string[] };
 
@@ -152,7 +154,7 @@ export async function resolvePastedAttachments(text: string, cwd: string, fs: At
     if (!info.isFile) return null;
     const kind = classify(path);
     if (kind.kind !== "file" && info.size > MAX_ATTACHMENT_BYTES) {
-      problems.push(`${tooBig(path)}, so it was not attached.`);
+      problems.push(tooBigToAttach(path));
       continue;
     }
     attachments.push({ path, ...kind });

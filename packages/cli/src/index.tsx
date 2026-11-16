@@ -66,6 +66,8 @@ const { Session } = await import("./screens/session");
 const { warmUpEngineCommands } = await import("./lib/engine");
 const { getDefaultEngine } = await import("./lib/preferences");
 const { installQuitSignals } = await import("./lib/quit");
+const { createAppClipboard } = await import("./lib/clipboard");
+const { ClipboardProvider } = await import("./providers/clipboard");
 
 const router = createMemoryRouter(
   [
@@ -82,14 +84,22 @@ const router = createMemoryRouter(
   { initialEntries: launch.initialEntries, initialIndex: launch.initialIndex },
 );
 
-function App() {
-  return <RouterProvider router={router} />
-}
-
 const renderer = await createCliRenderer({
   targetFps: 60,
   exitOnCtrlC: false,
 });
+// One native clipboard per process (OpenTUI allows no more): made with the renderer, let go when the renderer goes.
+const clipboard = createAppClipboard(renderer);
+renderer.on("destroy", () => void clipboard.dispose().catch(() => {}));
+
+function App() {
+  return (
+    <ClipboardProvider value={clipboard}>
+      <RouterProvider router={router} />
+    </ClipboardProvider>
+  );
+}
+
 createRoot(renderer).render(<App />);
 
 // SIGINT, SIGTERM and SIGHUP (a closed terminal) quit the same way as Ctrl+C: running turns are stopped first (exit codes 130, 143, 129).

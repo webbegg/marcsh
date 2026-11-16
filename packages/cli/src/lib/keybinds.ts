@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
  *
  *   { "palette": ["ctrl+p"], "leader": ["ctrl+x"], "models": ["<leader>m", "alt+m"], "theme": [] }
  *
- * The actions are `palette`, `leader` and the name of a marcsh command (`new`, `models`, …). A key is modifiers joined with `+`
+ * The actions are `palette`, `leader`, `paste` and the name of a marcsh command (`new`, `models`, …). A key is modifiers joined with `+`
  * (`ctrl`, `alt`, `shift`) and a key name (a letter, digit or punctuation mark, `f1`–`f12`, `space`), as in `ctrl+p`; `<leader>n`
  * is `n` pressed after the leader. A key pressed directly needs `ctrl` or `alt`, so typing is never taken. The keys given for an
  * action replace its defaults and `[]` unbinds it. This module is pure apart from reading the file in `loadKeybinds`.
@@ -23,6 +23,8 @@ export type Keybinds = {
   palette: Binding[];
   /** What starts a leader sequence: chords pressed directly. Empty turns the leader off. */
   leader: Chord[];
+  /** What pastes the clipboard into the prompt. */
+  paste: Binding[];
   /** The keys that run a marcsh command, by command name. */
   commands: Record<string, Binding[]>;
 };
@@ -30,9 +32,10 @@ export type Keybinds = {
 /** The part of a key event the bindings look at. */
 export type KeyLike = { name: string; sequence?: string; ctrl?: boolean; meta?: boolean; option?: boolean; shift?: boolean; super?: boolean; hyper?: boolean };
 
-export type KeyAction = { action: "palette" } | { action: "command"; name: string };
+export type KeyAction = { action: "palette" } | { action: "paste" } | { action: "command"; name: string };
 
 const DEFAULT_PALETTE = ["ctrl+p"];
+const DEFAULT_PASTE = ["ctrl+v"];
 const DEFAULT_LEADER = ["ctrl+x"];
 /** The leader's keys, in the order the status line lists them. */
 const DEFAULT_LEADER_KEYS: readonly (readonly [command: string, key: string])[] = [
@@ -109,6 +112,7 @@ export function matchesChord(chord: Chord, key: KeyLike): boolean {
 /** The action a key triggers: pressed on its own, or (`afterLeader`) after the leader key. */
 export function resolveKey(keybinds: Keybinds, key: KeyLike, afterLeader: boolean): KeyAction | undefined {
   if (keybinds.palette.some((binding) => binding.leader === afterLeader && matchesChord(binding.chord, key))) return { action: "palette" };
+  if (keybinds.paste.some((binding) => binding.leader === afterLeader && matchesChord(binding.chord, key))) return { action: "paste" };
   for (const [name, bindings] of Object.entries(keybinds.commands)) {
     if (bindings.some((binding) => binding.leader === afterLeader && matchesChord(binding.chord, key))) return { action: "command", name };
   }
@@ -151,13 +155,17 @@ function build(user: Map<string, Binding[]>, commands: readonly string[], warnin
   };
 
   for (const chord of leader) take("leader", { leader: false, chord }, true);
-  const keybinds: Keybinds = { palette: [], leader, commands: {} };
+  const keybinds: Keybinds = { palette: [], leader, paste: [], commands: {} };
   for (const binding of palette) if (take("palette", binding, true)) keybinds.palette.push(binding);
+  const pasteGiven = user.get("paste");
+  if (pasteGiven) keybinds.paste = pasteGiven.filter((binding) => take("paste", binding, true));
 
   for (const [name, bindings] of user) {
-    if (name === "palette" || name === "leader") continue;
+    if (name === "palette" || name === "leader" || name === "paste") continue;
     keybinds.commands[name] = bindings.filter((binding) => take(name, binding, true));
   }
+  // Paste's default is a default like a command's: a key the user gave another action wins.
+  if (!pasteGiven) keybinds.paste = DEFAULT_PASTE.map(mustParse).filter((binding) => take("paste", binding, false));
   for (const [name, key] of DEFAULT_LEADER_KEYS) {
     if (user.has(name) || !commands.includes(name)) continue;
     const binding = mustParse(`<leader>${key}`);
@@ -188,7 +196,7 @@ export function parseKeybinds(text: string, commands: readonly string[]): { keyb
   const warnings: string[] = [];
   const user = new Map<string, Binding[]>();
   for (const [action, value] of Object.entries(data)) {
-    if (action !== "palette" && action !== "leader" && !commands.includes(action)) {
+    if (action !== "palette" && action !== "leader" && action !== "paste" && !commands.includes(action)) {
       warnings.push(`Keybinds: unknown action ${quote(action)} ignored.`);
       continue;
     }

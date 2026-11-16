@@ -16,8 +16,23 @@ This page describes what you see in marcsh and what each part does: the two scre
 | `Shift+Enter` | Adds a new line. |
 | `/` | Opens the command menu. Keep typing to filter it. |
 | `@` | Opens the file picker. |
+| `Ctrl+V` | Pastes what the clipboard holds. See [Pasting](#pasting). |
 
 Type `/` at the start of the input to open the command menu. See [Commands](commands.md) for how it works and for the full list.
+
+## Pasting
+
+Paste with your terminal's paste key (`Cmd+V` on a Mac, `Ctrl+Shift+V` in most Linux terminals), or with `Ctrl+V`, which marcsh handles itself and reads the clipboard directly.
+
+- **Text** goes into the input where the cursor is. Colors and other escape sequences are removed, and Windows line ends become ordinary new lines.
+- **A large paste** (3 lines or more, or over 150 characters) shows as one placeholder, `[Pasted ~12 lines]`, so the input stays short. Your message is sent with the full text, and the history (`Up`) brings back the full text. `Left`, `Right` and `Backspace` treat the placeholder as one piece. Paste the same text again right after it to see the full text in its place. To always paste the full text, set `"paste": "full"` in your [preferences](configuration.md#preferences).
+- **A file path** (or a file dropped on the terminal, which pastes its path) attaches the file inside a session. See [Attaching files and images](commands.md#attaching-files-and-images).
+- **An image** (a screenshot, an image you copied) needs `Ctrl+V`: terminals paste only text. Some terminals send an empty paste for an image, and then `Cmd+V` works too. The image is attached to your next message as `[image: clipboard-1.png]`, numbered from 1 in each session. Images can be attached inside a session only; on the home screen a toast says so.
+- **Where images go.** marcsh saves each one as a PNG file in `~/.marcsh/attachments/<session ID>/` (set `MARCSH_ATTACHMENTS_DIR` to move it). The folder and the files are private to you. They are kept after the message is sent, so that the session can still show them; delete the folder to free the space.
+- An image over 20 MB is not attached, and a toast says so. marcsh reads at most 8 MB from the clipboard, so a larger image is refused with "Clipboard content is too large".
+- Pastes run one at a time. If you type, switch the session or the agent while marcsh is still reading the clipboard, that paste is dropped.
+
+`Ctrl+V` can be moved to another key with the `paste` action. See [Keybinds](keybinds.md). If the clipboard cannot be read, a toast says why. See [Troubleshooting](troubleshooting.md#ctrlv-says-clipboard-not-available-here).
 
 ## File mentions
 

@@ -3,9 +3,9 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 import { createContext, useContext, useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 
-import { decodePasteBytes, stripAnsiSequences, TextAttributes } from "@opentui/core";
+import { decodePasteBytes, TextAttributes } from "@opentui/core";
 
-import type { TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
+import type { PasteEvent, TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { KeyBinding } from "@opentui/core";
 import { useNavigate } from "react-router";
@@ -25,11 +25,15 @@ import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
+import { useClipboard } from "../providers/clipboard";
 import { Mode } from "../lib/modes";
 import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
-import { attachmentLabel, mentionFor, parsePastedPaths, resolvePastedAttachments } from "../lib/attachments";
+import { attachmentLabel, MAX_ATTACHMENT_BYTES, mentionFor, parsePastedPaths, resolvePastedAttachments, tooBigToAttach } from "../lib/attachments";
+import { saveClipboardImage } from "../lib/clipboard-images";
+import { collapsedLabel, expandPastedRanges, normalizePastedText } from "../lib/paste";
+import { getPasteMode } from "../lib/preferences";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
@@ -321,6 +325,50 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", shift: true, action: "newline" },
 ];
 
+// A large paste shows as a `[Pasted ~N lines]` placeholder: a virtual extmark over the label, carrying the text it stands for. The
+// textarea moves the cursor over it and deletes it as one piece, and moves it with edits, undo and redo.
+const PASTED_TYPE = "marcsh-pasted-text";
+
+type PastedRange = { start: number; end: number; text: string };
+
+/** The placeholders the input holds, in document cells. A mark whose label is gone (partly deleted, or brought back by undo over other text) is dropped. */
+function pastedRanges(textarea: TextareaRenderable): PastedRange[] {
+  const typeId = textarea.extmarks.getTypeId(PASTED_TYPE);
+  if (typeId === null) return [];
+  const ranges: PastedRange[] = [];
+  for (const mark of textarea.extmarks.getAllForTypeId(typeId)) {
+    const data = mark.data as { pasted?: unknown; label?: unknown } | undefined;
+    if (typeof data?.pasted !== "string" || typeof data.label !== "string" || textarea.getTextRange(mark.start, mark.end) !== data.label) {
+      textarea.extmarks.delete(mark.id);
+      continue;
+    }
+    ranges.push({ start: mark.start, end: mark.end, text: data.pasted });
+  }
+  return ranges;
+}
+
+/** The input's text with each placeholder replaced by its paste: what is sent, kept in the history and kept as a draft. */
+function fullText(textarea: TextareaRenderable): string {
+  const plain = textarea.plainText;
+  try {
+    const ranges = pastedRanges(textarea);
+    if (ranges.length === 0) return plain;
+    const index = (offset: number) => textarea.editBuffer.cellOffsetToStringIndex(offset);
+    return expandPastedRanges(plain, ranges.map((range) => ({ start: index(range.start), end: index(range.end), text: range.text })));
+  } catch {
+    return plain;
+  }
+}
+
+/** Puts `label` and a space at the cursor, the label marked as standing for `text`. Follows opencode's prompt `pasteText` (MIT; see THIRD_PARTY_NOTICES.md). */
+function insertPlaceholder(textarea: TextareaRenderable, text: string, label: string) {
+  const typeId = textarea.extmarks.getTypeId(PASTED_TYPE) ?? textarea.extmarks.registerType(PASTED_TYPE);
+  const start = textarea.cursorOffset;
+  textarea.insertText(`${label} `);
+  // The label is ASCII: one cell per character.
+  textarea.extmarks.create({ start, end: start + label.length, virtual: true, typeId, data: { pasted: text, label } });
+}
+
 type HistoryWalk = {
   /** The prompts sent before, oldest first, read when the walk starts. */
   entries: string[];
@@ -408,6 +456,103 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const canAttach = session !== null && !typeOnly;
   const pasteStateRef = useRef({ canAttach, disabled, isTopLayer, cwd });
   pasteStateRef.current = { canAttach, disabled, isTopLayer, cwd };
+  const clipboard = useClipboard();
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Pastes run one at a time, in order. Reading the clipboard or the file system takes a moment: a paste whose input changed meanwhile
+  // (other text, another session, another mode, the bar turned off) is dropped, through `changed`. What fails is said in a toast.
+  // Follows opencode's prompt `enqueuePaste` (MIT; see THIRD_PARTY_NOTICES.md).
+  const enqueuePaste = useCallback((run: (changed: () => boolean) => Promise<void>) => {
+    pasteQueueRef.current = pasteQueueRef.current
+      .then(async () => {
+        const textarea = textareaRef.current;
+        if (!mountedRef.current || !textarea || textarea.isDestroyed || pasteStateRef.current.disabled) return;
+        const before = { key: draftKeyRef.current, mode: modeRef.current, text: textarea.plainText };
+        await run(
+          () =>
+            !mountedRef.current ||
+            textareaRef.current !== textarea ||
+            textarea.isDestroyed ||
+            pasteStateRef.current.disabled ||
+            draftKeyRef.current !== before.key ||
+            modeRef.current !== before.mode ||
+            textarea.plainText !== before.text,
+        );
+      })
+      .catch((error: unknown) => {
+        if (mountedRef.current) toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+  }, [toast]);
+
+  // Pasted text, cleaned (see normalizePastedText). Terminals paste a dropped file as its path: a paste that is made of existing paths
+  // attaches them (only where a message can carry them). A large paste goes in as a placeholder, unless the `paste` preference is
+  // `full`; the same paste again right after it puts the full text in its place. Anything else goes in as it is.
+  // Follows opencode's prompt `pasteInputText` (MIT; see THIRD_PARTY_NOTICES.md).
+  const pasteInputText = useCallback(async (pasted: string, changed: () => boolean) => {
+    const textarea = textareaRef.current;
+    const state = pasteStateRef.current;
+    if (!textarea) return;
+    const text = normalizePastedText(pasted);
+    const content = text.trim();
+    if (state.canAttach && parsePastedPaths(content)) {
+      const found = await resolvePastedAttachments(content, state.cwd).catch(() => null);
+      if (changed()) return;
+      if (found) {
+        for (const problem of found.problems) toast.show({ variant: "error", message: problem });
+        const chips = found.attachments.filter((attachment) => attachment.kind !== "file");
+        const mentions = found.attachments.filter((attachment) => attachment.kind === "file").map((attachment) => `${mentionFor(attachment.path, state.cwd)} `);
+        if (chips.length > 0) setAttachments((current) => [...current, ...chips]);
+        if (mentions.length > 0) textarea.insertText(mentions.join(""));
+        return;
+      }
+    }
+    const label = getPasteMode() === "full" ? null : collapsedLabel(content);
+    if (label) {
+      const cursor = textarea.cursorOffset;
+      const same = pastedRanges(textarea).find((range) => (range.end === cursor || range.end + 1 === cursor) && range.text === content);
+      if (same) {
+        textarea.setSelection(same.start, same.end);
+        textarea.insertText(same.text);
+      } else {
+        insertPlaceholder(textarea, content, label);
+      }
+      return;
+    }
+    textarea.insertText(text);
+  }, [toast]);
+
+  // An image from the clipboard is saved as a PNG under the session (see saveClipboardImage) and attached like a pasted path.
+  const attachClipboardImage = useCallback(async (bytes: Uint8Array) => {
+    if (!pasteStateRef.current.canAttach) {
+      toast.show({ variant: "info", message: "Images from the clipboard can be attached inside a session." });
+      return;
+    }
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      toast.show({ variant: "error", message: tooBigToAttach("The clipboard image") });
+      return;
+    }
+    const path = await saveClipboardImage(bytes, draftKeyRef.current ?? "pending");
+    setAttachments((current) => [...current, { path, mime: "image/png", kind: "image" }]);
+  }, [toast]);
+
+  // Ctrl+V (the `paste` keybind), and the empty paste some terminals send for an image: what the clipboard holds goes in.
+  const pasteFromClipboard = useCallback(() => {
+    enqueuePaste(async (changed) => {
+      const content = await clipboard.read();
+      if (!content || changed()) return;
+      if (content.mime === "image/png") await attachClipboardImage(content.bytes);
+      else await pasteInputText(content.text, changed);
+    });
+  }, [enqueuePaste, clipboard, attachClipboardImage, pasteInputText]);
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -493,7 +638,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     return () => {
       if (draftKeyRef.current !== undefined) return;
       try {
-        handOffDraft(renderer, textareaRef.current?.plainText ?? "");
+        handOffDraft(renderer, textareaRef.current ? fullText(textareaRef.current) : "");
       } catch {
         // The whole screen is going away (the renderer destroyed the textarea first): there is no next bar.
       }
@@ -519,7 +664,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (draftKey === undefined) return;
     return () => {
       try {
-        keepDraft(draftKey, textareaRef.current?.plainText ?? "");
+        keepDraft(draftKey, textareaRef.current ? fullText(textareaRef.current) : "");
       } catch {
         // The whole screen is going away (the renderer destroyed the textarea first): the text is lost with it.
       }
@@ -557,7 +702,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     return onGivenBack(renderer, (returned) => {
       const textarea = textareaRef.current;
       if (!textarea) return false;
-      const { text, block } = mergeGivenBack(returned, textarea.plainText, givenBackRef.current);
+      const { text, block } = mergeGivenBack(returned, fullText(textarea), givenBackRef.current);
       textarea.setText(text);
       textarea.cursorOffset = text.length;
       givenBackRef.current = block;
@@ -566,32 +711,27 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     });
   }, [renderer]);
 
-  // Terminals paste a dropped file as its path. A paste that is made of existing paths attaches them; the check is asynchronous, so the
-  // paste is held back only when it looks like paths, and goes in as text if it turns out not to be (the same text the textarea would have taken).
+  // Every paste goes through `pasteInputText`, in turn; the textarea's own insertion is stopped before anything asynchronous.
   useEffect(() => {
-    const onPaste = (event: { bytes: Uint8Array; preventDefault(): void }) => {
+    const onPaste = (event: PasteEvent) => {
       const state = pasteStateRef.current;
       const textarea = textareaRef.current;
-      if (!textarea || !state.canAttach || state.disabled || !state.isTopLayer("base")) return;
-      const text = stripAnsiSequences(decodePasteBytes(event.bytes));
-      if (!parsePastedPaths(text)) return;
+      if (!textarea || state.disabled || !state.isTopLayer("base")) return;
+      // Some terminals paste an image in the clipboard as nothing at all: the clipboard is read instead.
+      if (event.bytes.length === 0) {
+        event.preventDefault();
+        pasteFromClipboard();
+        return;
+      }
       event.preventDefault();
-      void resolvePastedAttachments(text, state.cwd)
-        .catch(() => null)
-        .then((found) => {
-          if (!found) return void textarea.insertText(text);
-          for (const problem of found.problems) toast.show({ variant: "error", message: problem });
-          const chips = found.attachments.filter((attachment) => attachment.kind !== "file");
-          const mentions = found.attachments.filter((attachment) => attachment.kind === "file").map((attachment) => `${mentionFor(attachment.path, state.cwd)} `);
-          if (chips.length > 0) setAttachments((current) => [...current, ...chips]);
-          if (mentions.length > 0) textarea.insertText(mentions.join(""));
-        });
+      const text = decodePasteBytes(event.bytes);
+      enqueuePaste((changed) => pasteInputText(text, changed));
     };
     renderer.keyInput.on("paste", onPaste);
     return () => {
       renderer.keyInput.off("paste", onPaste);
     };
-  }, [renderer, toast]);
+  }, [renderer, pasteFromClipboard, enqueuePaste, pasteInputText]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
   useEffect(() => {
@@ -704,6 +844,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
   const runKeyAction = (action: KeyAction) => {
     if (action.action === "palette") openPalette();
+    else if (action.action === "paste") pasteFromClipboard();
     else runPaletteCommand(COMMANDS.find((command) => command.name === action.name)!);
   };
 
@@ -735,7 +876,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
         const entries = readHistory().map((entry) => entry.text);
         if (entries.length === 0) return false;
         walk.entries = entries;
-        walk.draft = textarea.plainText;
+        walk.draft = fullText(textarea);
         walk.index = entries.length;
       }
       if (walk.index > 0) {
@@ -770,7 +911,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const textarea = textareaRef.current;
     if (!textarea) return;
 
-    const text = textarea.plainText.trim();
+    // Placeholders of large pastes are sent as the text they stand for.
+    const text = fullText(textarea).trim();
     // Attachments alone make a message, but only one that starts a turn: a steer or a follow-up carries text only.
     if (text.length === 0 && (attachmentsRef.current.length === 0 || turnInput.active || turnInput.starting)) return;
 
@@ -881,7 +1023,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       setAttachments((current) => current.slice(0, -1));
       return;
     }
-    // The palette and the leader work where a command can run: not on a screen that only takes keys. A key bound here is not typing.
+    // Paste works on every input; the palette and the leader work where a command can run: not on a screen that only takes keys. A key
+    // bound here is not typing.
+    if (typeOnly && resolveKey(keybinds, key, false)?.action === "paste") {
+      key.preventDefault();
+      pasteFromClipboard();
+      return;
+    }
     if (!typeOnly) {
       if (leaderRef.current) {
         // The key after the leader runs its command; any other key (Esc included) only ends the wait, and none is typed.

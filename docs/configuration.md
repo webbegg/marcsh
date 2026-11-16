@@ -6,11 +6,12 @@ marcsh keeps its files in one folder, `~/.marcsh`. This page lists what is in it
 
 | Path | What it holds |
 | --- | --- |
-| `preferences.json` | Your settings: theme, engine, pi model, selected agent, permission mode, favorite and recent models and the turn notification. |
+| `preferences.json` | Your settings: theme, engine, pi model, selected agent, permission mode, favorite and recent models, the turn notification and how large pastes show. |
 | `marcsh.db` | Your sessions, project trust decisions, the `/` menu command list and, for pi sessions, your "always allow" answers. On Claude, "always allow" is stored by Claude Code, not by marcsh. See [Sessions](sessions.md). |
 | `work/` | Feature docs made by [`/marcsh:feature`](commands.md#marcshfeature), one folder per project. An environment variable cannot move it. |
 | `agents/` | Your own agent files, one `.md` file per agent. See [Agents](agents.md). |
 | `packs/` | Installed packs and the `packs.json` file that pins each one to a commit. See [Packs](packs.md). |
+| `attachments/` | Images you pasted from the clipboard, one folder per session. See [Pasting](screen.md#pasting). |
 | `agent/` | Everything pi keeps: logins (`auth.json`), custom models (`models.json`), MCP settings (`mcp.json`) and pi's own settings and sessions. |
 
 `~/.marcsh`, `~/.marcsh/agent` and `marcsh.db` are private to your user account, so other users on the machine cannot read your sessions or logins.
@@ -30,7 +31,8 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
   "approvalMode": "normal",
   "favoriteModels": { "claude": ["sonnet"], "pi": ["anthropic/claude-opus-5-5"] },
   "recentModels": { "claude": ["opus", "sonnet"], "pi": ["anthropic/claude-opus-5-5"] },
-  "notify": "bell"
+  "notify": "bell",
+  "paste": "compact"
 }
 ```
 
@@ -44,6 +46,7 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
 | `favoriteModels` | The models you marked as favorites, for each engine (`claude` and `pi`), in the order you marked them. | `Ctrl+F` in `/models` |
 | `recentModels` | The last 5 models you chose or used for a turn, for each engine, newest first. | `/models`, `F2` and sending a message |
 | `notify` | What marcsh does when a turn finishes: `bell` rings the terminal bell, `system` shows a macOS notification (the bell on other systems), `off` does nothing. Default: `bell`. | Edit the file |
+| `paste` | How a large paste (3 lines or more, or over 150 characters) shows in the input: `compact` shows a `[Pasted ~N lines]` placeholder, `full` shows the text. The full text is sent either way. Default: `compact`. See [Pasting](screen.md#pasting). | Edit the file |
 
 A value marcsh does not understand is ignored, and the default is used. Use the commands above to change settings. If you edit the file by hand, do it while marcsh is closed.
 
@@ -99,6 +102,7 @@ These variables move marcsh's files. All of them are optional. An empty value is
 | `MARCSH_AGENTS_DIR` | The folder with your own agent files. | `~/.marcsh/agents` |
 | `MARCSH_PACKS_DIR` | The folder where packs are installed. | `~/.marcsh/packs` |
 | `MARCSH_AGENT_DIR` | The folder where pi keeps its logins, MCP settings and sessions. | `~/.marcsh/agent` |
+| `MARCSH_ATTACHMENTS_DIR` | The folder where images pasted from the clipboard are saved. | `~/.marcsh/attachments` |
 
 For example, to use a separate database and preferences file:
 
