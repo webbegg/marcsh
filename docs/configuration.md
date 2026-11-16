@@ -8,6 +8,7 @@ marcsh keeps its files in one folder, `~/.marcsh`. This page lists what is in it
 | --- | --- |
 | `preferences.json` | Your settings: theme, engine, pi model, selected agent, permission mode, favorite and recent models, the turn notification and how large pastes show. |
 | `marcsh.db` | Your sessions, project trust decisions, the `/` menu command list and, for pi sessions, your "always allow" answers. On Claude, "always allow" is stored by Claude Code, not by marcsh. See [Sessions](sessions.md). |
+| `profiles.json` | Model profiles: which model each subagent and the main turn use, and what to fall back to. You write it. See [Model profiles](#model-profiles). |
 | `work/` | Feature docs made by [`/marcsh:feature`](commands.md#marcshfeature), one folder per project. An environment variable cannot move it. |
 | `agents/` | Your own agent files, one `.md` file per agent. See [Agents](agents.md). |
 | `packs/` | Installed packs and the `packs.json` file that pins each one to a commit. See [Packs](packs.md). |
@@ -56,6 +57,57 @@ The Claude model (`opus`, `sonnet`, `haiku`) is not saved. Each launch starts on
 
 A permission mode you choose with `/permissions` lasts for the app session. Only the default is saved. See [Security](security.md#permission-modes).
 
+## Model profiles
+
+A profile routes models: which model, thinking level and fallback chain the main turn and each named subagent use. `~/.marcsh/profiles.json` is yours to write; marcsh reads it at the start of every turn, so an edit applies from your next message, and only `/profile default` writes to it.
+
+```json
+{
+  "version": 1,
+  "default": "cheap",
+  "profiles": {
+    "cheap": {
+      "primary": {
+        "model": "anthropic/claude-sonnet-5-5",
+        "thinking": "medium",
+        "fallback": [{ "model": "openai/gpt-5", "thinking": "high" }, "google/gemini-3-pro"]
+      },
+      "review-*": { "model": "anthropic/claude-haiku-5-5", "thinking": "low" },
+      "refuter": { "model": "openai/gpt-5" },
+      "*": { "model": "anthropic/claude-haiku-5-5" }
+    },
+    "claude": {
+      "primary": { "model": "opus", "fallback": [{ "model": "sonnet" }] },
+      "*": { "model": "sonnet" }
+    }
+  }
+}
+```
+
+| Key | What it routes |
+| --- | --- |
+| `primary` | The turn of the selected agent. |
+| A subagent's file name, such as `refuter` | That [named subagent](agents.md#subagents). |
+| A prefix with `*`, such as `review-*` | Every subagent whose name starts with it. The longest prefix wins. |
+| `*` | Any other subagent. It does not apply to `primary`. |
+
+A route is `{ "model": ..., "thinking": ..., "fallback": [...] }`. Only `model` is required. `thinking` is `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. `fallback` lists up to 8 models (a plain string is a model with no thinking level), tried in order. Profile names use letters, digits, `.`, `_` and `-`.
+
+- **Models.** The same rule as an agent's `model`: pi takes `provider/id` (a bare model ID is not accepted), Claude takes `opus`, `sonnet`, `haiku` or a `claude-…` name. A route whose model does not fit the engine is skipped, so keep one profile per engine, or give each key the model for the engine you use.
+- **Which route a launch gets.** For each subagent launch, marcsh takes, in order: the profile you chose with `/profile use`, then the `default` profile, then the `model` in the agent's file, then the turn's own model. Inside a profile the key that names the subagent wins, then the longest prefix, then `*`. A route is used as a whole: its model, thinking level and fallback chain come together, never mixed with another route's.
+- **`primary`.** `/profile use <name>` switches the session's model to the profile's `primary` model. You can change the model afterwards; your choice stays until the next `/profile use`. Its `thinking` applies while the turn runs on that model. Its `fallback` is the chain the main turn follows (see below). `default` does not switch the model by itself.
+- **A file that is not valid.** If the file cannot be read, is not a JSON object, or does not have `"version": 1`, marcsh ignores all of it and shows a `Warning:` with the file's path. If a profile, a route or a fallback entry is wrong, only that part is ignored, and the warning says which. `/profile` lists what is ignored. marcsh never rewrites a file it cannot read.
+- **Thinking levels are pi's.** marcsh has no thinking setting for Claude, so `thinking` is ignored there.
+
+### Fallback chains
+
+A route's `fallback` is what to try when its model fails. marcsh moves to the next model when the model fails with a usage limit or quota, a sign-in or key error, a rate limit, a provider overload or 5xx error, a timeout or a network error. On pi this happens after pi's own retries are used up. It never happens for a context that is too long, an invalid request, or when you stop the turn.
+
+- **The main turn (pi).** The same conversation continues on the next model: it gets what the failed model had done and is told to pick up the request where it stopped. A warning says which model failed and which one took over. Each model of the chain is tried once per turn. If none can take over, the last error is shown.
+- **A subagent (pi).** The subagent starts again from its prompt on the next model, with a warning.
+- **Cooldown.** In memory, for this run of marcsh: a model that failed with a usage limit or a sign-in error is skipped for 30 minutes, and one that failed with a rate limit, a provider error, a timeout or a network error for 2 minutes. Later subagent launches start on the first model of their chain that is not cooling down; the fallback skips cooling models too. A model that is unknown to pi, or that has no login, is skipped as well.
+- **Claude.** The SDK does the work. The first model of the `primary` fallback that is a Claude model (and not the turn's own) is sent as the SDK's `fallbackModel`: it takes over while the model is overloaded or unavailable, and the model is tried again at the start of each turn. A subagent runs on its routed model; it has no chain on Claude.
+
 ## MCP servers
 
 MCP servers give the agent extra tools. How you set them up depends on the engine.
@@ -99,6 +151,7 @@ These variables move marcsh's files. All of them are optional. An empty value is
 | --- | --- | --- |
 | `MARCSH_PREFERENCES_PATH` | The preferences file. | `~/.marcsh/preferences.json` |
 | `MARCSH_DB_PATH` | The database file with your sessions. | `~/.marcsh/marcsh.db` |
+| `MARCSH_PROFILES_PATH` | The model profiles file. | `profiles.json` in the folder of the preferences file, so `~/.marcsh/profiles.json` |
 | `MARCSH_AGENTS_DIR` | The folder with your own agent files. | `~/.marcsh/agents` |
 | `MARCSH_PACKS_DIR` | The folder where packs are installed. | `~/.marcsh/packs` |
 | `MARCSH_AGENT_DIR` | The folder where pi keeps its logins, MCP settings and sessions. | `~/.marcsh/agent` |

@@ -5,6 +5,8 @@ import type { AgentSession, AgentSessionEvent, ExtensionFactory, ModelRuntime } 
 import { isPiToolDenied } from "../agent-tools";
 import { agentModelFits } from "../agents";
 import { branchState } from "../git-branch";
+import { categoryText, classifyFailure, cooldownMs, type Cooldowns, sharedCooldowns } from "../model-fallback";
+import { launchChain } from "../model-routing";
 import { Mode } from "../modes";
 import { referenceText, splitAttachments } from "../attachments";
 import { prepareViewForTurn } from "../packs";
@@ -85,6 +87,8 @@ export type PiEngineOptions = {
   toolTimeoutMs?: number;
   /** How `proc_list` and `proc_stop` find and stop this run's leftover processes. Default: this process's marker and process table (tests inject them). */
   leftovers?: ProcToolsOptions;
+  /** The models that failed recently and until when; a launch skips them (see `model-fallback.ts`). Default: the one shared by this run of marcsh. */
+  cooldowns?: Cooldowns;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -259,6 +263,22 @@ function parseModel(ref: string): { provider: string; id: string } | null {
   return { provider: ref.slice(0, slash), id: ref.slice(slash + 1) };
 }
 
+const refOf = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
+
+/** The `customType` of the message that tells the next model of a fallback chain where the failed one stopped (the model's only, never shown). */
+const FALLBACK_MESSAGE = "marcsh-fallback";
+const MAX_QUOTED_REQUEST = 2000;
+
+/** What the model that takes over is told: the conversation above is its own, and the user's request is still the work to finish. */
+function fallbackContinuation(from: string, to: string, category: string, request: string): string {
+  const quoted = request.trim().length > MAX_QUOTED_REQUEST ? `${request.trim().slice(0, MAX_QUOTED_REQUEST)}…` : request.trim();
+  return [
+    `[marcsh] The previous model (${from}) failed with ${category}; you now run on ${to}.`,
+    "Pick up the user's latest request exactly where the transcript above stops: do not repeat finished steps and do not start other work.",
+    quoted ? `\nThe user's latest request:\n${quoted}` : "",
+  ].join("\n");
+}
+
 /**
  * The pi engine. Each turn opens its own pi session (new, or the file named by `resumeRef`), prompts it
  * once, and disposes it when pi has settled.
@@ -292,6 +312,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
   // Before pi writes anything there: its settings (the device id), logins, models and sessions.
   const prepareAgentDir = () => secureDefaultAgentDir(agentDir);
   const trustRecords = (): ProjectTrustRecords => options.projectTrust ?? getStorage();
+  const cooldowns = options.cooldowns ?? sharedCooldowns();
 
   let runtime: Promise<ModelRuntime> | undefined;
   const runtimeFor = (pi: Pi) => {
@@ -325,6 +346,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       agentId,
       deniedTools,
       subagents,
+      routing,
       resumeRef,
       background,
       promptKind,
@@ -496,6 +518,20 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           return undefined;
         }
       };
+      // The models a child may run on, in the order to try them: its routed model, then its fallback chain, a model that failed recently
+      // behind the usable ones (a launch starts on a model that can answer). Only those pi has and has a login for; when none is, the
+      // parent's model (as for an agent file's model that cannot be used).
+      const childSteps = async (subagent: TurnSubagent | undefined) => {
+        const own = { model: resolved, ref: refOf(resolved) } as { model: typeof resolved; ref: string; thinking?: string };
+        if (!subagent?.model) return [own];
+        const chain = launchChain(subagent.model, subagent.fallback ?? [], (candidate) => cooldowns.isCooling(candidate), subagent.thinking);
+        const steps: Array<typeof own> = [];
+        for (const step of chain) {
+          const found = await subagentModel(step.model);
+          if (found) steps.push({ model: found, ref: refOf(found), ...(step.thinking ? { thinking: step.thinking } : {}) });
+        }
+        return steps.length > 0 ? steps : [own];
+      };
       // A child's prompt: a named subagent's own, then the mode line (as the parent's; a plain child gets the line alone) and, for a
       // subagent of the pack this turn loaded, that pack's skills.
       const childResources = (subagent: TurnSubagent | undefined, readOnly: boolean) => {
@@ -511,29 +547,48 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // A writer with `editSurfaces` (`Task`) is also held to them by the surfaces guard (`pi-surfaces.ts`): it denies a write outside them
       // before the approval extension asks, so surfaces only narrow, and flags what `bash` changed outside them after the fact. A read-only
       // child writes nothing, so it gets no guard.
-      const runChild = async ({ subagent, editSurfaces, otherSurfaces, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[]) => {
+      // A child that fails on a limit, an auth error or a provider error (after pi's own retries) restarts from its prompt on the next model of its
+      // chain, with a notice; any other failure (context length, an invalid request, a stop) is the Task's error, as before. The model that failed is
+      // skipped by later launches for a while (see `model-fallback.ts`).
+      const runChild = async ({ subagent, editSurfaces, otherSurfaces, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[], notice: NonNullable<TurnHost["notify"]>) => {
         const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
         const own = subagent?.deniedTools ?? [];
         const childDenied = own.length > 0 ? [...new Set([...denied, ...own])] : denied;
         const narrowing = own.length > 0 ? [createDeniedToolsExtension(childDenied)] : tools.childExtensions;
         const allowed = (name: string) => !isPiToolDenied(name, childDenied);
-        const model = (subagent && (await subagentModel(subagent.model))) || resolved;
         const surfaces =
           editSurfaces && !readOnly ? createSurfaceGuard({ cwd, surfaces: editSurfaces, ...(otherSurfaces ? { others: otherSurfaces } : {}) }) : undefined;
-        const run = await runChildSession(pi, {
-          ...request,
-          cwd,
-          agentDir,
-          models,
-          model,
-          projectTrusted,
-          extensions: [...narrowing, ...(surfaces ? [surfaces.gate] : []), ...approvalAndHooks(readOnly), ...(surfaces ? [surfaces.watch] : []), ...narrowing],
-          ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
-          ...childResources(subagent, readOnly),
-        });
-        if (!surfaces) return run;
-        const outside = await surfaces.outside();
-        return outside.length > 0 ? { ...run, outsideSurfaces: outside } : run;
+        const queue = await childSteps(subagent);
+        for (;;) {
+          const step = queue.shift()!;
+          try {
+            const run = await runChildSession(pi, {
+              ...request,
+              cwd,
+              agentDir,
+              models,
+              model: step.model,
+              ...(step.thinking ? { thinkingLevel: step.thinking } : {}),
+              projectTrusted,
+              // Each attempt has its own hooks and approvals; the surfaces guard is the child's, so what an earlier attempt wrote counts.
+              extensions: [...narrowing, ...(surfaces ? [surfaces.gate] : []), ...approvalAndHooks(readOnly), ...(surfaces ? [surfaces.watch] : []), ...narrowing],
+              ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
+              ...childResources(subagent, readOnly),
+            });
+            if (!surfaces) return run;
+            const outside = await surfaces.outside();
+            return outside.length > 0 ? { ...run, outsideSurfaces: outside } : run;
+          } catch (error) {
+            const category = request.signal.aborted ? undefined : classifyFailure(error instanceof Error ? error.message : String(error));
+            if (!category) throw error;
+            cooldowns.cool(step.ref, cooldownMs(category));
+            // The next model that is not cooling; those that are cooling and stand in between are dropped.
+            const at = queue.findIndex((candidate) => !cooldowns.isCooling(candidate.ref));
+            if (at === -1) throw error;
+            queue.splice(0, at);
+            notice(`${subagent ? `Subagent ${subagent.name}` : "A subagent"}: ${step.ref} hit ${categoryText(category)}; restarting it on ${queue[0]!.ref}`, "warning");
+          }
+        }
       };
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
       // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
@@ -546,10 +601,14 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
               background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
-          return runChild({ prompt, ...(subagent ? { subagent } : {}), ...(editSurfaces ? { editSurfaces } : {}), ...(otherSurfaces ? { otherSurfaces } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
-            ...packHooksFor(childSignal, notify, readOnly, true),
-            createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
-          ]);
+          return runChild(
+            { prompt, ...(subagent ? { subagent } : {}), ...(editSurfaces ? { editSurfaces } : {}), ...(otherSurfaces ? { otherSurfaces } : {}), signal: childSignal, onProgress, onEvent },
+            (readOnly) => [
+              ...packHooksFor(childSignal, notify, readOnly, true),
+              createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
+            ],
+            notify,
+          );
         });
       const resourceLoader = new pi.DefaultResourceLoader({
         cwd,
@@ -581,11 +640,15 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             signal: turnEnded.signal,
             timeoutMs: options.toolTimeoutMs,
             runChild: ({ holdClock, ...request }) =>
-              runChild(request, (readOnly) => [
-                // A read-only child's hooks are told plan, as its calls are held to plan's rules.
-                ...(readOnly && mode !== Mode.PLAN ? packHooksFor(turnEnded.signal, notifyHost, true) : packHooks),
-                createApprovalExtension({ ...approval, planMode: readOnly, ...(holdClock ? { host: holdingClock(host, holdClock) } : {}) }),
-              ]),
+              runChild(
+                request,
+                (readOnly) => [
+                  // A read-only child's hooks are told plan, as its calls are held to plan's rules.
+                  ...(readOnly && mode !== Mode.PLAN ? packHooksFor(turnEnded.signal, notifyHost, true) : packHooks),
+                  createApprovalExtension({ ...approval, planMode: readOnly, ...(holdClock ? { host: holdingClock(host, holdClock) } : {}) }),
+                ],
+                notifyHost,
+              ),
             ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),
             ...(subagents && subagents.length > 0 ? { subagents } : {}),
           }),
@@ -639,14 +702,23 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         onError: (error) => host.notify?.(redactSecrets(`Extension error in ${error.extensionPath}: ${error.error}`), "error"),
       });
       if (aborted) return;
+      // The profile's thinking level for the turn's model: only while the turn runs on the route's own model (the user may have picked another).
+      if (routing?.thinking && routing.model === model) started.setThinkingLevel(routing.thinking as never);
 
       const errors = createErrorTracker();
+      // The models to move to when the turn's model fails. With a chain, a failure that stays after pi's retries is held until the turn has
+      // settled (see `recover`); without one it is reported as soon as it is known, exactly as before.
+      const chain = routing?.fallback ?? [];
+      let held: string | null = null;
       session.subscribe((event) => {
         const failure = errors.observe(event);
-        if (failure) fail(failure);
+        if (failure) {
+          if (chain.length > 0) held = failure;
+          else fail(failure);
+        }
         // Text and thinking show as they stream; the finished message and the tool results replace and follow them at once.
-        // pi's messages carry no context window: the resolved model's lets the status line show how full the context is.
-        const usageOptions = { contextWindow: resolved.contextWindow };
+        // pi's messages carry no context window: the resolved model's (the one the turn runs on now) lets the status line show how full the context is.
+        const usageOptions = { contextWindow: (started.model ?? resolved).contextWindow };
         if (isStreamDelta(event)) feed.push((reply) => applyPiEvent(reply, event, usageOptions));
         else if (event.type === "message_end" || event.type === "tool_execution_end") feed.emitNow((reply) => applyPiEvent(reply, event, usageOptions));
         // The run can take background results now: those that waited for it go in.
@@ -684,6 +756,50 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         return true;
       });
 
+      // The turn failed and the failure stayed (pi's own retries are over): when another model of the chain can get past it, the session moves
+      // to that model and goes on with the same conversation (the failed attempt is not replayed to the model); anything else is reported.
+      // Each model is tried once per turn; one that failed recently, or that pi has no login for, is skipped.
+      const tried = new Set<string>([refOf(resolved)]);
+      const takeNext = async () => {
+        for (const step of chain) {
+          if (tried.has(step.model) || cooldowns.isCooling(step.model)) continue;
+          const ref = parseModel(step.model);
+          const found = ref && agentModelFits(step.model, "pi") ? models.getModel(ref.provider, ref.id) : undefined;
+          tried.add(step.model);
+          if (!found) continue;
+          try {
+            await started.setModel(found);
+          } catch {
+            continue;
+          }
+          if (step.thinking) started.setThinkingLevel(step.thinking as never);
+          return found;
+        }
+        return undefined;
+      };
+      const recover = async (): Promise<void> => {
+        for (;;) {
+          const failed: string | null = held ?? errors.flush();
+          held = null;
+          if (!failed || aborted) return;
+          const current = started.model ? refOf(started.model) : model;
+          const category = classifyFailure(failed);
+          if (category) cooldowns.cool(current, cooldownMs(category));
+          tried.add(current);
+          const next = category ? await takeNext() : undefined;
+          if (!category || !next) {
+            if (category) host.notify?.(`${current} hit ${categoryText(category)}; no other model of the profile's fallback chain can take over.`, "warning");
+            return fail(failed);
+          }
+          host.notify?.(`${current} hit ${categoryText(category)}; continuing on ${refOf(next)}.`, "warning");
+          await started.sendCustomMessage(
+            { customType: FALLBACK_MESSAGE, content: fallbackContinuation(current, refOf(next), categoryText(category), prompt), display: false },
+            { triggerTurn: true },
+          );
+          await started.waitForIdle();
+        }
+      };
+
       try {
         // pi expands templates and skills and runs extension commands itself: `/name args` goes to it as typed,
         // except the plugin's `/marcsh:...`, which is expanded here and then sent as plain text.
@@ -699,6 +815,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ...(images.length > 0 ? { images: images.map((image) => ({ type: "image" as const, data: Buffer.from(image.bytes!).toString("base64"), mimeType: image.mime })) } : {}),
         };
         const sending = session.prompt(referenceText(expanded, mentioned, cwd), Object.keys(options).length > 0 ? options : undefined);
+        // With a chain, a failure to even start the request (no login for the provider) may be got past too.
+        const sent = chain.length > 0 ? sending.catch((error: unknown) => void (held = error instanceof Error ? error.message : String(error))) : sending;
         promptSent = true;
         for (const entry of early.splice(0)) {
           queueInput(entry.kind, entry.text).then(entry.resolve, (error: unknown) => {
@@ -707,8 +825,9 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             if (!aborted && !settled && session) announceQueue(session.getSteeringMessages(), session.getFollowUpMessages());
           });
         }
-        await sending;
+        await sent;
         await session.waitForIdle();
+        if (chain.length > 0) await recover();
         // A message typed as the run was ending was queued too late for pi to pick it up: it runs as a turn of its own
         // (a follow-up still unsent when pi goes idle is sent the same way, not lost).
         while (!aborted && session.pendingMessageCount > 0) {
@@ -717,6 +836,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             if (aborted) break;
             await session.prompt(text, { expandPromptTemplates: false });
             await session.waitForIdle();
+            if (chain.length > 0) await recover();
           }
         }
       } finally {

@@ -15,6 +15,7 @@ import {
   type PermissionAsk,
   type PermissionDecision,
   type TurnHost,
+  type TurnRouting,
   type TurnSubagent,
 } from "../lib/engine/types";
 import { useApprovalMode } from "../providers/prompt-config";
@@ -150,8 +151,9 @@ export type TurnAgent = { id?: string; name: string; prompt?: string; pluginDir?
  * `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts.
  * `background`: the turn delivers this batch of background results; `userText` is what the transcript keeps of it, and the engine
  * gets only the batch's text, as it is.
+ * `routing`: the active profile's `primary` route for this turn (fallback chain, thinking); absent without a profile.
  */
-export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent; attachments?: MessageAttachment[]; background?: BackgroundBatch };
+export type SubmitParams = { userText: string; mode: ModeType; model: string; turnAgent?: TurnAgent; attachments?: MessageAttachment[]; background?: BackgroundBatch; routing?: TurnRouting };
 
 /** What the user typed during the turn that the engine has not sent yet. */
 export type QueuedInput = { steering: string[]; followUp: string[] };
@@ -300,7 +302,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
   }, [hub, makeHost]);
 
   const submit = useCallback(
-    async ({ userText, mode, model, turnAgent, attachments, background }: SubmitParams) => {
+    async ({ userText, mode, model, turnAgent, attachments, background, routing }: SubmitParams) => {
       if (statusRef.current !== "ready") return;
       updateStatus("submitted");
       setError(null);
@@ -433,6 +435,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             ...(turnAgent?.id ? { agentId: turnAgent.id } : {}),
             ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
             ...(turnAgent?.subagents && turnAgent.subagents.length > 0 ? { subagents: turnAgent.subagents } : {}),
+            ...(routing ? { routing } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             ...(resumeRefRef.current ? { priorCostUsd: priorCumulativeCost(messagesRef.current) } : {}),
             ...(backgroundRef.current ? { background: backgroundRef.current } : {}),

@@ -58,6 +58,10 @@ If the model you picked becomes unavailable, for example after `/logout`, marcsh
 
 An [agent](agents.md) can name its own model. marcsh uses it only if the current engine can use it: a Claude model name or alias on Claude, a `provider/model-id` on pi that you have signed in to. Otherwise it uses the session model and shows a warning when you select the agent.
 
+### Models set by a profile
+
+A [model profile](configuration.md#model-profiles) routes models per subagent and for the main turn, with fallback chains for when a model hits a limit or an error. `/profile use <name>` switches the session's model to the profile's `primary` model (you can change it afterwards with `/models`); `/profile` shows what is in force. On pi a failing model is replaced by the next one of its chain, for the main turn (the conversation goes on) and for subagents (they start again). On Claude the first Claude model of the chain is the SDK's fallback model, and subagents use their routed model. Thinking levels in a profile apply on pi only.
+
 ## Sign in
 
 ### pi: `/login`

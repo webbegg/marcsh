@@ -5,6 +5,8 @@ import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { Mode, type ModeType } from "../lib/modes";
 import { agentModelFits, builtinAgentId, findAgent, turnSubagents, type Agent } from "../lib/agents";
+import { resolveRoute } from "../lib/model-routing";
+import { activeProfiles, loadProfiles, profilesWarning } from "../lib/profiles";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
 import { 
@@ -26,7 +28,7 @@ import type { ChatMessage as ChatMessageData, MessageAttachment } from "../lib/c
 import { getStorage, type StoredSession } from "../lib/storage";
 import { getEngine, getPiRuntime, unknownEngine, warmUpEngineCommands } from "../lib/engine";
 import { listAvailablePiModels } from "../lib/engine/pi-models";
-import type { NoticeLevel } from "../lib/engine/types";
+import type { NoticeLevel, TurnRouting } from "../lib/engine/types";
 import { modelForEngine, SUPPORTED_CHAT_MODELS } from "../lib/models";
 import { nextRecent } from "../lib/model-picks";
 import { notifyTurnDone } from "../lib/notify";
@@ -103,6 +105,27 @@ function NoticeLine({ text }: { text: string }) {
 }
 
 type Notice = { id: number; /** How many messages there were when it was said. */ at: number; text: string };
+
+/** The problems of the profiles file last warned about: a turn warns again only when they change. */
+let warnedProfiles: string | undefined;
+
+/**
+ * What the model profiles say for a turn on `engine`: the profiles in force (the session's, then the default's), what the main turn's
+ * `primary` route adds (its fallback chain, and its thinking level while the turn runs on the route's own model), and the file's warning,
+ * once. The file is read at each turn, so an edit applies from the next message.
+ */
+function turnProfiles(engine: string): { active: ReturnType<typeof activeProfiles>; routing?: TurnRouting; warning?: string } {
+  const loaded = loadProfiles();
+  const text = profilesWarning(loaded);
+  const warning = text !== warnedProfiles ? text : undefined;
+  warnedProfiles = text;
+  const active = activeProfiles(loaded.file);
+  const primary = resolveRoute({ active, engine: { id: engine, fits: (model) => agentModelFits(model, engine) } });
+  const routing: TurnRouting | undefined = primary.model
+    ? { model: primary.model, ...(primary.thinking ? { thinking: primary.thinking } : {}), ...(primary.fallback.length > 0 ? { fallback: primary.fallback } : {}) }
+    : undefined;
+  return { active, ...(routing ? { routing } : {}), ...(warning ? { warning } : {}) };
+}
 
 function SessionChat({ 
   session,
@@ -210,13 +233,24 @@ function SessionChat({
   // `background`: the turn delivers this batch of background results. Resolves with whether a turn started.
   const send = useCallback(
     (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string, attachments?: MessageAttachment[], background?: BackgroundBatch): Promise<boolean> => {
+      const profiles = turnProfiles(session.engine);
+      if (profiles.warning) toast.show({ variant: "info", message: `Warning: ${stripControlChars(profiles.warning)}` });
       const turn = {
         userText,
         mode: turnAgent.mode,
-        // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack.
-        turnAgent: { id: turnAgent.id, name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
+        // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack, each with the model
+        // the active profile routes it to (else its own file's).
+        turnAgent: {
+          id: turnAgent.id,
+          name: turnAgent.name,
+          prompt: turnAgent.prompt,
+          pluginDir: turnAgent.pluginDir,
+          tools: turnAgent.tools,
+          subagents: turnSubagents(turnAgent, undefined, { active: profiles.active, engine: session.engine }),
+        },
         ...(attachments?.length ? { attachments } : {}),
         ...(background ? { background } : {}),
+        ...(profiles.routing ? { routing: profiles.routing } : {}),
       };
       const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
@@ -235,7 +269,7 @@ function SessionChat({
       });
       return started;
     },
-    [session.engine, startTurn, refreshPiModel, setChoosing],
+    [session.engine, startTurn, refreshPiModel, setChoosing, toast],
   );
 
   // A background result that finishes while the session is idle starts a turn of its own, as the agent and model selected at that
