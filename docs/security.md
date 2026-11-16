@@ -10,7 +10,7 @@ When the model wants to do something that is not a plain read, marcsh stops and 
 
 | Engine | Runs without asking | Asks |
 | --- | --- | --- |
-| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals), and `task_wait`, `task_check`, `task_cancel` and `task_list` (they only look at, wait for or stop this session's background subagents) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
+| pi | `read`, `grep`, `find`, `ls`, the question tool (`AskUserQuestion`), `Task` (the subagent it starts asks for its own tool calls), `bg_status`, `bg_list` and `bg_kill` (they only look at or stop this session's background terminals), `task_wait`, `task_check`, `task_cancel` and `task_list` (they only look at, wait for or stop this session's background subagents), and `proc_list` and `proc_stop` (they only look at or stop this marcsh run's leftover processes, see [What marcsh may stop](#what-marcsh-may-stop)) | Every other tool: running commands (including `bg_start`), writing and editing files, MCP tools, tools added by extensions |
 | Claude | What Claude Code's default permission mode allows without asking | The rest. marcsh shows Claude's question |
 
 On pi, `bg_start` runs a command in the background. It asks exactly like `bash` for the same command, and the prompt names `bg_start` so you can see it will keep running. The git guard and a pack's `Bash` hooks apply to it too. A `bg_start` in another folder (`working_dir`) is checked for that folder, and rules saved in the session folder do not cover it. Background terminals stop when you leave the session or quit marcsh.
@@ -130,10 +130,20 @@ The rule is stored per project folder in marcsh's database, next to the pi "alwa
 
 The Plan agent, and any agent with `permission: read-only`, cannot change anything:
 
-- On pi it is only given the read tools, the question tool, `Task`, `bg_status`, `bg_list`, `task_wait`, `task_check` and `task_list`, so it cannot write files, run commands, start background subagents or stop background work. A saved "always allow" does not change this.
+- On pi it is only given the read tools, the question tool, `Task`, `bg_status`, `bg_list`, `task_wait`, `task_check`, `task_list` and `proc_list`, so it cannot write files, run commands, start background subagents or stop background work. A saved "always allow" does not change this.
 - On Claude it runs in Claude Code's plan mode.
 
 An agent's `tools` field can only take tools away. It never adds any. See [Agents](agents.md#limit-tools).
+
+### What marcsh may stop
+
+marcsh only ever stops processes its own tools started in this marcsh run. It never stops yours.
+
+- When marcsh starts, it makes a fresh marker, `MARCSH_SESSION=<random id>`, and puts it in its own environment. Everything it starts inherits it: pi's `bash`, `bg_start` terminals, subagents' tools, and the Claude CLI with its Bash. Your own processes, such as `npm run dev` in another terminal, never carry this run's marker. marcsh never picks processes by name or folder.
+- A **leftover process** carries this run's marker, started after this marcsh did, and no longer runs under marcsh. Anything still under marcsh is a running tool call, a background terminal, or marcsh's own machinery (the Claude CLI, MCP servers, pack hooks), and is not listed. Pack hooks are also marked `MARCSH_INFRA=1`, so what they leave is never listed either.
+- Right before each signal, marcsh reads the process table again and checks the marker and the start time. A pid that now belongs to another process is left alone. `SIGTERM` goes to the process, or to its process group when every process in the group is a leftover of this run. `SIGKILL` follows after 2 seconds, after the same check.
+- Nothing is stopped automatically beyond background terminals, which stop when you leave the session or quit. You stop leftovers in `/ps`, and on pi the agent can with `proc_stop`.
+- Some processes cannot be seen, so they are never listed or stopped: one started with an emptied environment (`env -i`) or that clears its own, setuid programs, anything started through launchd or a daemon (`open -a`, `docker run`, `brew services`), and on macOS Apple's own programs such as `/bin/sleep` or `/usr/bin/python3`, whose environment macOS does not show. On Claude, a process the Claude CLI still runs (a `run_in_background` shell) is listed only once the CLI has ended. Detection works on macOS and Linux only.
 
 ### Turns marcsh starts
 

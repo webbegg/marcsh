@@ -49,6 +49,8 @@ export const PI_TOOL_GROUPS: Readonly<Record<string, readonly Group[]>> = {
   bg_status: ["bash"],
   bg_list: ["bash"],
   bg_kill: ["bash"],
+  proc_list: ["bash"],
+  proc_stop: ["bash"],
   task_wait: ["task"],
   task_check: ["task"],
   task_cancel: ["task"],

@@ -355,6 +355,12 @@ describe("createPackHooksExtension", () => {
     expect(readFileSync(env, "utf8")).toBe(`${process.env.MARCSH_APPROVAL_MODE ?? "unset"}|${process.env.MARCSH_AGENT ?? "unset"}`);
   });
 
+  test("a hook is marked as marcsh's own process (MARCSH_INFRA), so what it leaves running is no leftover of the agent's tools (M6)", async () => {
+    const env = join(dir, "infra.txt");
+    await load({ PreToolUse: group(`printf '%s' "\${MARCSH_INFRA-unset}" > ${env}`) }).call("bash", { command: "ls" });
+    expect(readFileSync(env, "utf8")).toBe("1");
+  });
+
   test("a Bash matcher runs on bg_start too, which the hook is told is Bash with its command (A9)", async () => {
     const out = join(dir, "stdin.json");
     const { call, result } = load({ PreToolUse: group(`cat > ${out}; echo 'not in the background' >&2; exit 2`, "Bash"), PostToolUse: group(`cat > ${out}.post`, "Bash") });

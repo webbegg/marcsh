@@ -20,6 +20,7 @@ import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMen
 import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS, type RuleStore } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
+import { createProcToolsExtension, PROC_PLAN_TOOLS, type ProcToolsOptions } from "./pi-proc-tools";
 import type { HookPermissionMode } from "../pack-hooks";
 import { effectiveApprovalMode } from "../approval-policy";
 import { createPiUiContext } from "./pi-ui";
@@ -80,6 +81,8 @@ export type PiEngineOptions = {
   pluginPath?: string | null;
   /** How long a foreground `bash` or `Task` call may run (see `pi-tool-timeout.ts`). Default: 3 minutes; tests use less. */
   toolTimeoutMs?: number;
+  /** How `proc_list` and `proc_stop` find and stop this run's leftover processes. Default: this process's marker and process table (tests inject them). */
+  leftovers?: ProcToolsOptions;
 };
 
 /** The pi engine, plus the handles the login and model dialogs share with its turns. */
@@ -556,7 +559,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           ...denying,
           createAskUserExtension({ host, signal: turnEnded.signal }),
           // Only a turn with a background hub (an open session's) has the bg tools: never a child session or headless `marcsh run`.
-          ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd })] : []),
+          // The leftover-process tools come with them (see `pi-proc-tools.ts`).
+          ...(background ? [createBackgroundTerminalsExtension({ hub: background, cwd }), createProcToolsExtension(options.leftovers)] : []),
           // A foreground child has the parent turn's host, so it asks the same way; the call's clock stops while the user is asked.
           // A turn with a hub also offers the task tools; plan mode starts no background child.
           createSubagentExtension({
@@ -586,7 +590,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         settingsManager,
         resourceLoader,
         // Plan mode: only the read-only tools, the question tool and Task exist, so nothing that writes or runs can be called.
-        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
+        ...(mode === Mode.PLAN ? { tools: [...READ_ONLY_TOOLS, ASK_USER_TOOL, TASK_TOOL, ...BG_PLAN_TOOLS, ...TASK_PLAN_TOOLS, ...PROC_PLAN_TOOLS].filter(tools.allowed) } : buildToolsOption(settingsManager)),
       }));
       // The allow-list is by name, so an extension tool called `read` would pass it: keep only pi's own and marcsh's.
       if (mode === Mode.PLAN) {
