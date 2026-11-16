@@ -8,8 +8,8 @@
 #   publish  the write token. Attests where the files came from, then creates the release as a draft, uploads the
 #            files and only then publishes it, so nobody ever sees a release without its files.
 #
-# This workflow does not run the test suite. Tests run in the CI workflow for pull requests (to be added); a release
-# is cut from a commit that has already passed it. It does typecheck, because that is fast and needs no setup.
+# This workflow does not run the test suite. Tests run in ci.yml on every pull request and push to main; a release
+# is cut from a commit on main that has already passed it. It does typecheck, because that is fast and needs no setup.
 #
 # Only a tag on a commit that is on main publishes. A tag with a `-` in it (v0.2.0-beta.1) is published as a
 # prerelease and never becomes the "latest" release, so `releases/latest` (what the curl installer downloads) skips it.
