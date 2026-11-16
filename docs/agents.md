@@ -178,7 +178,7 @@ Save it as `~/.marcsh/agents/refuter-security.md`.
 - **Its prompt** is added to the subagent's system prompt. The subagent does not see your conversation, only the task it gets.
 - **Its tools only narrow.** The subagent starts with the tools of the agent that started it. Its `tools` field can take more away, but it never gives a tool back. If the selected agent has `bash: false`, a subagent with `tools: Read, Bash` still cannot run commands.
 - **`permission: read-only`** makes the subagent read-only, as in Plan, even when the agent that starts it can build. In Plan, every subagent is read-only.
-- **Its model.** The subagent uses its `model` when the engine can use it. Otherwise it uses the model of the turn that starts it, without a warning. See [Model](#model-and-fallback).
+- **Its model.** The subagent uses the model a [profile](configuration.md#model-profiles) routes it to, else its own `model` when the engine can use it. Otherwise it uses the model of the turn that starts it, without a warning. See [Model](#model-and-fallback).
 - **Approvals and hooks** apply to its tool calls exactly as they do to the agent's.
 
 How the model starts one:
@@ -225,6 +225,12 @@ See [Engines and models](engines-and-models.md) for the engines themselves.
 If the name does not fit the engine you are using, marcsh ignores it, uses the session model, and warns. For example, `gpt-4o` is not a Claude model, and `sonnet` is not a pi model.
 
 On pi there is one more case. If the name has the right shape but you have no login for that provider, marcsh uses the session model without a warning. This way an agent from someone else does not stop working just because you use another provider. Use `/login` to add a provider. See [Engines and models](engines-and-models.md).
+
+### Profiles and fallback
+
+A subagent's `model` is the last word only when no profile routes it. With a [model profile](configuration.md#model-profiles) in force (`/profile use`, or `default` in `profiles.json`), each time a subagent starts marcsh picks its model in this order: the route of the profile you chose, the route of the default profile, the `model` in the agent's file, the model of the turn. A profile's route can also set a thinking level (pi only) and a `fallback` chain: on pi, when the subagent's model fails with a usage limit, a sign-in error, a rate limit or a provider error, the subagent starts again from its prompt on the next model of the chain, and a model that just failed is skipped by the next launches for 30 minutes (a usage limit or a sign-in error) or 2 minutes (the others). Details, and how the main turn falls back, are in [Configuration](configuration.md#fallback-chains). Only subagents are routed by a profile: an agent's own `model` still decides the model of its turn when you select it.
+
+See [`/profile`](commands.md#profile).
 
 ## Warnings
 

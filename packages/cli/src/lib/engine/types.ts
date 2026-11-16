@@ -64,6 +64,16 @@ export class TurnClosedError extends Error {
   }
 }
 
+/** A model with the thinking level it runs at (pi's levels: `off`...`max`; Claude has none). */
+export type ModelStep = { model: string; thinking?: string };
+
+/**
+ * What the active profile (`lib/profiles.ts`) says about the selected agent's own turn: its `primary` route. `model` is the route's model
+ * and `thinking` applies only while the turn runs on it (the user may have picked another model since). `fallback` is the chain to move to
+ * when the turn's model fails: pi continues the same conversation on the next model; Claude gets the first as the SDK's `fallbackModel`.
+ */
+export type TurnRouting = { model?: string; thinking?: string; fallback?: ModelStep[] };
+
 export type TurnRequest = {
   prompt: string;
   /**
@@ -110,6 +120,8 @@ export type TurnRequest = {
    * the turn's minus its own denied groups, and a read-only one only reads. Absent: none, and `Task` is exactly as before.
    */
   subagents?: TurnSubagent[];
+  /** The active profile's `primary` route for this turn (see {@link TurnRouting}). Absent: no profile, and no fallback. */
+  routing?: TurnRouting;
   resumeRef?: string;
   /**
    * What the conversation named by `resumeRef` had cost in all so far. An engine whose reported cost is a running total that a resumed
@@ -134,8 +146,12 @@ export type TurnSubagent = {
   description?: string;
   /** Appended to the child's system prompt. */
   prompt?: string;
-  /** The model it asks for; the parent's is used when absent or unusable on the engine. */
+  /** The model it asks for (routed by the active profile, else its own file's); the parent's is used when absent or unusable on the engine. */
   model?: string;
+  /** pi only: the thinking level its routed model runs at. */
+  thinking?: string;
+  /** The models to restart the child on, in order, when `model` fails on a limit, an auth error or a provider error (pi). */
+  fallback?: ModelStep[];
   /** `permission: read-only`: the child only reads (plan rules), whatever the parent's mode. */
   readOnly: boolean;
   /** The groups its `tools` field takes away, on top of the parent's. */

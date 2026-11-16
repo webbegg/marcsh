@@ -15,7 +15,9 @@ import {
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
-import { loadSubagents } from "../../lib/agents";
+import { ProfileDialogContent } from "../dialogs/profile-dialog";
+import { availableSubagents, findAgent, loadSubagents } from "../../lib/agents";
+import { parseProfileCommand, runProfileCommand } from "../../lib/profiles-command";
 import { branchState } from "../../lib/git-branch";
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { SessionCommands } from "./session-commands";
@@ -297,6 +299,24 @@ export const COMMANDS: Command[] = [
     value: "/subagents",
     scope: "session",
     action: onSession("subagents", (session) => session.subagents()),
+  },
+  // After the older commands, so the menu and the palette list those first.
+  {
+    name: "profile",
+    description: "Show or change which models agents and subagents use",
+    value: "/profile",
+    argumentHint: "[use <name> | default <name> | clear]",
+    action: (ctx) => {
+      // `/profile` shows the routing in force; `use`, `default` and `clear` change it (see `lib/profiles-command.ts`).
+      const outcome = runProfileCommand(parseProfileCommand(ctx.args), {
+        engine: ctx.engine,
+        setPiModel: ctx.setPiModel,
+        setClaudeModel: ctx.setModel,
+        subagents: () => availableSubagents(findAgent(ctx.reloadAgents(), ctx.agentId), loadSubagents()).map((sub) => ({ name: sub.address, ...(sub.model ? { model: sub.model } : {}) })),
+      });
+      if ("toast" in outcome) return ctx.toast.show(outcome.toast);
+      ctx.dialog.open({ title: "Model Profile", children: <ProfileDialogContent lines={outcome.show} /> });
+    },
   },
   {
     name: "theme",

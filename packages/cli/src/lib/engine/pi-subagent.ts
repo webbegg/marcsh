@@ -538,6 +538,8 @@ export type ChildSessionOptions = {
   agentDir: string;
   models: ModelRuntime;
   model: NonNullable<ReturnType<ModelRuntime["getModel"]>>;
+  /** The thinking level the child runs at (a profile route's: `off`...`max`); pi clamps it to what the model supports. Default: pi's own. */
+  thinkingLevel?: string;
   /** Whether the project's own settings and files load: the parent turn's trust (S18). Default: untrusted. */
   projectTrusted?: boolean;
   /** The inline extensions the child loads: marcsh's approval extension, bound to the parent turn's host. No others load. */
@@ -591,6 +593,7 @@ export async function runChildSession(pi: PiModule, options: ChildSessionOptions
     agentDir,
     modelRuntime: options.models,
     model: options.model,
+    ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel as never } : {}),
     sessionManager: pi.SessionManager.inMemory(cwd),
     settingsManager,
     resourceLoader,

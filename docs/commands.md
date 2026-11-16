@@ -83,6 +83,25 @@ Select the AI model.
 
 See [Engines and models](engines-and-models.md).
 
+### /profile
+
+Show or change which models the main turn and the subagents use, by a profile from `profiles.json`.
+
+```
+/profile
+/profile use <name>
+/profile default <name>
+/profile clear
+```
+
+- `/profile` opens "Model Profile". It lists the profiles in force (the one you chose with `use`, then the default one), the route of the main turn (`primary`) and of each subagent the selected agent can start, and for each model where it comes from: `session profile fast, route review-*`, `default profile cheap, route *`, `agent file`, or `the turn's model`. Routes that do not fit the engine are listed as skipped, and the parts of the file that are invalid are listed as ignored.
+- `/profile use <name>` chooses the profile for this run of marcsh and switches the model to the profile's `primary` route (on pi `provider/id`; on Claude one of `opus`, `sonnet` or `haiku`). You can change the model afterwards with `/models` or `F2`; that choice stays until the next `/profile use`. A profile with no `primary` route that fits the engine leaves the model as it is. The choice is not saved.
+- `/profile default <name>` writes `"default": "<name>"` in `profiles.json`, keeping the rest of the file. It applies to every session that has not chosen another profile. It does not change the model of the session you are in.
+- `/profile clear` drops the profile you chose; the default one, if any, applies again.
+- An unknown name, or a file that is missing or not valid JSON, is an error toast, and nothing changes.
+
+The file, its format and the fallback chains are in [Configuration](configuration.md#model-profiles).
+
 ### /login
 
 Sign in to a pi provider with a subscription or an API key.

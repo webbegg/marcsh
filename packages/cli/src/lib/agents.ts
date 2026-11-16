@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { MAX_AGENT_BYTES, parseAgentFile, parseSubagentFile, type Agent, type Subagent } from "./agent-file";
 import { unsupportedGroups } from "./agent-tools";
 import type { TurnSubagent } from "./engine/types";
+import { resolveRoute, type RoutingEngine } from "./model-routing";
 import { Mode, type ModeType } from "./modes";
 import { hookEngines, hookEvents } from "./pack-hooks";
 import { inspectPackHooks, listPacks, packAgentsDir, packPluginDir, packsRoot, packViewLocation } from "./packs";
+import type { ActiveProfile } from "./profiles";
 import { printable } from "./safe-text";
 
 // Other modules import the agent type and the file parser from here.
@@ -121,17 +123,37 @@ export function availableSubagents(agent: Pick<Agent, "pack">, subagents: readon
   return [...own, ...user].sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
 }
 
-/** What the engine needs of the subagents a turn of `agent` may start (see {@link availableSubagents}). */
-export function turnSubagents(agent: Pick<Agent, "pack">, subagents: readonly Subagent[] = loadSubagents()): TurnSubagent[] {
-  return availableSubagents(agent, subagents).map((sub) => ({
+/** The profiles in force and the engine they are applied for (see `model-routing.ts`). */
+export type SubagentRouting = { active: readonly ActiveProfile[]; engine: string };
+
+/**
+ * What the engine needs of the subagents a turn of `agent` may start (see {@link availableSubagents}). With `routing`, each one's model,
+ * thinking level and fallback chain are the profile's route for it, else its own file's `model` (see `resolveRoute`); without it,
+ * its own file's.
+ */
+export function turnSubagents(agent: Pick<Agent, "pack">, subagents: readonly Subagent[] = loadSubagents(), routing?: SubagentRouting): TurnSubagent[] {
+  const engine: RoutingEngine | undefined = routing && { id: routing.engine, fits: (model) => agentModelFits(model, routing.engine) };
+  return availableSubagents(agent, subagents).map((sub) => {
+    const route = routing && engine ? resolveRoute({ active: routing.active, name: sub.address, ...(sub.model ? { agentModel: sub.model } : {}), engine }) : undefined;
+    const model = route ? route.model : sub.model;
+    return {
+      ...subagentBase(sub),
+      ...(model ? { model } : {}),
+      ...(route?.thinking ? { thinking: route.thinking } : {}),
+      ...(route && route.fallback.length > 0 ? { fallback: route.fallback } : {}),
+    };
+  });
+}
+
+function subagentBase(sub: Subagent): TurnSubagent {
+  return {
     name: sub.address,
     description: sub.description,
     prompt: sub.prompt,
-    ...(sub.model ? { model: sub.model } : {}),
     readOnly: sub.mode === Mode.PLAN,
     ...(sub.tools && sub.tools.deny.length > 0 ? { deniedTools: sub.tools.deny } : {}),
     ...(sub.pluginDir ? { pluginDir: sub.pluginDir } : {}),
-  }));
+  };
 }
 
 /** The agent with this ID, else Build. */
