@@ -482,6 +482,80 @@ describe("a placeholder survives edits around it", () => {
     expect(calls[0]!.prompt).toBe(`日本語 ${LINES} x`);
   });
 
+  // The cursor and the selection count display cells, the mention string indices: a wide character is one index but two cells.
+  const pickMention = async () => {
+    await settle(100);
+    expect(frame()).toContain("notes.md");
+    await enter();
+    expect(calls).toHaveLength(0);
+    await enter();
+  };
+
+  test("an @-mention picked after wide characters goes in at its place", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await type("日本語 @");
+
+    await pickMention();
+
+    expect(calls[0]!.prompt).toBe("日本語 @notes.md");
+  });
+
+  test("an @-mention with a query picked after wide characters replaces the query", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await type("日本語 @not");
+
+    await pickMention();
+
+    expect(calls[0]!.prompt).toBe("日本語 @notes.md");
+  });
+
+  test("an @-mention picked after wide characters and a placeholder keeps the placeholder", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await type("日本語 ");
+    await paste(LINES);
+    await type(" @");
+
+    await pickMention();
+
+    expect(calls[0]!.prompt).toBe(`日本語 ${LINES}  @notes.md`);
+  });
+
+  test("an @-mention picked after a placeholder whose label has wide characters keeps it", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    const pasted = "日本語のテキスト\nb\nc";
+    await open();
+    await paste(pasted);
+    expect(frame()).toContain("[Pasted ~3 lines");
+    await type(" @");
+
+    await pickMention();
+
+    expect(calls[0]!.prompt).toBe(`${pasted}  @notes.md`);
+  });
+
+  // Emoji are pasted: the test input types them as broken characters.
+  test("an @-mention picked after emoji goes in at its place", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await paste("🙂🙂 ");
+    await type("@");
+    await pickMention();
+    expect(calls[0]!.prompt).toBe("🙂🙂 @notes.md");
+  });
+
+  test("an @-mention picked after emoji and a placeholder keeps the placeholder", async () => {
+    writeFileSync(join(dir, "notes.md"), "n");
+    await open();
+    await paste("🙂🙂 ");
+    await paste(LINES);
+    await type(" @");
+    await pickMention();
+    expect(calls[0]!.prompt).toBe(`🙂🙂 ${LINES}  @notes.md`);
+  });
+
   test("undo takes the paste back and redo brings the placeholder back, still standing for it", async () => {
     await open();
     await paste(LINES);

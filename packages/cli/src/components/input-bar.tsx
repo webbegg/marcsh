@@ -69,6 +69,18 @@ function isMentionQueryCharacter(character: string) {
   return MENTION_QUERY_CHARACTER.test(character);
 }
 
+// The textarea's cursor and selection count display cells (a wide character takes two), its plainText UTF-16 indices.
+/** The cursor as an index into `plainText`. */
+function cursorIndex(textarea: TextareaRenderable) {
+  return textarea.editBuffer.cellOffsetToStringIndex(textarea.cursorOffset);
+}
+
+/** Puts the cursor at the end of the text (its width in cells). */
+function cursorToEnd(textarea: TextareaRenderable) {
+  textarea.cursorOffset = textarea.editBuffer.stringIndexToCellOffset(textarea.plainText.length);
+}
+
+/** `cursorOffset` is an index into `text` (see cursorIndex). */
 function findActiveMention(text: string, cursorOffset: number): MentionMatch | null {
   const safeOffset = Math.max(0, Math.min(cursorOffset, text.length));
 
@@ -581,8 +593,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     pop("mention");
   }, [pop]);
 
-  const syncMentionMenu = useCallback((text: string, cursorOffset: number) => {
-    const nextMention = findActiveMention(text, cursorOffset);
+  // `cursor` is an index into `text` (see cursorIndex), not the textarea's cell offset.
+  const syncMentionMenu = useCallback((text: string, cursor: number) => {
+    const nextMention = findActiveMention(text, cursor);
     const previousMention = activeMentionRef.current;
     const mentionChanged =
       previousMention?.start !== nextMention?.start ||
@@ -622,7 +635,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (walk.shown !== null && text === walk.shown) return;
     historyWalkRef.current = idleWalk();
     handleContentChange(textarea.plainText);
-    syncMentionMenu(text, textarea.cursorOffset);
+    syncMentionMenu(text, cursorIndex(textarea));
   }, [handleContentChange, syncMentionMenu, renderer]);
 
   // A screen stays mounted a few ms after it navigates (the home screen after Enter, the new-session screen), and keys typed in that
@@ -649,7 +662,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = (draftKey === undefined ? "" : recallDraft(draftKey)) + takeHandOffDraft(renderer) + held;
     if (text === held) return;
     textarea.setText(text);
-    textarea.cursorOffset = text.length;
+    cursorToEnd(textarea);
     setDraft(renderer, text.length > 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
   }, []);
@@ -676,7 +689,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = draftKey === undefined ? "" : recallDraft(draftKey);
     historyWalkRef.current = idleWalk();
     textarea.setText(text);
-    textarea.cursorOffset = text.length;
+    cursorToEnd(textarea);
     setDraft(renderer, text.length > 0);
   }, [draftKey, renderer]);
 
@@ -699,7 +712,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       if (!textarea) return false;
       const { text, block } = mergeGivenBack(returned, fullText(textarea), givenBackRef.current);
       textarea.setText(text);
-      textarea.cursorOffset = text.length;
+      cursorToEnd(textarea);
       givenBackRef.current = block;
       setDraft(renderer, true);
       return true;
@@ -752,9 +765,10 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
     // Only the mention is replaced: rebuilding the whole text would drop the placeholders of large pastes (their marks go with it).
     // Follows opencode's prompt autocomplete `insertPart` (MIT; see THIRD_PARTY_NOTICES.md).
-    textarea.setSelection(mention.start, mention.end);
+    // The mention's ends are indices into plainText; the selection takes cells.
+    textarea.setSelection(textarea.editBuffer.stringIndexToCellOffset(mention.start), textarea.editBuffer.stringIndexToCellOffset(mention.end));
     textarea.insertText(`@${insertion}`);
-    syncMentionMenu(textarea.plainText, textarea.cursorOffset);
+    syncMentionMenu(textarea.plainText, cursorIndex(textarea));
   }, [mentionCandidates, syncMentionMenu]);
 
   const handleTextareaCursorChange = useCallback(() => {
@@ -762,7 +776,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (!textarea) return;
     if (historyWalkRef.current.shown === textarea.plainText) return;
 
-    syncMentionMenu(textarea.plainText, textarea.cursorOffset);
+    syncMentionMenu(textarea.plainText, cursorIndex(textarea));
   }, [syncMentionMenu]);
 
   // `keepText`: the command was not typed (the palette, the leader), so the prompt holds the user's own text and is left alone.
@@ -865,7 +879,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const show = (text: string, cursor: "start" | "end") => {
       walk.shown = text;
       textarea.setText(text);
-      textarea.cursorOffset = cursor === "start" ? 0 : text.length;
+      if (cursor === "start") textarea.cursorOffset = 0;
+      else cursorToEnd(textarea);
     };
 
     if (direction === "up") {
@@ -892,7 +907,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       const draft = walk.draft;
       historyWalkRef.current = idleWalk();
       textarea.setText(draft);
-      textarea.cursorOffset = draft.length;
+      cursorToEnd(textarea);
     }
     return true;
   }, []);
