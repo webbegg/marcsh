@@ -546,11 +546,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // `approvalAndHooks` gets whether the child is read-only, for its approval extension.
       // A writer with `editSurfaces` (`Task`) is also held to them by the surfaces guard (`pi-surfaces.ts`): it denies a write outside them
       // before the approval extension asks, so surfaces only narrow, and flags what `bash` changed outside them after the fact. A read-only
-      // child writes nothing, so it gets no guard.
+      // child writes nothing, so it gets no guard. One guard serves every attempt of a fallback chain, so the list covers all of them.
       // A child that fails on a limit, an auth error or a provider error (after pi's own retries) restarts from its prompt on the next model of its
       // chain, with a notice; any other failure (context length, an invalid request, a stop) is the Task's error, as before. The model that failed is
       // skipped by later launches for a while (see `model-fallback.ts`).
-      const runChild = async ({ subagent, editSurfaces, otherSurfaces, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[], notice: NonNullable<TurnHost["notify"]>) => {
+      const runChild = async ({ subagent, editSurfaces, otherSurfaces, report, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[], notice: NonNullable<TurnHost["notify"]>) => {
         const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
         const own = subagent?.deniedTools ?? [];
         const childDenied = own.length > 0 ? [...new Set([...denied, ...own])] : denied;
@@ -558,6 +558,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const allowed = (name: string) => !isPiToolDenied(name, childDenied);
         const surfaces =
           editSurfaces && !readOnly ? createSurfaceGuard({ cwd, surfaces: editSurfaces, ...(otherSurfaces ? { others: otherSurfaces } : {}) }) : undefined;
+        // `Task` asks the guard for the changed-outside list on every way the child ends (a timeout or an abort does not wait for this function).
+        if (report && surfaces) report.check = () => surfaces.outside();
         const queue = await childSteps(subagent);
         for (;;) {
           const step = queue.shift()!;
@@ -576,8 +578,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
               ...childResources(subagent, readOnly),
             });
             if (!surfaces) return run;
-            const outside = await surfaces.outside();
-            return outside.length > 0 ? { ...run, outsideSurfaces: outside } : run;
+            return { ...run, outsideSurfaces: await surfaces.outside() };
           } catch (error) {
             const category = request.signal.aborted ? undefined : classifyFailure(error instanceof Error ? error.message : String(error));
             if (!category) throw error;
@@ -595,14 +596,14 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // It follows the session's plan mode as it is at each call: once the session is in plan, only its read-only calls run.
       const runBackgroundChild: BackgroundRunChild | undefined =
         background &&
-        (({ description, prompt, subagent, editSurfaces, otherSurfaces, signal: childSignal, onProgress, onEvent }) => {
+        (({ description, prompt, subagent, editSurfaces, otherSurfaces, report, signal: childSignal, onProgress, onEvent }) => {
           const askHost: Pick<TurnHost, "askPermission"> = {
             askPermission: (ask, askSignal) =>
               background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
           return runChild(
-            { prompt, ...(subagent ? { subagent } : {}), ...(editSurfaces ? { editSurfaces } : {}), ...(otherSurfaces ? { otherSurfaces } : {}), signal: childSignal, onProgress, onEvent },
+            { prompt, ...(subagent ? { subagent } : {}), ...(editSurfaces ? { editSurfaces } : {}), ...(otherSurfaces ? { otherSurfaces } : {}), ...(report ? { report } : {}), signal: childSignal, onProgress, onEvent },
             (readOnly) => [
               ...packHooksFor(childSignal, notify, readOnly, true),
               createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),

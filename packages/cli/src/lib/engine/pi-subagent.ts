@@ -74,8 +74,16 @@ export type ChildRun = ChildProgress & {
   outsideSurfaces?: string[];
 };
 
+/**
+ * Where a writer child reports on its own changes outside its surfaces: the runner sets `check` when it starts the child, and `Task` calls it
+ * on every way the child ends (finished, failed, timed out, aborted), so the result lists what changed outside before it stopped.
+ */
+export type OutsideReport = { check?: () => Promise<string[]> };
+
 /** What a writer child is held to (`Task` `editSurfaces`). */
 export type ChildSurfaces = {
+  /** Set by `Task` for a writer: the child's runner points it at the child's guard. */
+  report?: OutsideReport;
   /** The repository-relative paths or globs it may write, as `normalizeSurfaces` gives them. */
   editSurfaces?: string[];
   /** The surfaces of the other writers running now, read when it compares the working tree: their edits are not this child's. */
@@ -177,6 +185,21 @@ function runningBackgroundWriters(subagents: BackgroundSubagents): Writer[] {
 }
 
 const MAX_LISTED_OUTSIDE = 50;
+// A child that is being stopped should not hold up the Task's answer for long while its changes are listed.
+const OUTSIDE_CHECK_MS = 20_000;
+
+/** What the child's guard lists now: empty when there is no guard, it fails, or it is too slow. */
+async function outsideOf(report: OutsideReport | undefined): Promise<string[]> {
+  if (!report?.check) return [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([report.check(), new Promise<string[]>((resolve) => (timer = setTimeout(() => resolve([]), OUTSIDE_CHECK_MS)))]);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** The result text with the files the writer changed outside its surfaces, when there are any. */
 function withOutsideWarning(text: string, outside: readonly string[] | undefined, surfaces: readonly string[] | undefined, background: boolean): string {
@@ -295,8 +318,9 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
         const clash = overlapping(editSurfaces);
         if (clash) throw new Error(`Task not started: its editSurfaces overlap another writer's: ${clash}. Writers that run together need disjoint surfaces: pass other surfaces, or start this one when the other has finished.`);
       }
+      const report: OutsideReport = {};
       const bound = (): ChildSurfaces =>
-        writer && editSurfaces ? { editSurfaces, otherSurfaces: () => runningWriters().filter((other) => other !== writer).flatMap((other) => [...other.surfaces]) } : {};
+        writer && editSurfaces ? { editSurfaces, report, otherSurfaces: () => runningWriters().filter((other) => other !== writer).flatMap((other) => [...other.surfaces]) } : {};
 
       if (isBackground && background) {
         // Not bound to the turn or the call: it runs until it ends, is cancelled, or the session is left. Throws at the cap.
@@ -305,8 +329,16 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
           description,
           prompt,
           run: async (context) => {
-            const run = await background.runChild({ description, prompt, ...as, ...bound(), ...context });
-            return { ...run, text: withOutsideWarning(run.text, run.outsideSurfaces, editSurfaces, true) };
+            let run: ChildRun;
+            try {
+              run = await background.runChild({ description, prompt, ...as, ...bound(), ...context });
+            } catch (error) {
+              // A child that fails still reports what it changed outside its surfaces.
+              const outside = await outsideOf(report);
+              if (outside.length === 0) throw error;
+              throw new Error(withOutsideWarning(error instanceof Error ? error.message : String(error), outside, editSurfaces, true));
+            }
+            return { ...run, text: withOutsideWarning(run.text, run.outsideSurfaces ?? (await outsideOf(report)), editSurfaces, true) };
           },
         });
         if (writer) {
@@ -333,24 +365,27 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
         // A foreground call is aborted once it runs too long (a background one returned above, untimed); waiting for the user does not count.
         run = await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start, { background: canStart });
       } catch (error) {
+        // Whichever way the child ended, the parent is told what it changed outside its surfaces before it stopped.
+        const outside = writer ? await outsideOf(report) : [];
+        const warned = (message: string) => withOutsideWarning(message, outside, editSurfaces, false);
         if (signal.aborted) {
           update({ status: "stopped" });
-          throw new Error(INTERRUPTED);
+          throw new Error(warned(INTERRUPTED));
         }
         if (error instanceof ToolCallTimeoutError) {
           update({ status: "failed", error: error.message });
-          throw error;
+          throw outside.length > 0 ? new Error(warned(error.message)) : error;
         }
         const message = error instanceof Error ? error.message : String(error);
         update({ status: "failed", error: message });
-        throw new Error(message);
+        throw new Error(warned(message));
       } finally {
         if (writer) foregroundWriters.delete(writer);
       }
       // A child that finished as the abort arrived did not complete its work for the user.
       if (signal.aborted) {
         update({ status: "stopped" });
-        throw new Error(INTERRUPTED);
+        throw new Error(withOutsideWarning(INTERRUPTED, writer ? await outsideOf(report) : [], editSurfaces, false));
       }
 
       update({ status: "completed", summary: summarize(run.text), toolUses: run.toolUses, totalTokens: run.totalTokens });
@@ -360,7 +395,8 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
           update: (reply) => ({ ...reply, metadata: { ...reply.metadata, costUsd: (reply.metadata?.costUsd ?? 0) + run.costUsd } }),
         });
       }
-      return { content: [{ type: "text", text: withOutsideWarning(run.text || NO_TEXT, run.outsideSurfaces, editSurfaces, false) }], details: { taskId: toolCallId } };
+      const outside = run.outsideSurfaces ?? (writer ? await outsideOf(report) : []);
+      return { content: [{ type: "text", text: withOutsideWarning(run.text || NO_TEXT, outside, editSurfaces, false) }], details: { taskId: toolCallId } };
     },
   };
 }
