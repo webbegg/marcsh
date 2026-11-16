@@ -28,8 +28,8 @@ const defaultRead: GitReader = (cwd, { trusted }) =>
 
 /**
  * marcsh's own trust for the project at `cwd` (the pi trust question, `/trust`), its git part (`partTrust`): a stored "trusted" whose
- * review of the repo's git settings (`.git/config`, `.gitattributes`, `info/attributes`, which name the filter drivers `git status`
- * may run) still equals them. Undecided, untrusted, stale, a trust from before marcsh reviewed git settings, or a store that cannot
+ * review of the repo's git settings (the filter drivers its own config names, which `git status` may run, and `.gitattributes`,
+ * `info/attributes`) still equals them. Undecided, untrusted, stale, a trust from before marcsh reviewed git settings, or a store that cannot
  * be read does not count. Cheap enough for every poll: the review is cached.
  */
 export function trustedForGit(cwd: string): boolean {

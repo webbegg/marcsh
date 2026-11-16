@@ -107,7 +107,7 @@ Each part of a trust (pi files, project commands, git settings) stops applying o
 
 - `This project has its own commands (.marcsh/commands): run /trust to use them.` You have not decided about the project yet. Run `/trust` to review it.
 - `This project's commands changed since you trusted them: run /trust to use them.` A project command was added, changed or removed since your review. Run `/trust` and review the project again.
-- `This project's git settings changed since you trusted them: run /trust to count its changed files.` `.git/config`, `.gitattributes` or `.git/info/attributes` changed since your review (git itself writes the config sometimes, for example when you set an upstream branch). Run `/trust` and review the project again.
+- `This project's git settings changed since you trusted them: run /trust to count its changed files.` The repo's filter drivers (its own git config and the files it includes), `.gitattributes` or `.git/info/attributes` changed since your review. Settings git writes itself, such as an upstream branch, do not count. Run `/trust` and review the project again.
 - `marcsh now also reviews project commands and git settings: run /trust to use them.` You trusted the project with an earlier version of marcsh, which reviewed only the pi files. The pi files stay trusted; run `/trust` to review the rest.
 
 ### `marcsh run` or `marcsh mcp list` says the pi files changed

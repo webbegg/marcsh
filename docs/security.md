@@ -173,11 +173,16 @@ You make one decision and review one list, but the list has three parts, and eac
 | --- | --- | --- |
 | pi files | the `.pi/` entries and `.agents/skills` | pi loads the project's files: on the turn, at warm-up and for `marcsh mcp list` |
 | Project commands | `.marcsh/commands/<name>.md — project command /<name>`, with `(agent: …, model: …)` when the command sets them | the project's commands in the `/` menu and when typed |
-| Git settings | `.git/config` (a worktree's config where its `.git` file points), `.gitattributes`, `.git/info/attributes` | the git changed-file count in the status line |
+| Git settings | the repo's filter drivers (`git filter drivers: <names>`, or `no filter drivers`), `.gitattributes`, `.git/info/attributes` | the git changed-file count in the status line |
 
-A part holds only while it is as you reviewed it. If something in it is added, changed or removed afterwards, only that part stops applying until you review the project again. A changed project command turns off the project's commands and nothing else; a changed `.git/config` turns off the count and nothing else. Commands never make pi trust a project: a project with only commands gets no pi question. A trust stored before marcsh kept reviews does not hold: review the project again with `/trust`.
+A part holds only while it is as you reviewed it. If something in it is added, changed or removed afterwards, only that part stops applying until you review the project again. A changed project command turns off the project's commands and nothing else; a new or changed filter driver turns off the count and nothing else. Commands never make pi trust a project: a project with only commands gets no pi question. A trust stored before marcsh kept reviews does not hold: review the project again with `/trust`.
 
-The git settings are listed as `git settings: may run programs the repo names (filter drivers)` and `git attributes: which files go through those programs`. The repo's config is where filter drivers are named, so marcsh treats a changed config as new to review. Git itself writes the config sometimes (for example when you set an upstream branch): the count then stays off until you run `/trust` again.
+marcsh runs the count's `git status` with everything else that could run a program switched off (no fsmonitor, hooks, pager, external diff or submodules), so what is left to review is the filter drivers:
+
+- **Filter drivers**: the `filter.*` settings as git resolves them for the repo, includes and `includeIf` followed. Only the repo's own config counts: `.git/config`, a worktree's `config.worktree`, and the files they include. Your global `~/.gitconfig` and the system config are yours, not the project's, so a filter there (Git LFS, for example) is neither listed nor reviewed. The drivers are one entry, `git filter drivers: <names>`, with one row per setting and its command, for example `filter crypt clean: ./tools/encrypt %f`. A repo without any is listed as `no filter drivers`, so a driver added later asks again.
+- **Attributes**: `.gitattributes` at the top of the work tree and `.git/info/attributes`, listed as `git attributes: which files go through the filter drivers`. A `.gitattributes` in a subfolder is not reviewed: finding a new one would mean listing the whole work tree on every check, and it can only send files through a driver that is reviewed here or one from your own config.
+
+The rest of the config is not part of the review. Settings git writes itself, such as an upstream branch (`git push -u`, `git branch -u`), a new remote or a `core.*` setting, leave the count on.
 
 #### After an upgrade
 

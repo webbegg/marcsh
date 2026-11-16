@@ -41,10 +41,20 @@ const command = (name: string, body = `Run ${name}.\n`) => {
   mkdirSync(commands(), { recursive: true });
   writeFileSync(join(commands(), name), body);
 };
-const gitRepo = (config = "[core]\n\tbare = false\n") => {
-  mkdirSync(join(project, ".git", "info"), { recursive: true });
-  writeFileSync(join(project, ".git", "config"), config);
+/** Runs git in `cwd` as a user would (the test's HOME, no system config); fails the test when git fails. */
+const git = (cwd: string, ...args: string[]) => {
+  const env: Record<string, string> = { GIT_CONFIG_NOSYSTEM: "1" };
+  for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("GIT_")) env[key] ??= value;
+  const result = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+  return result.stdout.toString();
 };
+const gitRepo = (dir = project) => {
+  mkdirSync(dir, { recursive: true });
+  git(dir, "init", "-q", "-b", "main");
+  mkdirSync(join(dir, ".git", "info"), { recursive: true });
+};
+const gitRows = (dir = project) => reviewProject(dir).resources.filter((resource) => resource.kind === "git");
 const age = (path = project, when = new Date(Date.now() - 60_000)) => {
   if (statSync(path).isDirectory()) for (const name of readdirSync(path)) age(join(path, name), when);
   utimesSync(path, when, when);
@@ -74,14 +84,14 @@ describe("entries are tagged with their part", () => {
     expect(resources.map((resource) => [resource.path, resource.kind ?? "pi"])).toEqual([
       [".pi/extensions/a.ts", "pi"],
       [".marcsh/commands/deploy.md", "command"],
-      [".git/config", "git"],
+      ["no filter drivers", "git"],
       [".gitattributes", "git"],
     ]);
-    expect(resources.find((resource) => resource.path === ".git/config")?.detail).toBe("git settings: may run programs the repo names (filter drivers)");
+    expect(resources.find((resource) => resource.path === "no filter drivers")?.detail).toBeUndefined();
     expect(Object.fromEntries(record.map((entry) => [entry.path, entry.kind]))).toEqual({
       ".pi/extensions/a.ts": "pi",
       ".marcsh/commands/deploy.md": "command",
-      ".git/config": "git",
+      "no filter drivers": "git",
       ".gitattributes": "git",
     });
   });
@@ -95,16 +105,19 @@ describe("entries are tagged with their part", () => {
     expect(rows.map((row) => row.detail)).toEqual(["project command /plain", "project command /ship (agent: build, model: opus)"]);
   });
 
-  test("a worktree's git settings are where its .git file points", () => {
+  test("a linked worktree's filter drivers are its repo's and its own worktree config's", () => {
     const main = join(root, "main");
-    mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
-    writeFileSync(join(main, ".git", "config"), "[core]\n");
-    writeFileSync(join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
-    writeFileSync(join(project, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
+    gitRepo(main);
+    git(main, "commit", "-q", "--allow-empty", "-m", "one");
+    git(main, "worktree", "add", "-q", join(root, "wt"));
+    git(main, "config", "filter.m.clean", "m-clean");
+    git(main, "config", "extensions.worktreeConfig", "true");
+    git(join(root, "wt"), "config", "--worktree", "filter.w.smudge", "w-smudge");
 
-    const git = reviewProject(project).resources.filter((resource) => resource.kind === "git");
-
-    expect(git.map((resource) => resource.path)).toEqual([join(main, ".git", "config")]);
+    expect(gitRows(join(root, "wt")).map(({ path, detail }) => [path, detail])).toEqual([
+      ["git filter drivers: m, w", "filter m clean: m-clean"],
+      ["git filter drivers: m, w", "filter w smudge: w-smudge"],
+    ]);
   });
 });
 
@@ -145,7 +158,7 @@ describe("the upgrade: a review stored before commands and git settings were rev
       ".pi/extensions/a.ts": "unchanged",
       ".pi/extensions/b.ts": "added",
       ".marcsh/commands/deploy.md": "unreviewed",
-      ".git/config": "unreviewed",
+      "no filter drivers": "unreviewed",
     });
     expect(changes.removed).toEqual([]);
   });
@@ -166,11 +179,11 @@ describe("each part goes stale on its own", () => {
     }
   });
 
-  test("a changed .git/config or a new .gitattributes turns only the git count off", () => {
+  test("a new filter driver or a new .gitattributes turns only the git count off", () => {
     command("deploy.md");
     gitRepo();
     for (const change of [
-      () => writeFileSync(join(project, ".git", "config"), '[filter "x"]\n\tclean = ./run-me\n'),
+      () => git(project, "config", "filter.x.clean", "./run-me"),
       () => writeFileSync(join(project, ".gitattributes"), "* filter=x\n"),
       () => writeFileSync(join(project, ".git", "info", "attributes"), "* filter=x\n"),
     ]) {
@@ -192,6 +205,113 @@ describe("each part goes stale on its own", () => {
     expect(partTrust(project, storage, "pi")).toBe("stale");
     expect(trustedProjectCommands(project, storage).state).toBe("holds");
     expect(partTrust(project, storage, "git")).toBe("holds");
+  });
+});
+
+describe("the git part: only what could make the status line's git status run a program", () => {
+  // Aged, so the review is kept (`currentProjectReview`) and only a noted path changing reads the project again.
+  const trustedAged = () => {
+    age();
+    return trusted();
+  };
+
+  test("settings git itself writes (upstream, remotes, core) leave it holding", () => {
+    gitRepo();
+    git(project, "commit", "-q", "--allow-empty", "-m", "one");
+    git(project, "branch", "other");
+    const storage = trustedAged();
+    for (const change of [
+      () => git(project, "config", "branch.main.remote", "origin"),
+      () => git(project, "branch", "-u", "other"),
+      () => git(project, "remote", "add", "up", "https://example.invalid/r.git"),
+      () => git(project, "config", "core.autocrlf", "input"),
+    ]) {
+      change();
+      expect(partTrust(project, storage, "git")).toBe("holds");
+    }
+    expect(git(project, "config", "--get", "branch.main.merge").trim()).toBe("refs/heads/other");
+  });
+
+  test("a repo without filter drivers or attributes is one entry, so a driver added later asks again", () => {
+    gitRepo();
+    expect(gitRows().map(({ path, detail }) => [path, detail])).toEqual([["no filter drivers", undefined]]);
+    const storage = trustedAged();
+    expect(partTrust(project, storage, "git")).toBe("holds");
+
+    git(project, "config", "filter.x.clean", "./run-me");
+
+    expect(partTrust(project, storage, "git")).toBe("stale");
+    expect(gitRows().map(({ path, detail }) => [path, detail])).toEqual([["git filter drivers: x", "filter x clean: ./run-me"]]);
+  });
+
+  test("a filter driver in a file the repo's config includes counts, and so does an edit to that file", () => {
+    gitRepo();
+    writeFileSync(join(project, "gitinc"), "[core]\n");
+    git(project, "config", "include.path", "../gitinc");
+    const storage = trustedAged();
+    expect(partTrust(project, storage, "git")).toBe("holds");
+
+    writeFileSync(join(project, "gitinc"), '[filter "inc"]\n\tsmudge = ./inc-run\n');
+
+    expect(partTrust(project, storage, "git")).toBe("stale");
+    expect(gitRows().map(({ path, detail }) => [path, detail])).toEqual([["git filter drivers: inc", "filter inc smudge: ./inc-run"]]);
+  });
+
+  test("an include added to the config, or one that applies on another branch, counts", () => {
+    gitRepo();
+    git(project, "commit", "-q", "--allow-empty", "-m", "one");
+    writeFileSync(join(project, "gitinc"), '[filter "inc"]\n\tclean = ./inc-run\n');
+    git(project, "config", "includeIf.onbranch:feature.path", "../gitinc");
+    const storage = trustedAged();
+    expect(partTrust(project, storage, "git")).toBe("holds");
+
+    git(project, "switch", "-q", "-c", "feature");
+    expect(partTrust(project, storage, "git")).toBe("stale");
+
+    git(project, "switch", "-q", "main");
+    expect(partTrust(project, storage, "git")).toBe("holds");
+    git(project, "config", "include.path", "../gitinc");
+    expect(partTrust(project, storage, "git")).toBe("stale");
+  });
+
+  test("an edit to .gitattributes turns it off", () => {
+    gitRepo();
+    writeFileSync(join(project, ".gitattributes"), "*.md text\n");
+    const storage = trustedAged();
+    expect(partTrust(project, storage, "git")).toBe("holds");
+
+    writeFileSync(join(project, ".gitattributes"), "*.md filter=x\n");
+
+    expect(partTrust(project, storage, "git")).toBe("stale");
+  });
+
+  test("the user's own global git config is not the project's: its filter drivers are neither shown nor reviewed", () => {
+    gitRepo();
+    const storage = trustedAged();
+    const before = reviewProject(project).record;
+
+    writeFileSync(join(process.env.HOME!, ".gitconfig"), '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n');
+    expect(git(project, "config", "--get", "filter.lfs.clean").trim()).toBe("git-lfs clean -- %f");
+
+    expect(partTrust(project, storage, "git")).toBe("holds");
+    expect(reviewProject(project).record).toEqual(before);
+    expect(gitRows().map(({ path }) => path)).toEqual(["no filter drivers"]);
+  });
+
+  test("the filter command is shown whole, escaped", () => {
+    gitRepo();
+    git(project, "config", "filter.x.clean", "run\u001b[2J\nnext %f");
+
+    expect(gitRows().map(({ path, detail }) => [path, detail])).toEqual([["git filter drivers: x", "filter x clean: run\\u001b[2J\\nnext %f"]]);
+  });
+
+  test("is kept while nothing git reads for it changed (the status line's poll)", () => {
+    gitRepo();
+    git(project, "config", "filter.x.clean", "./run-me");
+    age();
+    const review = reviewProject(project);
+
+    expect(currentProjectReview(project)).toBe(review);
   });
 });
 

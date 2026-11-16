@@ -353,6 +353,13 @@ describe("useBranchState", () => {
   });
 });
 
+/** git in a test folder, without the user's global or system config. */
+const gitIn = (cwd: string, ...args: string[]) => {
+  const result = Bun.spawnSync(["git", ...args], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+};
+const gitInit = (cwd: string) => gitIn(cwd, "init", "-q", "-b", "trunk");
+
 // R1-1b: marcsh's own per-project decision (`/trust`, the pi trust question): only a stored "trusted" counts.
 describe("trustedForGit", () => {
   let folder: string;
@@ -377,9 +384,8 @@ describe("trustedForGit", () => {
     expect(trustedForGit(folder)).toBe(false);
   });
 
-  test("follows the git part only: a project command appearing leaves it on, a changed .git/config or .gitattributes turns it off", () => {
-    mkdirSync(join(folder, ".git"), { recursive: true });
-    writeFileSync(join(folder, ".git", "config"), "[core]\n");
+  test("follows the git part only: a project command or an upstream leaves it on, a filter driver or .gitattributes turns it off", () => {
+    gitInit(folder);
     getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
     expect(trustedForGit(folder)).toBe(true);
 
@@ -387,7 +393,11 @@ describe("trustedForGit", () => {
     writeFileSync(join(folder, ".marcsh", "commands", "deploy.md"), "Deploy.");
     expect(trustedForGit(folder)).toBe(true);
 
-    writeFileSync(join(folder, ".git", "config"), '[filter "x"]\n\tclean = ./run-me\n');
+    gitIn(folder, "config", "branch.trunk.remote", "origin");
+    gitIn(folder, "config", "branch.trunk.merge", "refs/heads/trunk");
+    expect(trustedForGit(folder)).toBe(true);
+
+    gitIn(folder, "config", "filter.x.clean", "./run-me");
     expect(trustedForGit(folder)).toBe(false);
 
     getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
@@ -396,8 +406,7 @@ describe("trustedForGit", () => {
   });
 
   test("a trust stored before git settings were reviewed (pi files only) keeps the count off", () => {
-    mkdirSync(join(folder, ".git"), { recursive: true });
-    writeFileSync(join(folder, ".git", "config"), "[core]\n");
+    gitInit(folder);
     mkdirSync(join(folder, ".pi"), { recursive: true });
     writeFileSync(join(folder, ".pi", "SYSTEM.md"), "be nice");
     const legacy = reviewProject(folder)
@@ -422,8 +431,7 @@ describe("the hint when the count is off (R3-3)", () => {
   };
   beforeEach(() => {
     folder = mkdtempSync(join(tmpdir(), "marcsh-git-notice-"));
-    mkdirSync(join(folder, ".git"), { recursive: true });
-    writeFileSync(join(folder, ".git", "config"), "[core]\n");
+    gitInit(folder);
     notices.length = 0;
   });
   afterEach(() => {
@@ -433,7 +441,7 @@ describe("the hint when the count is off (R3-3)", () => {
 
   test("git settings changed since the trust: said once, whatever the polls", async () => {
     getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
-    writeFileSync(join(folder, ".git", "config"), '[filter "x"]\n\tclean = ./run-me\n');
+    gitIn(folder, "config", "filter.x.clean", "./run-me");
 
     await remount(folder);
     await remount(folder);

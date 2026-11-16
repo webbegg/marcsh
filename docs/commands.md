@@ -120,7 +120,7 @@ Trust or distrust this project: its pi files, its commands (`.marcsh/commands`) 
 - Opens "Project Trust" with three choices: "Don't trust", "Trust" and "Forget".
 - "Trust" lists what you trust first. A project with nothing to review says what trusting turns on and asks for `t`, then `Enter`.
 - Project commands and the git count follow a change at once; pi follows it from the next turn.
-- The list has three parts (pi files, project commands, git settings), and each part stops applying on its own when something in it is added, changed or removed: a changed command turns off the project's commands, a changed `.git/config` the git count, a changed pi file pi's trust. Run `/trust` again to review the project.
+- The list has three parts (pi files, project commands, git settings), and each part stops applying on its own when something in it is added, changed or removed: a changed command turns off the project's commands, a new or changed git filter driver or attributes file the git count, a changed pi file pi's trust. Run `/trust` again to review the project.
 - "Forget" goes back to undecided.
 
 See [Security](security.md#change-a-decision-trust) for what each choice does, the review list and the keys, and for what trusting a project allows.

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_AGENT_BYTES, readFrontmatter } from "../agent-file";
 import { PROJECT_COMMANDS_DIR, PROJECT_COMMANDS_PATH, commandFiles } from "../command-files";
+import { readOnlyGitArgs, readOnlyGitEnv } from "../git-safe";
 import type { ProjectTrust, ReviewKind, Storage, StoredReview } from "../storage";
 
 /*
@@ -23,8 +24,8 @@ import type { ProjectTrust, ReviewKind, Storage, StoredReview } from "../storage
  * reviewed like the project's own files, resolved the way pi's package manager resolves them (see `settingsTargets`).
  *
  * The review a trust is stored with (`reviewProject`) has three parts, each entry tagged with its `kind`: the pi files ("pi", the
- * above), the project's own marcsh commands ("command", `.marcsh/commands`) and the repo's git settings ("git", `.git/config` and the
- * attribute files, which name the filter drivers `git status` may run). There is one decision, but each consumer checks only its own
+ * above), the project's own marcsh commands ("command", `.marcsh/commands`) and the repo's git settings ("git": the filter drivers its
+ * own config names, which `git status` may run, and the attribute files that pick the files they run on). There is one decision, but each consumer checks only its own
  * part (`partTrust`): pi's trust (the turn, warm-up, `marcsh mcp`) the pi part, the command loader the command part
  * (`trustedProjectCommands`), the status line's changed-file count the git part.
  */
@@ -690,8 +691,96 @@ function hashCommands(project: string): (Hashed & { command?: ProjectCommandFile
   });
 }
 
-const GIT_SETTINGS_DETAIL = "git settings: may run programs the repo names (filter drivers)";
-const GIT_ATTRIBUTES_DETAIL = "git attributes: which files go through those programs";
+const NO_FILTER_DRIVERS = "no filter drivers";
+const FILTER_DRIVERS = "git filter drivers";
+const GIT_ATTRIBUTES_DETAIL = "git attributes: which files go through the filter drivers";
+// The most `git config` may print for one review, and how long it may take (an include can name a FIFO git would wait on).
+const MAX_GIT_CONFIG_BYTES = MAX_JSON_BYTES;
+const GIT_CONFIG_TIMEOUT_MS = 5000;
+
+type GitConfigEntry = { scope: string; origin: string; key: string; value: string | null };
+
+/**
+ * The `filter.*` and `include*.path` settings git resolves for the repo at `root`, includes and includeIf followed, from the repo's
+ * own config only (its config and a worktree's `config.worktree`, and what they include): not the user's global or the system
+ * config, which are not the project's. Run hardened (`readOnlyGitArgs`, `readOnlyGitEnv`): reading config runs nothing.
+ * `safe.directory=*` lets git read a repo it would refuse, so a repo the user's own config allows is never read as empty.
+ */
+function readGitConfig(root: string): { entries: GitConfigEntry[]; raw: string } | { unreadable: string } {
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    result = Bun.spawnSync(
+      ["git", ...readOnlyGitArgs(), "-c", "safe.directory=*", "config", "--includes", "--show-scope", "--show-origin", "--null", "--get-regexp", "^(filter|include|includeif)\\."],
+      { cwd: root, env: { ...readOnlyGitEnv(), GIT_CONFIG_GLOBAL: "/dev/null" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: GIT_CONFIG_TIMEOUT_MS },
+    );
+  } catch {
+    return { unreadable: "git could not be run" };
+  }
+  const out = result.stdout ?? Buffer.alloc(0);
+  // 1 with nothing printed: no such setting.
+  if (result.exitCode === 1 && out.length === 0) return { entries: [], raw: "" };
+  if (result.exitCode !== 0) return { unreadable: result.exitCode === null ? "git config did not finish" : "git could not read the repo's config" };
+  if (out.length > MAX_GIT_CONFIG_BYTES) return { unreadable: `more than ${sizeText(MAX_GIT_CONFIG_BYTES)} of git settings` };
+  const raw = out.toString("utf8");
+  // scope NUL origin NUL key LF value NUL, per setting (a setting without a value has no LF).
+  const fields = raw.split("\0");
+  if (fields.pop() !== "" || fields.length % 3 !== 0) return { unreadable: "git printed settings marcsh cannot read" };
+  const entries: GitConfigEntry[] = [];
+  for (let i = 0; i < fields.length; i += 3) {
+    const pair = fields[i + 2]!;
+    const lf = pair.indexOf("\n");
+    entries.push({ scope: fields[i]!, origin: fields[i + 1]!, key: lf < 0 ? pair : pair.slice(0, lf), value: lf < 0 ? null : pair.slice(lf + 1) });
+  }
+  return { entries: entries.filter(({ scope }) => scope === "local" || scope === "worktree"), raw };
+}
+
+/** The files the repo's config includes (whether their condition holds now or not), as git resolves an include's path. */
+function includedFiles(root: string, entries: GitConfigEntry[]): string[] {
+  const home = process.env.HOME || homedir();
+  return entries.flatMap(({ origin, key, value }) => {
+    if (!value || !origin.startsWith("file:") || !/^include(if\..*)?\.path$/.test(key)) return [];
+    if (value.startsWith("~/")) return [join(home, value.slice(2))];
+    if (isAbsolute(value)) return [value];
+    // Relative to the file the include is in.
+    return [resolve(dirname(resolve(root, origin.slice("file:".length))), value)];
+  });
+}
+
+/**
+ * The filter drivers the repo's own config names (`readGitConfig`): what could make the status line's `git status` run a program,
+ * since it is run with everything else that could off (see `git-safe.ts`). One entry, `git filter drivers: <names>` with one row
+ * per setting (`filter <name> clean: <command>`), or `no filter drivers`, so a driver added later is a change. Settings git writes
+ * itself (upstreams, remotes, `core.*`) are not part of it. The files git reads for it are noted (the config, a worktree's own,
+ * `HEAD` for an include on a branch, every included file), so the review is read again when one of them changes.
+ */
+function hashFilterDrivers({ root, gitDir, commonDir }: { root: string; gitDir: string; commonDir: string }): Hashed[] {
+  const unreadable = (reason: string): Hashed[] => [{ resource: unreadableEntry(FILTER_DRIVERS, reason, "git"), digest: "unreadable" }];
+  // Noted before git reads them: a change while it reads shows on the next look.
+  for (const file of new Set([join(commonDir, "config"), join(gitDir, "config.worktree"), join(gitDir, "HEAD")])) readBytes(file);
+  const read = readGitConfig(root);
+  if ("unreadable" in read) return unreadable(read.unreadable);
+  const included = includedFiles(root, read.entries);
+  if (included.length > 0) {
+    // Only known once git has read the config: noted now, then read again, so what is kept is what was noted.
+    for (const file of included) readBytes(file);
+    const again = readGitConfig(root);
+    if ("unreadable" in again) return unreadable(again.unreadable);
+    if (again.raw !== read.raw) return unreadable("changed while being read");
+  }
+  const settings = read.entries.flatMap(({ key, value }) => {
+    if (!key.startsWith("filter.")) return [];
+    const rest = key.slice("filter.".length);
+    const dot = rest.lastIndexOf(".");
+    return [{ name: dot < 0 ? "" : rest.slice(0, dot), setting: rest.slice(dot + 1), value }];
+  });
+  const digest = sha256("filters\0", JSON.stringify(settings.map(({ name, setting, value }) => [name, setting, value])));
+  if (settings.length === 0) return [{ resource: { path: NO_FILTER_DRIVERS, kind: "git" }, digest }];
+  const path = `${FILTER_DRIVERS}: ${[...new Set(settings.map(({ name }) => name))].join(", ")}`;
+  return settings.map(({ name, setting, value }) => ({
+    resource: { path, detail: `filter ${name} ${setting}${value === null ? "" : `: ${value}`}`, kind: "git" as const },
+    digest,
+  }));
+}
 
 /** Where git keeps the repo the project is in, as git finds it: the first `.git` folder, or `.git` file (a worktree, a submodule), upward. */
 function findGitDir(project: string): { root: string; gitDir: string; commonDir: string } | { unreadable: string; at: string } | null {
@@ -717,22 +806,22 @@ function findGitDir(project: string): { root: string; gitDir: string; commonDir:
 }
 
 /**
- * The repo's git settings: what makes the status line's `git status` run programs (filter drivers are named in its config, and
- * the attribute files say which files go through them). The config of the repo (and a worktree's own), the work tree's
- * `.gitattributes` and `info/attributes`, when they exist; none outside a repo. Their own caps, like the commands'.
+ * The repo's git settings: what could make the status line's `git status` run programs. Its filter drivers (`hashFilterDrivers`),
+ * then the attribute files that say which files go through them: the work tree's `.gitattributes` and `info/attributes`, when
+ * they exist. A `.gitattributes` in a subfolder is not reviewed: finding a new one would mean listing the whole work tree on every
+ * look, and it can only send files through a driver that is reviewed here (or the user's own). None outside a repo. Their own
+ * caps, like the commands'.
  */
 function hashGit(project: string): Hashed[] {
   const found = findGitDir(project);
   if (!found) return [];
   if ("unreadable" in found) return [{ resource: unreadableEntry(displayPath(project, found.at), found.unreadable, "git"), digest: "unreadable" }];
   const files: [string, string][] = [
-    [join(found.commonDir, "config"), GIT_SETTINGS_DETAIL],
-    ...(found.gitDir === found.commonDir ? [] : [[join(found.gitDir, "config.worktree"), GIT_SETTINGS_DETAIL] as [string, string]]),
     [join(found.root, ".gitattributes"), GIT_ATTRIBUTES_DETAIL],
     [join(found.commonDir, "info", "attributes"), GIT_ATTRIBUTES_DETAIL],
   ];
   const budget: Budget = { entries: 0, bytes: 0 };
-  return files.flatMap(([file, detail]) => {
+  return [...hashFilterDrivers(found), ...files.flatMap(([file, detail]) => {
     note(file);
     if (!existsSync(file)) return [];
     const path = displayPath(project, file);
@@ -740,7 +829,7 @@ function hashGit(project: string): Hashed[] {
     const read = digestPath(file, budget, false);
     if ("unreadable" in read) return [{ resource: unreadableEntry(path, `${read.at === undefined ? "" : `${read.at}: `}${read.unreadable}`, "git"), digest: "unreadable" }];
     return [{ resource: { path, detail, kind: "git" as const }, digest: read.digest }];
-  });
+  })];
 }
 
 /**
