@@ -16,8 +16,12 @@ const { engines } = await import("../../lib/engine");
 const fake = (id: string) => ({ id, startTurn: () => ({ done: Promise.resolve(), interrupt() {} }), warmUpCommands: async () => {} });
 beforeAll(() => { engines.set("claude", fake("claude") as any); engines.set("pi", fake("pi") as any); });
 afterAll(() => { engines.set("claude", undefined); engines.set("pi", undefined); });
-const settle = (ms = 60) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 type Scr = Awaited<ReturnType<typeof testRender>>;
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 60, screen?: Scr) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 function info(screen: Scr) {
   const f = screen.captureSpans();
   const text = f.lines.map((l) => l.spans.map((s) => s.text).join(""));
@@ -40,7 +44,7 @@ async function open(kind: "session" | "home", w: number, h: number, msgs = 0) {
   const screen = await testRender(<RouterProvider router={router} />, { width: w, height: h });
   await settle(150);
   await act(() => screen.mockInput.typeText("/"));
-  await settle(150);
+  await settle(150, screen);
   return screen;
 }
 const check = (tag: string, screen: Scr, expectMax?: number) => {
@@ -66,7 +70,7 @@ for (const kind of ["session", "home"] as const)
     try {
       check(`${kind} start 40`, screen, 10);
       for (const h of [16, 12, 17, 9, 40]) {
-        await act(async () => screen.resize(80, h)); await settle(150);
+        await act(async () => screen.resize(80, h)); await settle(150, screen);
         check(`${kind} resized ${h}`, screen, h === 40 ? 10 : undefined);
       }
     } finally {
@@ -77,11 +81,11 @@ for (const kind of ["session", "home"] as const)
 test("arrow navigation at 80x16 keeps highlighted row visible; filtering re-measures", async () => {
   const screen = await open("session", 80, 16);
   try {
-    for (let i = 0; i < 12; i++) { await act(() => screen.mockInput.pressArrow("down")); await settle(30); }
+    for (let i = 0; i < 12; i++) { await act(() => screen.mockInput.pressArrow("down")); await settle(30, screen); }
     const d = dump("after 12 downs", screen);
     expect(d.hl.length).toBe(1);
     expect(d.hl[0]).toBeGreaterThanOrEqual(0);
-    await act(() => screen.mockInput.typeText("lo")); await settle(150);
+    await act(() => screen.mockInput.typeText("lo")); await settle(150, screen);
     const e = dump("filter /lo", screen);
     expect(e.hl.length).toBe(1);
   } finally { await act(async () => screen.renderer.destroy()); }

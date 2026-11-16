@@ -96,7 +96,11 @@ const afterTool: FauxResponseStep = (context) => {
   return fauxAssistantMessage([fauxText("all done")]);
 };
 
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 // The prompt ignores keys until the keyboard has been quiet for 300 ms.
 const QUIET_MS = 350;
 let lastActivityAt = 0;

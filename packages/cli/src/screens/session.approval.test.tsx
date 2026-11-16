@@ -60,7 +60,11 @@ beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.
 afterAll(() => engines.set("pi", undefined));
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 // The prompt ignores approval keys until the keyboard has been quiet for 300 ms (S7 B2(c)).
 const QUIET_MS = 350;
 let lastActivityAt = 0;
