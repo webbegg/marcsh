@@ -73,7 +73,7 @@ marcsh reads the clipboard of the machine it runs on, through its terminal libra
 - **On Linux without a desktop session** (a console, a container, no `WAYLAND_DISPLAY` or `DISPLAY`).
 - **Where OpenTUI has no clipboard support for your system.** Windows is not tested.
 
-Other messages: "Clipboard read timed out" (the clipboard owner did not answer within a second: try again), "Clipboard content is too large" (over 8 MB).
+Other messages: "Clipboard read timed out" (the clipboard owner did not answer within a second: try again), "Clipboard content is too large" (over 20 MB).
 
 ### `Cmd+V` pastes nothing when the clipboard holds an image
 

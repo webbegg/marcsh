@@ -16,7 +16,7 @@ export const SNAPSHOT_TIMEOUT_MS = 10_000;
 export const snapshotRoot = (): string => process.env.MARCSH_SNAPSHOTS_DIR?.trim() || defaultSnapshotRoot();
 
 /** The environment variables that move one of marcsh's own files or folders away from `~/.marcsh`. */
-const DATA_ENV = ["MARCSH_DB_PATH", "MARCSH_PREFERENCES_PATH", "MARCSH_KEYBINDS_PATH", "MARCSH_HISTORY_PATH", "MARCSH_AGENT_DIR", "MARCSH_AGENTS_DIR", "MARCSH_PACKS_DIR"];
+const DATA_ENV = ["MARCSH_DB_PATH", "MARCSH_PREFERENCES_PATH", "MARCSH_KEYBINDS_PATH", "MARCSH_HISTORY_PATH", "MARCSH_AGENT_DIR", "MARCSH_AGENTS_DIR", "MARCSH_PACKS_DIR", "MARCSH_ATTACHMENTS_DIR"];
 
 /**
  * marcsh's own data: `~/.marcsh`, and each file or folder that an environment variable moved elsewhere (with the database's `-wal`,

@@ -68,6 +68,7 @@ const { getDefaultEngine } = await import("./lib/preferences");
 const { installQuitSignals } = await import("./lib/quit");
 const { createAppClipboard } = await import("./lib/clipboard");
 const { ClipboardProvider } = await import("./providers/clipboard");
+const { prunePendingImages } = await import("./lib/clipboard-images");
 
 const router = createMemoryRouter(
   [
@@ -91,6 +92,8 @@ const renderer = await createCliRenderer({
 // One native clipboard per process (OpenTUI allows no more): made with the renderer, let go when the renderer goes.
 const clipboard = createAppClipboard(renderer);
 renderer.on("destroy", () => void clipboard.dispose().catch(() => {}));
+// Clipboard images pasted before a session had an ID belong to none: they go when marcsh starts.
+void prunePendingImages().catch(() => {});
 
 function App() {
   return (
