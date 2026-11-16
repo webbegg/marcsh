@@ -97,8 +97,12 @@ pi loads a project's own files only after you trust the project. Type `/trust` t
 
 - `Terminal too small to review the list: make it taller to trust.` Make the window taller and try again.
 - `Could not read N of these files (listed first): trusting is not offered.` marcsh cannot show you what trusting would run. Make the listed files readable or remove them, then run `/trust` again.
-- `This project has no pi files: nothing to trust`. There is nothing to do.
-- `This project's pi files changed while you were reviewing them, so nothing was saved. Open /trust again`. Run `/trust` again and review the new list.
+- `This project's files changed while you were reviewing them, so nothing was saved: review the new list`. The list now shows what the project holds. Read it again and answer.
+- `This project has its own commands (.marcsh/commands): run /trust to use them.` The project's commands are not used until you trust the project. Run `/trust` to review them.
+
+### My project commands stopped working
+
+A project command was added, changed or removed since you trusted the project, so the trust no longer holds. Run `/trust` and review the project again.
 - `Could not save the decision: …`. The text after the colon is the reason. Check that `~/.marcsh/marcsh.db` is writable.
 
 ## Packs and agents

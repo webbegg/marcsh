@@ -169,9 +169,9 @@ describe("a project file marcsh cannot read is never trusted (verify)", () => {
     await openPiSession();
     await type("/trust");
     await press("RETURN");
-    expect(await frameContaining("Project Trust")).toContain("pi loads this project's files");
+    expect(await frameContaining("Project Trust")).toContain("use its pi files, commands and git status");
     pad();
-    await type("loads");
+    await type("commands and");
     await press("RETURN");
     const shown = await frameContaining("could not read some of this project's pi files");
     expect(shown).toContain("cannot show what trusting would run");

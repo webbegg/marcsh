@@ -548,7 +548,7 @@ describe("a project with a file marcsh could not read (S18)", () => {
     expect(dialog).toContain("Now: not trusted (the stored decision no longer applies)");
     expect(dialog).toContain("Don't trust");
     expect(dialog).toContain("Forget");
-    expect(dialog).not.toContain("pi loads this project's files");
+    expect(dialog).not.toContain("use its pi files, commands and git status");
   }, 30000);
 });
 
@@ -622,7 +622,7 @@ describe("/trust (S18)", () => {
     await press("RETURN");
 
     expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
-    expect(await frameContaining("now trusted for pi from the next turn")).toContain("now trusted for pi from the next turn");
+    expect(await frameContaining("now trusted (pi: from the next turn)")).toContain("now trusted (pi: from the next turn)");
     expect(frame()).not.toContain(TITLE);
     expect(existsSync(marker())).toBe(false);
   }, 30000);
@@ -672,14 +672,50 @@ describe("/trust (S18)", () => {
     expect(frame()).not.toContain("Project Trust");
   }, 30000);
 
-  test("a project with no pi files does not offer Trust, and says there is nothing to trust", async () => {
+  test("a project with nothing to review offers Trust, and choosing it stores 'trusted' with the empty review in one step", async () => {
     rmSync(join(cwd, ".pi"), { recursive: true, force: true });
     const dialog = await openTrust();
 
-    expect(dialog).toContain("no pi files found");
-    expect(dialog).toContain("nothing to trust");
+    expect(dialog).toContain("no pi files or project commands found");
+    expect(dialog).not.toContain("nothing to trust");
     expect(dialog).toContain("Don't trust");
-    expect(dialog).not.toContain("pi loads this project's files");
+    expect(dialog).toContain("use its pi files, commands and git status");
+
+    await arrowDown();
+    await press("RETURN");
+
+    expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
+    expect(getStorage().getProjectReview(cwd)).toEqual([]);
+    expect(await frameContaining("now trusted (pi: from the next turn)")).toContain("now trusted (pi: from the next turn)");
+    expect(frame()).not.toContain(TITLE);
+  }, 30000);
+
+  test("files that appear between opening /trust and choosing Trust are listed for review first; nothing is stored yet", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    expect(await openTrust()).toContain("no pi files or project commands found");
+
+    mkdirSync(join(cwd, ".marcsh", "commands"), { recursive: true });
+    writeFileSync(join(cwd, ".marcsh", "commands", "deploy.md"), "Deploy $ARGUMENTS");
+    await arrowDown();
+    await press("RETURN");
+
+    const prompt = await frameContaining(TITLE);
+    expect(prompt).toContain(".marcsh/commands/deploy.md — project command /deploy");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+  }, 30000);
+
+  test("a project with only commands lists them: the dialog counts them and Trust reviews them", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    mkdirSync(join(cwd, ".marcsh", "commands"), { recursive: true });
+    writeFileSync(join(cwd, ".marcsh", "commands", "deploy.md"), "Deploy $ARGUMENTS");
+
+    expect(await openTrust()).toContain("1 project command found");
+    const prompt = await chooseTrust();
+    expect(prompt).toContain(".marcsh/commands/deploy.md — project command /deploy");
+
+    await press("t");
+    await press("RETURN");
+    expect(getStorage().getProjectReview(cwd)).toEqual(reviewProject(cwd).record);
   }, 30000);
 
   test("Don't trust stores 'untrusted', and the dialog shows the current decision when it is opened again", async () => {

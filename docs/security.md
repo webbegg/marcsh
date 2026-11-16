@@ -155,20 +155,23 @@ When background work finishes while a pi session is idle, marcsh starts a turn t
 
 ## Project trust
 
-Project trust applies to the **pi** engine.
+You can trust any project, on either engine. Until you trust a project, marcsh does not use what the project itself brings:
 
-A project can carry its own pi files. They are code that runs with your permissions. Until you trust the project, pi ignores them:
-
-- the `.pi/` folder: settings, extensions, skills, prompt templates, themes, system prompt files, and `.pi/mcp.json` with the project's MCP servers;
-- `.agents/skills` in the project or in a parent folder.
+- **pi files** (pi engine). They are code that runs with your permissions. pi ignores them:
+  - the `.pi/` folder: settings, extensions, skills, prompt templates, themes, system prompt files, and `.pi/mcp.json` with the project's MCP servers;
+  - `.agents/skills` in the project or in a parent folder.
+- **Project commands** (both engines): the files in `.marcsh/commands`. They are not loaded, and a typed `/name` that matches only a project command is sent as typed. See [Project commands and trust](commands.md#project-commands-and-trust).
+- **The git changed-file count** in the status line (both engines). See below.
 
 `AGENTS.md` and `CLAUDE.md` are not part of this. pi reads them as context without asking.
 
+A trust holds only while the project is as you reviewed it. If a pi file or a project command is added, changed or removed afterwards, the trust stops applying to all three until you review the project again. A trust stored before marcsh kept reviews does not hold either: review the project again with `/trust`.
+
 ### The first time
 
-On the first pi turn in a project that has such files, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's pi files?`
+On the first pi turn in a project that has pi files or project commands, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's pi files?`
 
-It lists everything pi would load or run, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too.
+It lists everything pi would load or run, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come last, each as `.marcsh/commands/<name>.md — project command /<name>`.
 
 | Key | What it does |
 | --- | --- |
@@ -182,23 +185,25 @@ If marcsh cannot read one of the entries, it cannot show you what trusting would
 
 ### When the files change
 
-Trust is tied to what you reviewed. If a file is added, changed or removed afterwards, marcsh asks again with the title `This project's pi files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`.
+Trust is tied to what you reviewed. If a pi file or a project command is added, changed or removed afterwards, the next pi turn asks again with the title `This project's pi files changed since you trusted them. Trust them again?` Each entry is marked `[added]`, `[changed]` or `[unchanged]`, and files that are gone are listed as `[removed]`. Until you answer, the project's commands are not used and the status line shows no changed-file count. On Claude nothing asks at turn time: run `/trust` to review the project again.
 
 ### Change a decision: /trust
 
-`/trust` opens `Project Trust` for the current folder. It shows `Now: trusted`, `Now: not trusted` or `Now: not decided yet`, and how many pi files it found. The choices are:
+`/trust` opens `Project Trust` for the current folder, on either engine. It shows `Now: trusted`, `Now: not trusted` or `Now: not decided yet`, and how many pi files and project commands it found (`no pi files or project commands found` when there are none). A trust that stopped applying shows as `Now: not trusted (this project's files changed since you trusted them)`. The choices are:
 
-- **Don't trust**: pi ignores this project's files.
-- **Trust**: opens the same list as the first-time question. Nothing is saved until you answer `t` and `Enter`.
+- **Don't trust**: don't use the project's pi files, commands or git status.
+- **Trust**: opens the same list as the first-time question. Nothing is saved until you answer `t` and `Enter`. A project with nothing to list is trusted in this one step. If something appeared since the dialog opened, or while you were reading the list, you see the new list instead, and nothing is saved until you answer it.
 - **Forget**: ask again at the next pi turn that needs it.
 
-A change applies from the next turn. If a project has no pi files, there is nothing to trust and `/trust` says so. If marcsh cannot read one of the files, **Trust** is not offered either, and the dialog lists the unreadable files. A trust you gave earlier stops applying when the files change after your review. Review them again.
+Project commands and the git count follow a change at once; pi follows it from the next turn. If marcsh cannot read one of the files, **Trust** is not offered, and the dialog lists the unreadable files. A trust you gave earlier stops applying when the files change after your review. Review them again.
 
 marcsh never runs `git status` in a folder you have not trusted, on either engine, because `git status` can run programs that a repo's own git settings name. There the status line only reads the branch.
 
 ### On Claude
 
-marcsh does not ask about project files on the Claude engine. Claude Code reads the project's settings (`.claude/settings.json` and `.claude/settings.local.json`) by its own rules, without the `/trust` prompt.
+marcsh does not ask about project files on the Claude engine. The project's commands and the git changed-file count still follow marcsh's trust: in a project whose commands are not trusted, opening the `/` menu says once `This project has its own commands (.marcsh/commands): run /trust to use them.`
+
+Claude project settings are **not** gated by marcsh trust. Claude Code reads the project's settings (`.claude/settings.json` and `.claude/settings.local.json`) by its own rules, whether or not you trusted the project in marcsh.
 
 ## How marcsh starts
 

@@ -179,7 +179,7 @@ describe("/trust cannot trust by typeahead (verify)", () => {
     expect(shown).toContain("Trust is not offered");
     expect(shown).toContain(".pi/mcp.json — could not be read: larger than 1 MB");
     expect(shown).toContain("Don't trust");
-    expect(shown).not.toContain("pi loads this project's files");
+    expect(shown).not.toContain("use its pi files, commands and git status");
     // The choice under the cursor is the first one, Don't trust: Enter saves that, never a trust.
     await arrowDown();
     await press("RETURN");

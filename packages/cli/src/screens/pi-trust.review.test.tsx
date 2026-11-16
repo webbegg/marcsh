@@ -276,7 +276,7 @@ describe("/trust after a trusted project changed (S1)", () => {
 
     const dialog = await openTrust();
 
-    expect(dialog).toContain("Now: not trusted (this project's pi files changed since you trusted them)");
+    expect(dialog).toContain("Now: not trusted (this project's files changed since you trusted them)");
   }, 30000);
 
   test("shows the plain 'Now: trusted' while the files are as reviewed", async () => {

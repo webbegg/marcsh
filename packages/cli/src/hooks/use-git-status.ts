@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { BranchState } from "../lib/git-branch";
 import { readGitBranchState, readGitStatus, type GitStatus } from "../lib/git-status";
+import { projectTrustHolds } from "../lib/engine/pi-trust";
 import { getStorage } from "../lib/storage";
 
 /** Reads the git state of a folder; `trusted` says whether it may count the changed files (see `readGitStatus`). */
@@ -21,15 +22,12 @@ const defaultRead: GitReader = (cwd, { trusted }) =>
   process.env.MARCSH_GIT_STATUS?.trim().toLowerCase() === "off" ? Promise.resolve(null) : readGitStatus(cwd, { trusted });
 
 /**
- * marcsh's own decision for the project at `cwd` (the pi trust question, `/trust`), the one project commands follow too: only a
- * stored "trusted" counts; undecided, untrusted or a store that cannot be read does not.
+ * marcsh's own trust for the project at `cwd` (the pi trust question, `/trust`), by the rule project commands follow too
+ * (`projectTrustHolds`): a stored "trusted" whose review still equals the project. Undecided, untrusted, stale, a trust from before
+ * reviews, or a store that cannot be read does not count. Cheap enough for every poll: the review is cached.
  */
 export function trustedForGit(cwd: string): boolean {
-  try {
-    return getStorage().getProjectTrust(cwd) === "trusted";
-  } catch {
-    return false;
-  }
+  return projectTrustHolds(cwd, getStorage);
 }
 
 const safely = (isTrusted: (cwd: string) => boolean, cwd: string) => {
