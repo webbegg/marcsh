@@ -65,7 +65,8 @@ MCP servers are not run.
 - `3f2a9c1` is the start of the commit you are about to install.
 - Each agent shows its permission (`read-only` or `build`), its model if it sets one, and a summary of its `tools` field.
 - `Not used` lists parts of the pack that marcsh ignores, such as `.mcp.json`, or hooks and MCP servers declared in the pack's plugin manifest.
-- `Check:` lines point at something that deserves a look. For example, a skill that pre-approves tools with `allowed-tools`.
+- `Check:` lines point at something that deserves a look. For example, a skill that pre-approves tools with `allowed-tools`, or a command whose `questions` marcsh cannot use (the command is installed, but it shows an error and sends nothing when run).
+- A command that asks [questions](commands.md#questions) shows as `start → the selected agent (asks questions)`, or `spec → ASDD (asks questions)` when it names an agent.
 - The `hooks:` line appears only when the pack has a `hooks/` folder. It says `present, off`, or `present but unusable (reason); they can never be enabled`.
 
 Read the agents' prompts in the repository if you want to know more. A pack's prompt can tell the model to do anything an agent may do, and your approvals are still the safety net. See [Security](security.md).

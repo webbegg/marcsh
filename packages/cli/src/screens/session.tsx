@@ -17,6 +17,8 @@ import { QuestionPrompt } from "../components/question-prompt";
 import { TrustPrompt } from "../components/trust-prompt";
 import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
+import { useDialog } from "../providers/dialog";
+import { openCommandQuestions } from "../components/dialogs/command-questions";
 import { useChat } from "../hooks/use-chat";
 import { useSessionCommands } from "../hooks/use-session-commands";
 import { usePromptConfig } from "../providers/prompt-config";
@@ -122,6 +124,7 @@ function SessionChat({
     [session.engine],
   );
   const toast = useToast();
+  const dialog = useDialog();
   // Where this project's files are snapshotted around each turn; none (and a reason) without git.
   const snapshots = useMemo(() => openSnapshots(session.cwd), [session.cwd]);
   // Where this session's background work delivers its results (pi only); disposed, with everything it runs, when the session is left.
@@ -279,11 +282,18 @@ function SessionChat({
         engineNames: engineCommandNames(session.engine),
       });
       if (!turn) return send(text, agent, model, undefined, attachments);
+      // A command whose questions are invalid sends nothing: the raw template is never what the model gets.
+      if (turn.error !== undefined) return void toast.show({ variant: "error", message: turn.error });
       const said = [turn.warning, turn.notice].filter(Boolean).join(" ");
       if (said) toast.show({ variant: "info", message: said });
-      send(turn.text, turn.agent ?? agent, model, turn.model, attachments);
+      const turnAgent = turn.agent ?? agent;
+      // A command with questions asks them first; only Start sends the composed request, as this turn (its agent and model, Plan kept).
+      if (turn.form) {
+        return void openCommandQuestions(dialog, { form: turn.form, cwd: session.cwd, onStart: (request) => void send(request, turnAgent, model, turn.model, attachments) });
+      }
+      send(turn.text, turnAgent, model, turn.model, attachments);
     },
-    [session.cwd, session.engine, agents, agent, model, send, toast],
+    [session.cwd, session.engine, agents, agent, model, send, toast, dialog],
   );
 
   // A pi session's input takes keys whenever no prompt is open: while it starts (the model check, before the turn can take steers), while the

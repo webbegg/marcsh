@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { MAX_AGENT_BYTES, agentFileSlug, parseAgentFile, parseSubagentFile, readFrontmatter, type Agent } from "./agent-file";
 import { describeTools } from "./agent-tools";
+import { readQuestions } from "./command-questions";
 import { HOOKS_DIR, hookEvents, readHooksDir } from "./pack-hooks";
 import {
   FORMS,
@@ -385,8 +386,16 @@ function declaredKeys(text: string): { hooks: boolean; allowedTools: boolean } {
 /**
  * The skills and commands of a clone: every regular file the generated view is copied from, and what the preview lists. `commandAgents`:
  * the `agent:` of each command marcsh runs itself (a `commands/<name>.md` that names one; "" when it is empty), by command name.
+ * `commandQuestions`: the commands with a `questions` key marcsh runs itself as a form ("asks"), or cannot run ("invalid"), by command name.
  */
-type Parts = { files: string[]; skills: string[]; commands: string[]; commandAgents?: Record<string, string>; warnings: string[] };
+type Parts = {
+  files: string[];
+  skills: string[];
+  commands: string[];
+  commandAgents?: Record<string, string>;
+  commandQuestions?: Record<string, "asks" | "invalid">;
+  warnings: string[];
+};
 
 // The loader's rule for a command name (user-commands.ts): only these are marcsh's commands.
 const COMMAND_NAME = /^[a-z0-9][a-z0-9\-_:]*$/;
@@ -414,6 +423,7 @@ async function readParts(src: string): Promise<Parts> {
   const files = [...(await listPart(src, "skills")), ...(await listPart(src, "commands"))];
   const warnings: string[] = [];
   const commandAgents: Record<string, string> = {};
+  const commandQuestions: Record<string, "asks" | "invalid"> = {};
   for (const file of files) {
     if (!file.toLowerCase().endsWith(".md")) continue;
     let found;
@@ -426,8 +436,14 @@ async function readParts(src: string): Promise<Parts> {
     }
     const command = dirname(file) === "commands" && file.endsWith(".md") ? basename(file).slice(0, -3) : undefined;
     if (command !== undefined && COMMAND_NAME.test(command)) {
-      const { fields } = readFrontmatter(text);
+      const { fields, body } = readFrontmatter(text);
       if (fields.has("agent")) commandAgents[command] = fields.get("agent")?.trim() ?? "";
+      // A command with `questions` is marcsh's to run (a form), with or without an agent; one whose questions cannot work is a warning, not a rejection.
+      const asked = fields.has("questions") ? readQuestions(text, body.trim()) : null;
+      if (asked && "error" in asked) {
+        commandQuestions[command] = "invalid";
+        warnings.push(`${file}: ${asked.error}; it will not run`);
+      } else if (asked && asked.questions.length > 0) commandQuestions[command] = "asks";
     }
     if (found.hooks) throw rejected(`${printable(file)} declares hooks, which marcsh never runs from a skill or command; declare them in hooks/hooks.json, where they stay off until you enable them with /agents hooks`);
     if (found.allowedTools) warnings.push(`${file} pre-approves tools (allowed-tools)`);
@@ -441,7 +457,7 @@ async function readParts(src: string): Promise<Parts> {
     .filter((file) => dirname(file) === "skills" && file.toLowerCase().endsWith(".md") && basename(file).toLowerCase() !== "skill.md")
     .map((file) => basename(file).slice(0, -3));
   const commands = files.filter((file) => file.startsWith("commands/") && file.toLowerCase().endsWith(".md")).map((file) => relative("commands", file).slice(0, -3));
-  return { files, skills: [...folderSkills, ...rootSkills].sort(), commands: commands.sort(), commandAgents, warnings };
+  return { files, skills: [...folderSkills, ...rootSkills].sort(), commands: commands.sort(), commandAgents, commandQuestions, warnings };
 }
 
 // Like the loader, a pack's `agents` folder is not read through a link.
@@ -570,10 +586,14 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
     agents: agents.map((agent) => ({ ...agent, name: printable(agent.name), ...(agent.model ? { model: printable(agent.model) } : {}) })),
     ...(subagents.length > 0 ? { subagents: subagents.map((sub) => ({ ...sub, ...(sub.model ? { model: printable(sub.model) } : {}) })) } : {}),
     skills: clean(parts.skills),
-    // A command marcsh runs itself names the agent it runs as: `spec → ASDD`.
+    // A command marcsh runs itself names the agent it runs as: `spec → ASDD`; one with questions says so, and so does one that cannot run.
     commands: parts.commands.map((name) => {
       const wanted = parts.commandAgents?.[name];
-      return wanted === undefined ? printable(name) : `${printable(name)} → ${commandRunsAs(wanted, id, own)}`;
+      const questions = parts.commandQuestions?.[name];
+      const runsAs = wanted !== undefined ? commandRunsAs(wanted, id, own) : questions ? "the selected agent" : undefined;
+      if (runsAs === undefined) return printable(name);
+      const note = questions === "asks" ? " (asks questions)" : questions === "invalid" ? " (questions are invalid)" : "";
+      return `${printable(name)} → ${runsAs}${note}`;
     }),
     ...(hooks.present ? { hooks: hooks.usable ? { usable: true as const, events: clean(hookEvents(hooks.config)) } : { usable: false as const, reason: printable(hooks.reason) } } : {}),
     ignored: clean(ignored),
