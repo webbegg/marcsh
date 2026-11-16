@@ -46,7 +46,7 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
 | `favoriteModels` | The models you marked as favorites, for each engine (`claude` and `pi`), in the order you marked them. | `Ctrl+F` in `/models` |
 | `recentModels` | The last 5 models you chose or used for a turn, for each engine, newest first. | `/models`, `F2` and sending a message |
 | `notify` | What marcsh does when a turn finishes: `bell` rings the terminal bell, `system` shows a macOS notification (the bell on other systems), `off` does nothing. Default: `bell`. | Edit the file |
-| `paste` | How a large paste (3 lines or more, or over 150 characters) shows in the input: `compact` shows a `[Pasted ~N lines]` placeholder, `full` shows the text. The full text is sent either way. Default: `compact`. See [Pasting](screen.md#pasting). | Edit the file |
+| `paste` | How a large paste (3 lines or more, or over 150 characters) shows in the input: `compact` shows a `[Pasted ~N lines: <start of the first line>…]` placeholder, `full` shows the text. The pasted text is sent either way; a placeholder leaves out only the line ends at the very end of the paste. Default: `compact`. See [Pasting](screen.md#pasting). | Edit the file |
 
 A value marcsh does not understand is ignored, and the default is used. Use the commands above to change settings. If you edit the file by hand, do it while marcsh is closed.
 
@@ -102,7 +102,7 @@ These variables move marcsh's files. All of them are optional. An empty value is
 | `MARCSH_AGENTS_DIR` | The folder with your own agent files. | `~/.marcsh/agents` |
 | `MARCSH_PACKS_DIR` | The folder where packs are installed. | `~/.marcsh/packs` |
 | `MARCSH_AGENT_DIR` | The folder where pi keeps its logins, MCP settings and sessions. | `~/.marcsh/agent` |
-| `MARCSH_ATTACHMENTS_DIR` | The folder where images pasted from the clipboard are saved. | `~/.marcsh/attachments` |
+| `MARCSH_ATTACHMENTS_DIR` | The folder where images pasted from the clipboard are saved. It must be an absolute path; a relative one is ignored, so that images never land in a project folder. | `~/.marcsh/attachments` |
 
 For example, to use a separate database and preferences file:
 

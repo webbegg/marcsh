@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ChatMessage } from "./chat-types";
+import { deleteSessionImages } from "./clipboard-images";
 import { normalizeClaudeCommands, normalizeEngineCommands, type ClaudeCommand } from "./claude-commands";
 
 export type SessionSummary = {
@@ -300,7 +301,16 @@ export function openStorage(path = defaultDbPath()): Storage {
     },
 
     deleteSession(id) {
-      return db.query("DELETE FROM sessions WHERE id = $id").run({ id }).changes > 0;
+      const deleted = db.query("DELETE FROM sessions WHERE id = $id").run({ id }).changes > 0;
+      // The images pasted from the clipboard in it go too; the session is gone even if they cannot be removed.
+      if (deleted) {
+        try {
+          deleteSessionImages(id);
+        } catch {
+          // Left on disk, under ~/.marcsh/attachments.
+        }
+      }
+      return deleted;
     },
 
     forkSession(id, opts = {}) {

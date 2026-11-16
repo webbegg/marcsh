@@ -3,6 +3,11 @@
 marcsh includes code ported from, or modelled on, the projects below. Their licenses ask for the copyright and permission
 notice to be kept in every copy, so it is reproduced here unchanged.
 
+Runtime dependencies are not in the release archive: `bun install` fetches them from npm, each with its own license files.
+One of them, `@opentui/core-<platform>` (OpenTUI's native library, MIT AND LGPL-2.1-or-later), links a decode-only FFmpeg
+build under the LGPL; marcsh loads it from the installed package and never ships or changes it (see the package's
+`LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`).
+
 ## my-pi-setup (davi7)
 
 Upstream: https://github.com/davis7dotsh/my-pi-setup
@@ -53,8 +58,9 @@ Ported or adapted in marcsh (paths under `packages/cli/src/`):
 - `lib/clipboard.ts`: the clipboard reads and writes over OpenTUI follow `packages/tui/src/clipboard.ts`
 - `lib/clipboard.test.ts`: the clipboard service cases follow `packages/tui/test/clipboard.test.ts`
 - `providers/clipboard/index.tsx`: follows `packages/tui/src/context/clipboard.tsx`
-- `components/input-bar.tsx`: the paste queue and the large-paste placeholders follow `enqueuePaste`, the `prompt.paste` command, `onPaste`, `pasteInputText`, `pasteText`, `expandPastedText` and the extmark sync in `packages/tui/src/component/prompt/index.tsx`
-- `lib/paste.ts`: follows `pasteInputText` and `expandTrackedPastedText` in `packages/tui/src/prompt/part.ts`
+- `components/input-bar.tsx`: the paste handling follows the `prompt.paste` command, `onPaste` and `pasteInputText` in `packages/tui/src/component/prompt/index.tsx`; an @-mention replaces only its own range like `insertPart` in `packages/tui/src/component/prompt/autocomplete.tsx`
+- `lib/paste-queue.ts`: follows `enqueuePaste` in `packages/tui/src/component/prompt/index.tsx`
+- `lib/paste.ts`: the large-paste placeholders follow `pasteText`, `expandPastedText` and the extmark sync in `packages/tui/src/component/prompt/index.tsx`, and `expandTrackedPastedText` in `packages/tui/src/prompt/part.ts`
 
 ```text
 MIT License

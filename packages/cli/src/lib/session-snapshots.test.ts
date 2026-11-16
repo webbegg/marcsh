@@ -8,6 +8,7 @@ import {
   baselineTree,
   describeStep,
   dropRedo,
+  marcshDataPaths,
   noStepReason,
   openSnapshots,
   parseUnifiedDiff,
@@ -20,6 +21,15 @@ import { createSnapshotStore, type SnapshotStore } from "./snapshot";
 
 // Real git against a real project: slower than Bun's 5 s on a loaded machine.
 setDefaultTimeout(60_000);
+
+describe("marcshDataPaths", () => {
+  test("covers each folder an environment variable moved, the clipboard images too", () => {
+    const paths = marcshDataPaths();
+    for (const name of ["MARCSH_DB_PATH", "MARCSH_PREFERENCES_PATH", "MARCSH_AGENTS_DIR", "MARCSH_PACKS_DIR", "MARCSH_ATTACHMENTS_DIR"]) {
+      expect(paths, name).toContain(process.env[name]!);
+    }
+  });
+});
 
 let base: string;
 let project: string;

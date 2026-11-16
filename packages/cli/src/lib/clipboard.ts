@@ -6,6 +6,7 @@ import {
   type ClipboardService as CoreClipboardService,
   type RendererClipboardBoundary,
 } from "@opentui/core";
+import { MAX_ATTACHMENT_BYTES } from "./attachments";
 
 // The reading and writing over OpenTUI's clipboard follow opencode's packages/tui/src/clipboard.ts (MIT); see THIRD_PARTY_NOTICES.md.
 
@@ -101,7 +102,13 @@ export function clipboardService(core: CoreClipboardService, options: ServiceOpt
     async write(text) {
       // OpenTUI rejects NUL before any route; a clipboard's text cannot hold it.
       const clean = text.replaceAll("\0", "");
-      const result = await core.writeText(clean, { destination: "all-available", selection: "clipboard", allowRemoteHost: !capabilitiesKnown() });
+      let result;
+      try {
+        result = await core.writeText(clean, { destination: "all-available", selection: "clipboard", allowRemoteHost: !capabilitiesKnown() });
+      } catch {
+        // OpenTUI's own write failed (its native clipboard is in a bad state): the old way may still work.
+        return fallback(clean);
+      }
       if (result.host.status === "written") return { method: "host" };
       if (result.terminal.status === "attempted") return { method: "osc52" };
       return fallback(clean);
@@ -119,13 +126,22 @@ export const legacyClipboard: OwnedClipboardService = {
   dispose: async () => {},
 };
 
+export type AppClipboardDeps = {
+  createHost?: typeof createHostClipboard;
+  createTerminal?: typeof createRendererClipboardAdapter;
+};
+
 /**
  * The process's clipboard: this machine's (OpenTUI's native one: macOS, Wayland or X11) and the terminal's (OSC 52). OpenTUI allows one
  * native clipboard per process: create it once, with the renderer, and dispose of it on exit.
  */
-export function createAppClipboard(renderer: RendererClipboardBoundary): OwnedClipboardService {
+export function createAppClipboard(
+  renderer: RendererClipboardBoundary,
+  { createHost = createHostClipboard, createTerminal = createRendererClipboardAdapter }: AppClipboardDeps = {},
+): OwnedClipboardService {
   try {
-    const core = createClipboard({ host: createHostClipboard(), terminal: createRendererClipboardAdapter(renderer) });
+    // An image up to the attachment limit can be read (OpenTUI's default stops at 8 MB).
+    const core = createClipboard({ host: createHost({ maxReadBytes: MAX_ATTACHMENT_BYTES }), terminal: createTerminal(renderer) });
     return clipboardService(core, { capabilitiesKnown: () => renderer.capabilities !== null });
   } catch {
     return legacyClipboard;

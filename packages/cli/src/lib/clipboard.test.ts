@@ -9,7 +9,7 @@ import {
   type HostClipboardService,
   type TerminalClipboardAdapter,
 } from "@opentui/core";
-import { clipboardService, copyToClipboard, legacyClipboard, osc52 } from "./clipboard";
+import { clipboardService, copyToClipboard, createAppClipboard, legacyClipboard, osc52 } from "./clipboard";
 
 // The service cases follow opencode's packages/tui/test/clipboard.test.ts (MIT); see THIRD_PARTY_NOTICES.md.
 
@@ -145,6 +145,39 @@ describe("clipboardService: writing", () => {
     expect(await service.write("one")).toEqual({ method: "osc52" });
     expect(await notTried.write("two")).toEqual({ method: "pbcopy" });
     expect(fellBack).toEqual(["one", "two"]);
+  });
+
+  test("when the write itself fails it falls back too", async () => {
+    const fellBack: string[] = [];
+    const core = coreClipboard({});
+    core.writeText = async () => {
+      throw new Error("ot_session_clipboard failed: InvalidPhase");
+    };
+    const service = clipboardService(core, { fallback: async (text) => (fellBack.push(text), { method: "pbcopy" }) });
+
+    expect(await service.write("text")).toEqual({ method: "pbcopy" });
+    expect(fellBack).toEqual(["text"]);
+  });
+});
+
+describe("createAppClipboard", () => {
+  test("reads up to 20 MB from this machine's clipboard, the size an attachment may have", () => {
+    const asked: unknown[] = [];
+    const host: HostClipboardService = {
+      maxWriteBytes: 1 << 20,
+      read: async () => ({ status: "empty" }),
+      writeText: async () => ({ status: "written" }),
+      clear: async () => ({ status: "cleared" }),
+      dispose: async () => {},
+    } as unknown as HostClipboardService;
+    const renderer = { capabilities: null } as unknown as Parameters<typeof createAppClipboard>[0];
+
+    createAppClipboard(renderer, {
+      createHost: (options) => (asked.push(options), host),
+      createTerminal: () => ({ remote: false, writeText: () => ({ status: "attempted" }), clear: () => ({ status: "attempted" }) }) as unknown as TerminalClipboardAdapter,
+    });
+
+    expect(asked).toEqual([{ maxReadBytes: 20 * 1024 * 1024 }]);
   });
 });
 
