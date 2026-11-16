@@ -91,8 +91,33 @@ function slug(text: string) {
 /** The ID part of an agent file: its slug, else (a name with no letters or digits) a short hash of the file name, which is stable. */
 const idPart = (stem: string, file: string) => slug(stem) || createHash("sha1").update(file).digest("hex").slice(0, 8);
 
-/** Parses one agent file; null when it is a subagent (not selectable). */
+/**
+ * A named subagent: an agent file whose frontmatter says `mode: subagent`. It is never selectable; the model starts it by its
+ * `address` (pi's `Task` `agent`, Claude's `subagent_type`). Its other fields mean what they mean for an agent.
+ */
+export type Subagent = Agent & {
+  /** How it is addressed: the file name without `.md`. `name` is only its label. */
+  address: string;
+};
+
+/** The file names a subagent can be addressed by: a tool argument the model types, so letters, digits, `.`, `_` and `-` only. */
+const SUBAGENT_ADDRESS = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Parses one agent file; null when it is a subagent (not selectable; see {@link parseSubagentFile}). */
 export function parseAgentFile(text: string, { pack, file }: { pack: string; file: string }): Agent | null {
+  const parsed = parseFile(text, { pack, file });
+  return parsed.subagent ? null : parsed.agent;
+}
+
+/** Parses one subagent file; null when the file is a selectable agent, or its name cannot address it. */
+export function parseSubagentFile(text: string, { pack, file }: { pack: string; file: string }): Subagent | null {
+  const parsed = parseFile(text, { pack, file });
+  const address = basename(file, extname(file));
+  if (!parsed.subagent || !SUBAGENT_ADDRESS.test(address)) return null;
+  return { ...parsed.agent, address };
+}
+
+function parseFile(text: string, { pack, file }: { pack: string; file: string }): { agent: Agent; subagent: boolean } {
   const { fields, nested, body, unclosed } = readFrontmatter(text);
   // A `tools` field with no name in it is reported as ignored, like any other field marcsh cannot apply.
   const tools = fields.has("tools") ? parseTools(fields.get("tools"), nested.get("tools")) : undefined;
@@ -102,8 +127,8 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
   // The frontmatter `mode` says whether the agent is selectable (primary/all) or a subagent; it is not the Build/Plan `mode` of the
   // Agent, which comes from `permission`.
   const selectable = fields.get("mode");
-  if (selectable === "subagent") return null;
-  if (selectable !== undefined && selectable !== "primary" && selectable !== "all") ignored.push("mode");
+  const subagent = selectable === "subagent";
+  if (!subagent && selectable !== undefined && selectable !== "primary" && selectable !== "all") ignored.push("mode");
 
   const permission = fields.get("permission");
   if (permission !== undefined && permission !== "read-only" && permission !== "build") ignored.push("permission");
@@ -111,7 +136,7 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
   const stem = basename(file, extname(file));
   const field = (key: string) => fields.get(key)?.trim() || undefined;
   const prompt = body.trim();
-  return {
+  const agent: Agent = {
     id: `${pack}/${idPart(stem, file)}`,
     name: field("name") ?? stem,
     description: field("description"),
@@ -124,4 +149,5 @@ export function parseAgentFile(text: string, { pack, file }: { pack: string; fil
     ...(tools && tools.notes.length > 0 ? { toolNotes: tools.notes } : {}),
     ignored,
   };
+  return { agent, subagent };
 }

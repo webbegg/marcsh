@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, rmdirSync, utimesSync } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { MAX_AGENT_BYTES, parseAgentFile } from "./agent-file";
+import { MAX_AGENT_BYTES, parseAgentFile, parseSubagentFile, type Agent } from "./agent-file";
 import { describeTools } from "./agent-tools";
 import { HOOKS_DIR, hookEvents, readHooksDir } from "./pack-hooks";
 import {
@@ -76,6 +76,8 @@ export type PackPreview = {
   previousCommit?: string;
   /** `tools` is what the agent's tools field takes away or leaves (see `describeTools`); absent when it restricts nothing. */
   agents: { name: string; permission: "read-only" | "build"; model?: string; tools?: string }[];
+  /** The named subagents (`mode: subagent` files), by the address the model starts them with; absent when there are none. */
+  subagents?: { name: string; permission: "read-only" | "build"; model?: string; tools?: string }[];
   skills: string[];
   commands: string[];
   /** The pack's `hooks/`, when it has one: off until the user enables it (`/agents hooks <id>`), or unusable and never enabled. */
@@ -492,19 +494,28 @@ async function pluginManifestKeys(src: string): Promise<Set<string>> {
 export async function previewPack(src: string, { id, commit }: { id: string; commit: string }, parts?: Parts): Promise<PackPreview> {
   parts ??= await readParts(src);
   const agents: PackPreview["agents"] = [];
-  const subagents: string[] = [];
+  const subagents: NonNullable<PackPreview["subagents"]> = [];
+  const notUsed: string[] = [];
+  const entry = (name: string, agent: Agent) => {
+    const tools = describeTools(agent.tools);
+    return { name, permission: agent.mode === Mode.PLAN ? ("read-only" as const) : ("build" as const), ...(agent.model ? { model: agent.model } : {}), ...(tools ? { tools } : {}) };
+  };
   for (const file of await agentFiles(src)) {
-    let agent;
+    let text;
     try {
-      agent = parseAgentFile(await readFile(join(src, "agents", file), "utf8"), { pack: id, file });
+      text = await readFile(join(src, "agents", file), "utf8");
     } catch {
       continue;
     }
-    if (!agent) subagents.push(file);
-    else {
-      const tools = describeTools(agent.tools);
-      agents.push({ name: agent.name, permission: agent.mode === Mode.PLAN ? "read-only" : "build", ...(agent.model ? { model: agent.model } : {}), ...(tools ? { tools } : {}) });
+    const agent = parseAgentFile(text, { pack: id, file });
+    if (agent) {
+      agents.push(entry(agent.name, agent));
+      continue;
     }
+    const subagent = parseSubagentFile(text, { pack: id, file });
+    // A subagent whose file name cannot address it is never loaded.
+    if (subagent) subagents.push(entry(subagent.address, subagent));
+    else notUsed.push(`subagent ${file}`);
   }
 
   const manifest = await pluginManifestKeys(src);
@@ -513,7 +524,7 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
     ...((await listDirAsync(src)).some((item) => item.name === ".mcp.json") ? [".mcp.json"] : []),
     ...(manifest.has("hooks") ? [".claude-plugin hooks"] : []),
     ...(manifest.has("mcpServers") ? [".claude-plugin mcpServers"] : []),
-    ...subagents.map((file) => `subagent ${file}`),
+    ...notUsed,
   ];
 
   const clean = (items: string[]) => items.map(printable);
@@ -521,6 +532,7 @@ export async function previewPack(src: string, { id, commit }: { id: string; com
     id,
     commit,
     agents: agents.map((agent) => ({ ...agent, name: printable(agent.name), ...(agent.model ? { model: printable(agent.model) } : {}) })),
+    ...(subagents.length > 0 ? { subagents: subagents.map((sub) => ({ ...sub, ...(sub.model ? { model: printable(sub.model) } : {}) })) } : {}),
     skills: clean(parts.skills),
     commands: clean(parts.commands),
     ...(hooks.present ? { hooks: hooks.usable ? { usable: true as const, events: clean(hookEvents(hooks.config)) } : { usable: false as const, reason: printable(hooks.reason) } } : {}),

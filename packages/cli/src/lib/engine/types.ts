@@ -98,6 +98,11 @@ export type TurnRequest = {
    * mode already offers, and the tools that are left still ask. Absent: the mode's own tools, exactly as before.
    */
   deniedTools?: Group[];
+  /**
+   * The named subagents the model may start this turn (pi: `Task` `agent`; Claude: the SDK's `agents`). Each only narrows: its tools are
+   * the turn's minus its own denied groups, and a read-only one only reads. Absent: none, and `Task` is exactly as before.
+   */
+  subagents?: TurnSubagent[];
   resumeRef?: string;
   /**
    * What the conversation named by `resumeRef` had cost in all so far. An engine whose reported cost is a running total that a resumed
@@ -113,6 +118,23 @@ export type TurnRequest = {
   promptKind?: "background";
   /** Aborting stops the turn. */
   signal: AbortSignal;
+};
+
+/** A named subagent as an engine runs it (see `turnSubagents` in agents.ts). */
+export type TurnSubagent = {
+  /** How the model addresses it: its file name without `.md`. */
+  name: string;
+  description?: string;
+  /** Appended to the child's system prompt. */
+  prompt?: string;
+  /** The model it asks for; the parent's is used when absent or unusable on the engine. */
+  model?: string;
+  /** `permission: read-only`: the child only reads (plan rules), whatever the parent's mode. */
+  readOnly: boolean;
+  /** The groups its `tools` field takes away, on top of the parent's. */
+  deniedTools?: Group[];
+  /** Its pack's plugin view: pi gives the child that pack's skills when they are loaded for the turn. Absent for the user's own. */
+  pluginDir?: string;
 };
 
 export type CompactRequest = {

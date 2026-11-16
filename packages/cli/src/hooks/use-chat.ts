@@ -7,7 +7,16 @@ import type { AskQuestion } from "../lib/ask-user-question";
 import type { BackgroundBatch, BackgroundHost, BackgroundHub } from "../lib/background/hub";
 import { claudeEngine } from "../lib/engine/claude";
 import type { ProjectChanges, ProjectResource, TrustAnswer } from "../lib/engine/pi-trust";
-import { type Engine, type EngineEvent, type EngineTurn, type NoticeLevel, type PermissionAsk, type PermissionDecision, type TurnHost } from "../lib/engine/types";
+import {
+  type Engine,
+  type EngineEvent,
+  type EngineTurn,
+  type NoticeLevel,
+  type PermissionAsk,
+  type PermissionDecision,
+  type TurnHost,
+  type TurnSubagent,
+} from "../lib/engine/types";
 import { useApprovalMode } from "../providers/prompt-config";
 import { registerTurn } from "../lib/quit";
 import { finishReply } from "../lib/reply";
@@ -135,7 +144,8 @@ function decline(request: PendingRequest) {
 }
 
 /** The agent answering a turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
-export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools };
+/** `subagents`: the named subagents this turn's model may start (see `turnSubagents`). */
+export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools; subagents?: TurnSubagent[] };
 /**
  * `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts.
  * `background`: the turn delivers this batch of background results; `userText` is what the transcript keeps of it, and the engine
@@ -421,6 +431,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
             ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
+            ...(turnAgent?.subagents && turnAgent.subagents.length > 0 ? { subagents: turnAgent.subagents } : {}),
             resumeRef: resumeRefRef.current ?? undefined,
             ...(resumeRefRef.current ? { priorCostUsd: priorCumulativeCost(messagesRef.current) } : {}),
             ...(backgroundRef.current ? { background: backgroundRef.current } : {}),

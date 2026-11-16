@@ -28,6 +28,7 @@ It asks what the agent should do and not do, drafts the prompt with you, writes 
 my-pack/
   agents/
     reviewer.md             required: at least one agent you can select
+    refuter.md              optional: a subagent (mode: subagent)
   skills/
     tdd/SKILL.md            a skill in a folder
     quick-note.md           a skill can also be a single file
@@ -42,7 +43,7 @@ my-pack/
 
 | Path | What it is |
 | --- | --- |
-| `agents/*.md` | Agents. You need at least one that users can select. |
+| `agents/*.md` | Agents and subagents. You need at least one agent that users can select. A pack with only subagents is rejected. |
 | `skills/<name>/SKILL.md` | Skills in the Claude format, with `name` and `description` in the frontmatter. |
 | `skills/*.md` | A skill can be a single file. |
 | `commands/*.md` | Slash commands. A command in a subfolder is named by its path. |
@@ -76,6 +77,28 @@ Tips:
 - Keep to the fields `name`, `description`, `mode`, `permission`, `model` and `tools`. Other fields are ignored with a warning when someone selects the agent.
 
 The menus show each agent's `name`. When two agents share a name, a pack agent is shown as `owner/repo/Name` so people can tell them apart.
+
+### Subagents
+
+A file in `agents/` with `mode: subagent` is a [subagent](agents.md#subagents): the model starts it to do one piece of work, and users never select it. Use subagents for roles your agents hand work to, such as reviewers that check a change in parallel.
+
+```markdown
+---
+name: Correctness refuter
+description: Tries to break the correctness claims of a change; changes nothing
+mode: subagent
+permission: read-only
+---
+You try to refute the correctness claims of the change you are given.
+```
+
+Saved as `agents/refuter-correctness.md`, the subagent is named `refuter-correctness`. The model starts it by that name.
+
+- Only your pack's agents can start its subagents. While another agent is selected, they are not available.
+- Tell your agent in its prompt when to start which subagent. On pi it starts one with `Task` and `agent: refuter-correctness`, and it can add `background: true` to run several at once. On Claude it starts one with Claude's own `Task`.
+- A subagent's tools only narrow. It never has a tool that the agent that started it lacks. Use `permission: read-only` for roles that only read.
+- On pi, a subagent gets your pack's skills whenever they are loaded for the turn, so its prompt can name them.
+- The install preview lists the subagents under `Subagents`, by the name the model uses.
 
 ## Test it before you publish
 

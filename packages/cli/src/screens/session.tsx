@@ -4,7 +4,7 @@ import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { ModeType } from "../lib/modes";
-import { agentModelFits, builtinAgentId, findAgent, type Agent } from "../lib/agents";
+import { agentModelFits, builtinAgentId, findAgent, turnSubagents, type Agent } from "../lib/agents";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
 import { 
@@ -207,7 +207,8 @@ function SessionChat({
       const turn = {
         userText,
         mode: turnAgent.mode,
-        turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools },
+        // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack.
+        turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
         ...(attachments?.length ? { attachments } : {}),
         ...(background ? { background } : {}),
       };
