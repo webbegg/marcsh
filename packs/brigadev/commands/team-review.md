@@ -2,12 +2,24 @@
 description: "Review a teammate's PR read-only and draft the review comments"
 argument-hint: "[PR number or URL; focus lens; notes]"
 agent: brigadev
+questions:
+  - id: pr
+    label: "PR number or URL (empty: pick from a list)"
+    kind: text
+  - id: focus
+    label: "Which lens matters most?"
+    kind: choice
+    options: ["All fitting lenses", "Risk", "Reliability", "Readability", "Resilience"]
+    default: "All fitting lenses"
+  - id: notes
+    label: "Anything to pay attention to?"
+    kind: long
 ---
 Team PR review request. Use the `brigadev-review` skill: review one frozen change with the 4R lenses that fit its risk, and save the ledger as `reviews/pr-<number>.md` in the repo docs folder (not under a branch name, which could collide with your own review of that branch).
 
-Request: $ARGUMENTS
-
-The request may name a pull request (number or URL), a lens to weigh first (Risk, Reliability, Readability, Resilience; default: all fitting lenses), and notes on what to pay attention to.
+- Pull request: {{pr}}
+- Focus: {{focus}}
+- Pay attention to: {{notes}}
 
 When no pull request is given, run `gh pr list --search "review-requested:@me" --state open --json number,title,url,updatedAt` and show the list. With no PR, say so and ask for a PR number in your reply, then stop. With 1 to 5 PRs, call `AskUserQuestion` with one option per PR (`#number title`) and free text for another PR; with only 1 PR, add the option "Another PR". With more than 5, offer the 5 most recently updated plus free text.
 

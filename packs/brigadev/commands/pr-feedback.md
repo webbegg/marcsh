@@ -2,12 +2,26 @@
 description: "Work through the review comments on one of your pull requests"
 argument-hint: "[PR number or URL; unresolved or all; fix or drafts only]"
 agent: brigadev
+questions:
+  - id: pr
+    label: "PR number or URL (empty: pick from a list)"
+    kind: text
+  - id: which
+    label: "Which comments?"
+    kind: choice
+    options: ["Unresolved comments only", "All comments"]
+    default: "Unresolved comments only"
+  - id: mode
+    label: "What should happen with them?"
+    kind: choice
+    options: ["Fix and draft replies", "Draft replies only"]
+    default: "Fix and draft replies"
 ---
 PR feedback request. Read the comments on the pull request, then handle them one by one. Write every reply with the `brigadev-comment-writer` skill: short, warm, direct.
 
-Request: $ARGUMENTS
-
-The request may name the pull request (number or URL), which comments to handle (unresolved only, the default, or all), and the mode: "Fix and draft replies" (the default) or "Draft replies only".
+- Pull request: {{pr}}
+- Comments to handle: {{which}}
+- Mode: {{mode}}
 
 When no pull request is given, run `gh pr list --author @me --state open --json number,title,url,updatedAt,reviewDecision` and show the list. With no PR, say so and ask for a PR number in your reply, then stop. With 1 to 5 PRs, call `AskUserQuestion` with one option per PR (`#number title`) and free text for another PR; with only 1 PR, add the option "Another PR". With more than 5, offer the 5 most recently updated plus free text.
 
