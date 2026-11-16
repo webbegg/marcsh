@@ -109,7 +109,7 @@ Some rules do not change with the mode:
 - In `auto` and `yolo`, deleting files strictly inside the temp folder (`/tmp`, `$TMPDIR`) runs without asking, because it is scratch space. The temp folder itself, paths with `..`, paths with variables and paths that a symlink leads out of the temp folder still ask.
 - On Claude, a request that your Claude settings say to ask about, and a request Claude flags as risky or protected, keeps asking.
 
-The agent is told the mode, so it runs what the mode allows instead of asking you in chat first. The Plan agent is not told: it stays read-only in every mode.
+The agent is told the mode in every mode, `normal` included, so it runs what the mode allows instead of asking you in chat first. A Plan turn is told it is in Plan mode and read-only instead, because it stays read-only in every mode. So is a read-only subagent. Every subagent a turn starts with `Task`, named or not, is told the same as its turn. In a headless `marcsh run`, the `normal` line also says that every ask is denied.
 
 The classifier reads the command text. It is a best-effort check, not a sandbox. It cannot see what a script does, and `bash -c "…"` or an alias can hide a command from it. The branch limits what the modes relax, but it does not contain what a command does inside your folder. Use `yolo` only in a project you can afford to lose work in.
 

@@ -2,8 +2,8 @@ import { query, type AgentDefinition, type CanUseTool, type Options, type Query,
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeDeniedTools, isClaudeToolDenied, notAvailableReason } from "../agent-tools";
-import { decideApproval, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
-import { type BranchSource, type BranchState, branchState } from "../git-branch";
+import { decideApproval, effectiveApprovalMode, isGuardAsk, type ApprovalMode, type ToolCall } from "../approval-policy";
+import { type BranchSource, type BranchState, branchState, resolveBranch } from "../git-branch";
 import { agentModelFits } from "../agents";
 import { claudeGroupTools, type Group } from "../tool-names";
 import { parseAskUserQuestion } from "../ask-user-question";
@@ -13,6 +13,7 @@ import { mergeUsage } from "../usage";
 import { normalizeClaudeCommands } from "../claude-commands";
 import { warmUpClaudeCommands } from "../command-warmup";
 import { Mode } from "../modes";
+import { packHookEnv } from "../pack-hooks";
 import { prepareViewForTurn } from "../packs";
 import { answeredPathRule, hasMatchingPathRule, type PathRuleStore, pathRuleCandidate } from "../path-rules";
 import { marcshPluginPath } from "../plugin";
@@ -25,7 +26,7 @@ import {
   toPermissionResult,
 } from "../sdk-messages";
 import { getStorage } from "../storage";
-import { systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
+import { approvalLineMode, systemPromptWithMode, type Engine, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 // The command list only feeds the `/` menu: failing to fetch it never affects the turn.
 function emitCommands(host: TurnHost, commands: unknown) {
@@ -115,6 +116,9 @@ export function createCanUseTool(
   };
 }
 
+/** The branch a subagent's mode line is about when the caller gives none: auto and yolo read as paused. */
+const UNKNOWN_BRANCH: BranchState = { kind: "none", reason: "the branch is not known" };
+
 /** Claude's own subagent types: a named subagent with one of these names is not passed, so it never takes the place of Claude's. */
 const CLAUDE_AGENT_TYPES = new Set(["general-purpose", "explore", "plan", "statusline-setup", "output-style-setup", "claude-code-guide"]);
 
@@ -127,8 +131,18 @@ function subagentModel(model: string | undefined): string {
 /**
  * The named subagents as the SDK's `agents` option, so Claude's Task/Agent can start them by `subagent_type`. Their tools only narrow the
  * session's: the session's denied groups and their own are disallowed, and a read-only one (or any in a plan turn) is given the read tools only.
+ * Each prompt ends with the mode line, as a pi child's does: the plan line for a read-only one, else the turn's approval mode line.
  */
-export function claudeAgents(subagents: readonly TurnSubagent[], { deniedTools = [], mode }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"] }): Record<string, AgentDefinition> {
+export function claudeAgents(
+  subagents: readonly TurnSubagent[],
+  {
+    deniedTools = [],
+    mode,
+    approvalMode,
+    noApprover,
+    branch,
+  }: { deniedTools?: readonly Group[]; mode: TurnRequest["mode"]; approvalMode?: TurnRequest["approvalMode"]; noApprover?: boolean; branch?: BranchSource },
+): Record<string, AgentDefinition> {
   const agents: Record<string, AgentDefinition> = {};
   for (const sub of subagents) {
     if (CLAUDE_AGENT_TYPES.has(sub.name.toLowerCase()) || Object.hasOwn(agents, sub.name)) continue;
@@ -137,7 +151,7 @@ export function claudeAgents(subagents: readonly TurnSubagent[], { deniedTools =
     const readOnly = sub.readOnly || mode === Mode.PLAN;
     agents[sub.name] = {
       description: sub.description || `The ${sub.name} subagent.`,
-      prompt: sub.prompt ?? "",
+      prompt: systemPromptWithMode(sub.prompt, readOnly ? "plan" : approvalLineMode(approvalMode, noApprover), branch ?? UNKNOWN_BRANCH) ?? "",
       ...(readOnly ? { tools: claudeGroupTools("read").filter((name) => !disallowed.includes(name)) } : {}),
       ...(disallowed.length > 0 ? { disallowedTools: disallowed } : {}),
       model: subagentModel(sub.model),
@@ -156,6 +170,7 @@ export function claudeQueryOptions({
   model,
   systemPromptAppend,
   approvalMode,
+  noApprover,
   branch,
   deniedTools,
   subagents,
@@ -163,17 +178,26 @@ export function claudeQueryOptions({
   abortController,
   canUseTool,
   plugins,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "deniedTools" | "subagents" | "resumeRef"> & {
+  hookEnv,
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "noApprover" | "deniedTools" | "subagents" | "resumeRef"> & {
   /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
   branch?: BranchSource;
   abortController: AbortController;
   canUseTool: CanUseTool;
   plugins: readonly string[];
+  /** Added to marcsh's own environment for the Claude process, whose hooks inherit it (a pack's hooks: MARCSH_APPROVAL_MODE, MARCSH_AGENT). */
+  hookEnv?: Record<string, string>;
 }): Options {
   const disallowedTools = claudeDeniedTools(deniedTools ?? []);
-  // Plan mode stays read-only whatever the approval mode, so it gets no mode line.
-  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, branch ?? (() => branchState(cwd)));
-  const agents = subagents && subagents.length > 0 ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode }) : {};
+  // Plan mode stays read-only whatever the approval mode, so it gets the plan line and no approval mode line.
+  // Read once (and only when a mode line needs it) for the session's line and its subagents'.
+  let known: BranchState | undefined;
+  const branchOnce = () => (known ??= resolveBranch(branch ?? (() => branchState(cwd))));
+  const append = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : approvalLineMode(approvalMode, noApprover), branchOnce);
+  const agents =
+    subagents && subagents.length > 0
+      ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode, approvalMode, ...(noApprover ? { noApprover } : {}), branch: branchOnce })
+      : {};
   return {
     cwd,
     model,
@@ -186,6 +210,8 @@ export function claudeQueryOptions({
     ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
     ...(Object.keys(agents).length > 0 ? { agents } : {}),
     ...(plugins.length > 0 ? { plugins: plugins.map((path) => ({ type: "local" as const, path })) } : {}),
+    // The SDK's default is marcsh's environment; it is kept, with these on top.
+    ...(hookEnv ? { env: { ...process.env, ...hookEnv } } : {}),
   };
 }
 
@@ -230,7 +256,10 @@ export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, prio
   return { ...applied, metadata: { ...applied.metadata, ...(usage ? { usage } : {}) } };
 }
 
-function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, packPluginPath, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest, host: TurnHost): EngineTurn {
+function startTurn(
+  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, noApprover, packPluginPath, agentId, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest,
+  host: TurnHost,
+): EngineTurn {
   const abortController = new AbortController();
   signal.addEventListener("abort", () => abortController.abort(), { once: true });
   // Plan mode is a separate axis: Claude's own plan mode keeps it read-only, so only the catastrophic block (normal) applies there.
@@ -251,10 +280,14 @@ function startTurn({ prompt, attachments, cwd, mode, model, systemPromptAppend, 
     const packView = packTurn?.view;
     const packPath = packView && existsSync(join(packView, ".claude-plugin", "plugin.json")) ? packView : null;
     const plugins = [...(pluginPath ? [pluginPath] : []), ...(packPath ? [packPath] : [])];
+    // Enabled pack hooks run in the Claude process (through marcsh's filter): they are told the mode and agent the turn started with, as on pi,
+    // the mode as enforced then (normal while auto or yolo is paused off a feature branch).
+    const hookEnv =
+      packPath && packTurn?.hooks ? packHookEnv(mode === Mode.PLAN ? "plan" : effectiveApprovalMode(approvalMode ?? "normal", cwd), agentId) : undefined;
     try {
       chat = query({
         prompt: claudePrompt(prompt, attachments, cwd),
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, deniedTools, subagents, resumeRef, abortController, canUseTool, plugins }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, ...(noApprover ? { noApprover } : {}), deniedTools, subagents, resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
       });
 
       for await (const message of chat) {

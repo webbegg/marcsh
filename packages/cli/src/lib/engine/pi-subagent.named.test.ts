@@ -53,6 +53,16 @@ describe("the Task tool with named subagents", () => {
     expect(line.endsWith("…")).toBe(true);
   });
 
+  test("the `agent` parameter's description is bounded the same way, and an unknown name still lists every valid one (A1)", async () => {
+    const many = Array.from({ length: 25 }, (_, i): TurnSubagent => ({ name: `sub-${String(i).padStart(2, "0")}`, readOnly: false }));
+    const { tool, run } = setup(many);
+    const about = (properties(tool).agent as unknown as { description: string }).description;
+    expect(about).toContain("sub-19");
+    expect(about).not.toContain("sub-20");
+    expect(about).toContain("…and 5 more");
+    await expect(run({ description: "d", prompt: "go", agent: "nope" })).rejects.toThrow(`Available: ${many.map((sub) => sub.name).join(", ")}.`);
+  });
+
   test("a call with `agent` runs the child as that subagent", async () => {
     const { run, requests } = setup([DEVELOPER, REFUTER]);
     await run({ description: "Refute it", prompt: "go", agent: "refuter-security" });

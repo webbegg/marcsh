@@ -20,12 +20,14 @@ import { createCommandLister, expandPluginInvocation, normalizePiCommands, toMen
 import { createApprovalExtension, isReadOnlyBuiltin, offeredInPlan, READ_ONLY_TOOLS, type RuleStore } from "./pi-permissions";
 import { createMarcshMcpExtension, disposePiSession, importLoadMcpConfig } from "./pi-mcp";
 import { createPackHooksExtension } from "./pi-pack-hooks";
+import type { HookPermissionMode } from "../pack-hooks";
+import { effectiveApprovalMode } from "../approval-policy";
 import { createPiUiContext } from "./pi-ui";
 import { type BackgroundRunChild, createSubagentExtension, runChildSession, type RunChild, TASK_PLAN_TOOLS, TASK_TOOL } from "./pi-subagent";
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
 import { backgroundMessageText, type BackgroundBatch } from "../background/hub";
-import { systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
+import { approvalLineMode, systemPromptWithMode, TurnClosedError, type Engine, type EngineEvent, type EngineTurn, type TurnHost, type TurnRequest, type TurnSubagent } from "./types";
 
 /**
  * marcsh keeps pi's logins, settings, sessions and extensions apart from the user's own pi install.
@@ -312,8 +314,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       systemPromptAppend,
       approvalMode,
       currentApprovalMode,
+      noApprover,
       currentPlanMode,
       packPluginPath,
+      agentId,
       deniedTools,
       subagents,
       resumeRef,
@@ -445,14 +449,36 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         approvalMode,
         currentApprovalMode,
       };
-      // Plan mode stays read-only whatever the approval mode, so it gets no mode line. The line says whether the mode is active or paused on the branch the turn starts on; each call reads the branch again.
-      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? undefined : approvalMode, () => branchState(cwd));
+      // Plan mode stays read-only whatever the approval mode, so it gets the plan line, never an approval mode line. Auto's and yolo's say whether
+      // the mode is active or paused on the branch the turn starts on; each call reads the branch again.
+      const lineMode = approvalLineMode(approvalMode, noApprover);
+      const promptAppend = systemPromptWithMode(systemPromptAppend, mode === Mode.PLAN ? "plan" : lineMode, () => branchState(cwd));
       // Hooks that no longer match what the user approved are dropped for this turn; enabled ones run ahead of the approval extension, so a blocked call never asks.
       const packTurn = packPluginPath ? await prepareViewForTurn(packPluginPath) : undefined;
       if (packTurn?.warning) host.notify?.(packTurn.warning, "warning");
-      const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>) =>
-        packTurn?.hooks ? [createPackHooksExtension({ config: packTurn.hooks.config, view: packPluginPath!, cwd, signal: hookSignal, notify })] : [];
-      const packHooks = packHooksFor(turnEnded.signal, (message, level) => host.notify?.(message, level));
+      // The hooks are told the mode at each call: plan for a plan turn or a read-only child (and a background child once the session is in
+      // plan, as its calls then are), else the session's approval mode as it is then and as it is enforced (normal while auto or yolo is
+      // paused off a feature branch).
+      const hookMode = (readOnly: boolean, followsSession: boolean) => (): HookPermissionMode =>
+        mode === Mode.PLAN || readOnly || (followsSession && currentPlanMode?.() === true)
+          ? "plan"
+          : effectiveApprovalMode(currentApprovalMode?.() ?? approvalMode ?? "normal", cwd);
+      const packHooksFor = (hookSignal: AbortSignal, notify: NonNullable<TurnHost["notify"]>, readOnly = false, followsSession = false) =>
+        packTurn?.hooks
+          ? [
+              createPackHooksExtension({
+                config: packTurn.hooks.config,
+                view: packPluginPath!,
+                cwd,
+                signal: hookSignal,
+                notify,
+                permissionMode: hookMode(readOnly, followsSession),
+                ...(agentId ? { agent: agentId } : {}),
+              }),
+            ]
+          : [];
+      const notifyHost: NonNullable<TurnHost["notify"]> = (message, level) => host.notify?.(message, level);
+      const packHooks = packHooksFor(turnEnded.signal, notifyHost);
       // A named subagent's model, when the engine has it and a login for its provider; else undefined (the parent's is used).
       const subagentModel = async (wantedModel: string | undefined) => {
         const ref = wantedModel && agentModelFits(wantedModel, "pi") ? parseModel(wantedModel) : undefined;
@@ -464,9 +490,11 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           return undefined;
         }
       };
-      // A named subagent's prompt (with the mode line, as the parent's) and, for a subagent of the pack this turn loaded, that pack's skills.
-      const subagentResources = (subagent: TurnSubagent, readOnly: boolean) => {
-        const append = systemPromptWithMode(subagent.prompt, readOnly ? undefined : approvalMode, () => branchState(cwd));
+      // A child's prompt: a named subagent's own, then the mode line (as the parent's; a plain child gets the line alone) and, for a
+      // subagent of the pack this turn loaded, that pack's skills.
+      const childResources = (subagent: TurnSubagent | undefined, readOnly: boolean) => {
+        const append = systemPromptWithMode(subagent?.prompt, readOnly ? "plan" : lineMode, () => branchState(cwd));
+        if (!subagent) return append ? { appendSystemPrompt: append } : {};
         const packSkills = subagent.pluginDir && subagent.pluginDir === packPluginPath && packTurn?.view ? join(packTurn.view, "skills") : undefined;
         return { ...(append ? { appendSystemPrompt: append } : {}), ...(packSkills && existsSync(packSkills) ? { skillPaths: [packSkills] } : {}) };
       };
@@ -490,7 +518,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           projectTrusted,
           extensions: [...narrowing, ...approvalAndHooks(readOnly), ...narrowing],
           ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
-          ...(subagent ? subagentResources(subagent, readOnly) : {}),
+          ...childResources(subagent, readOnly),
         });
       };
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
@@ -505,7 +533,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
           return runChild({ prompt, ...(subagent ? { subagent } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
-            ...packHooksFor(childSignal, notify),
+            ...packHooksFor(childSignal, notify, readOnly, true),
             createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
           ]);
         });
@@ -537,7 +565,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             timeoutMs: options.toolTimeoutMs,
             runChild: ({ holdClock, ...request }) =>
               runChild(request, (readOnly) => [
-                ...packHooks,
+                // A read-only child's hooks are told plan, as its calls are held to plan's rules.
+                ...(readOnly && mode !== Mode.PLAN ? packHooksFor(turnEnded.signal, notifyHost, true) : packHooks),
                 createApprovalExtension({ ...approval, planMode: readOnly, ...(holdClock ? { host: holdingClock(host, holdClock) } : {}) }),
               ]),
             ...(background && runBackgroundChild ? { background: { hub: background, runChild: runBackgroundChild, canStart: mode !== Mode.PLAN } } : {}),

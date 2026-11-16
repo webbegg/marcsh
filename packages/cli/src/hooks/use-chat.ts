@@ -145,7 +145,7 @@ function decline(request: PendingRequest) {
 
 /** The agent answering a turn: its name labels the messages and its prompt goes to the engine, with its pack's plugin view (`pluginDir`) when it has one, and the tool groups it does not get (`tools`). */
 /** `subagents`: the named subagents this turn's model may start (see `turnSubagents`). */
-export type TurnAgent = { name: string; prompt?: string; pluginDir?: string; tools?: AgentTools; subagents?: TurnSubagent[] };
+export type TurnAgent = { id?: string; name: string; prompt?: string; pluginDir?: string; tools?: AgentTools; subagents?: TurnSubagent[] };
 /**
  * `attachments`: the files attached to the message, as the input knew them; their bytes are read when the turn starts.
  * `background`: the turn delivers this batch of background results; `userText` is what the transcript keeps of it, and the engine
@@ -430,6 +430,7 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
             model,
             systemPromptAppend: turnAgent?.prompt,
             ...(turnAgent?.pluginDir ? { packPluginPath: turnAgent.pluginDir } : {}),
+            ...(turnAgent?.id ? { agentId: turnAgent.id } : {}),
             ...(turnAgent?.tools && turnAgent.tools.deny.length > 0 ? { deniedTools: turnAgent.tools.deny } : {}),
             ...(turnAgent?.subagents && turnAgent.subagents.length > 0 ? { subagents: turnAgent.subagents } : {}),
             resumeRef: resumeRefRef.current ?? undefined,

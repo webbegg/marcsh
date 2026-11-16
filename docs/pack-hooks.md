@@ -106,6 +106,21 @@ Only the events that matter for tool calls run on both engines.
 
 The review lists them, for example `PreToolUse, PostToolUse run on Claude and pi; Stop run on Claude only.` If you use pi and the pack has other events, selecting its agent shows `owner/repo: hooks for Stop run on Claude only`.
 
+### What a hook is told
+
+A hook gets the call as JSON on its input, as Claude sends it: `session_id`, `cwd`, `hook_event_name`, `tool_name` and `tool_input`, plus the result after the call. marcsh adds what it knows about the turn:
+
+| | Claude | pi |
+| --- | --- | --- |
+| `permission_mode` in the JSON | Claude's own (`default`, `plan`, …) | marcsh's: `normal`, `auto`, `yolo`, or `plan` in a plan turn or a read-only subagent |
+| `agent` in the JSON | no | the ID of the turn's agent, for example `acme/flows/asdd` |
+| `MARCSH_APPROVAL_MODE` in the environment | yes, as the turn started | yes, at the time of the call |
+| `MARCSH_AGENT` in the environment | yes | yes |
+
+The approval mode is the one marcsh enforces, never a freer one. Auto and yolo only apply on a feature branch: while they are paused (on the default branch, a detached HEAD, or outside a repository), marcsh asks as in normal mode, and the hooks are told `normal`.
+
+On pi, a change with [`/permissions`](commands.md#permissions) during a turn is what the next call's hooks are told, and so is the branch at the time of the call. On Claude, the hooks run inside Claude's own process, which gets the values once, when the turn starts. A hook that must work on both engines should read the environment variables.
+
 ### What blocks and what times out
 
 - On both engines, exit code 2 blocks the call, and what the hook wrote to its error output is the reason. A JSON answer that says block or deny blocks too. Anything that would approve a call or change its input is dropped.

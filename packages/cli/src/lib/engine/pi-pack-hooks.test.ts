@@ -235,9 +235,20 @@ describe("judgePostToolUse", () => {
 
 type Handler = (event: any, ctx: any) => any;
 
-function load(config: HooksConfig, options: { notify?: (message: string, level: string) => void; signal?: AbortSignal } = {}) {
+function load(
+  config: HooksConfig,
+  options: { notify?: (message: string, level: string) => void; signal?: AbortSignal; permissionMode?: () => "normal" | "auto" | "yolo" | "plan"; agent?: string } = {},
+) {
   const handlers = new Map<string, Handler>();
-  createPackHooksExtension({ config, view, cwd, signal: options.signal ?? new AbortController().signal, notify: options.notify as any })({
+  createPackHooksExtension({
+    config,
+    view,
+    cwd,
+    signal: options.signal ?? new AbortController().signal,
+    notify: options.notify as any,
+    ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+    ...(options.agent ? { agent: options.agent } : {}),
+  })({
     on: (name: string, handler: Handler) => void handlers.set(name, handler),
   } as any);
   const ctx = { sessionManager: { getSessionId: () => "session-1" } };
@@ -305,6 +316,43 @@ describe("createPackHooksExtension", () => {
       tool_name: "Bash",
       tool_input: { command: "ls -la" },
     });
+  });
+
+  test("the payload names the approval mode and the turn's agent, read at each call, and the hook's environment has them too", async () => {
+    const out = join(dir, "stdin.json");
+    const env = join(dir, "env.txt");
+    let mode: "normal" | "auto" | "yolo" | "plan" = "auto";
+    const hooks = { PreToolUse: group(`cat > ${out}; printf '%s|%s' "$MARCSH_APPROVAL_MODE" "$MARCSH_AGENT" > ${env}`), PostToolUse: group(`cat > ${out}.post`) };
+    const { call, result } = load(hooks, { permissionMode: () => mode, agent: "acme/flows/asdd" });
+
+    await call("bash", { command: "ls" });
+    expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({
+      session_id: "session-1",
+      cwd,
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      permission_mode: "auto",
+      agent: "acme/flows/asdd",
+    });
+    expect(readFileSync(env, "utf8")).toBe("auto|acme/flows/asdd");
+
+    // A switch with /permissions during the turn is what the next call's hooks are told.
+    mode = "yolo";
+    await call("bash", { command: "ls" });
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ permission_mode: "yolo" });
+    expect(readFileSync(env, "utf8")).toBe("yolo|acme/flows/asdd");
+
+    mode = "plan";
+    await result("bash", { command: "ls" }, "ok");
+    expect(JSON.parse(readFileSync(`${out}.post`, "utf8"))).toMatchObject({ hook_event_name: "PostToolUse", permission_mode: "plan", agent: "acme/flows/asdd" });
+  });
+
+  test("without a mode or agent the payload and environment are as before", async () => {
+    const env = join(dir, "env.txt");
+    await load({ PreToolUse: group(`printf '%s|%s' "\${MARCSH_APPROVAL_MODE-unset}" "\${MARCSH_AGENT-unset}" > ${env}`) }).call("bash", { command: "ls" });
+    // The test process itself may export them; the hook gets exactly what marcsh had.
+    expect(readFileSync(env, "utf8")).toBe(`${process.env.MARCSH_APPROVAL_MODE ?? "unset"}|${process.env.MARCSH_AGENT ?? "unset"}`);
   });
 
   test("a Bash matcher runs on bg_start too, which the hook is told is Bash with its command (A9)", async () => {

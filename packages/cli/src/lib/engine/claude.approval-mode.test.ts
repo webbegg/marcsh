@@ -3,7 +3,7 @@ import type { CanUseTool, PermissionResult, PermissionUpdate } from "@anthropic-
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { approvalModeLine, type ApprovalMode } from "../approval-policy";
+import { NORMAL_MODE_LINE, PLAN_MODE_LINE, approvalModeLine, type ApprovalMode } from "../approval-policy";
 import type { BranchState } from "../git-branch";
 import { Mode } from "../modes";
 import { claudeQueryOptions, createCanUseTool } from "./claude";
@@ -248,15 +248,18 @@ describe("the mode line in the options of a Claude turn", () => {
     }
   });
 
-  test("normal mode leaves the options as they were", () => {
-    for (const approvalMode of [undefined, "normal"] as const) {
-      expect(claudeQueryOptions({ ...base, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
-      expect(claudeQueryOptions({ ...base, approvalMode, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
-        type: "preset",
-        preset: "claude_code",
-        append: "You are FTD.",
-      });
-    }
+  test("normal mode appends its own line after the agent prompt", () => {
+    expect(claudeQueryOptions({ ...base, approvalMode: "normal" }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: NORMAL_MODE_LINE });
+    expect(claudeQueryOptions({ ...base, approvalMode: "normal", systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: `You are FTD.\n\n${NORMAL_MODE_LINE}`,
+    });
+  });
+
+  test("no approval mode given leaves the options as they were", () => {
+    expect(claudeQueryOptions({ ...base }).systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+    expect(claudeQueryOptions({ ...base, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: "You are FTD." });
   });
 
   test("the permission mode stays default or plan, never bypassPermissions", () => {
@@ -405,17 +408,31 @@ describe("auto and yolo are paused off a feature branch", () => {
   });
 });
 
-describe("plan mode gets no approval mode line", () => {
+describe("plan mode gets the plan line, never an approval mode line", () => {
   const base = { cwd, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool };
 
-  test("the options of a plan turn leave the prompt as it was, even in yolo", () => {
-    for (const approvalMode of ["auto", "yolo"] as const) {
-      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code" });
+  test("the options of a plan turn say plan mode, whatever the approval mode (even yolo, even none)", () => {
+    for (const approvalMode of [undefined, "normal", "auto", "yolo"] as const) {
+      expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode }).systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: PLAN_MODE_LINE });
       expect(claudeQueryOptions({ ...base, mode: Mode.PLAN, approvalMode, systemPromptAppend: "You are FTD." }).systemPrompt).toEqual({
         type: "preset",
         preset: "claude_code",
-        append: "You are FTD.",
+        append: `You are FTD.\n\n${PLAN_MODE_LINE}`,
       });
     }
+  });
+});
+
+describe("the pack hooks' environment on Claude", () => {
+  const base = { cwd, mode: Mode.BUILD, model: "sonnet", abortController: new AbortController(), plugins: [] as string[], canUseTool: (async () => ({ behavior: "deny", message: "" })) as CanUseTool, branch: feature };
+
+  test("a hook environment is added to marcsh's own for the Claude process, whose hooks inherit it", () => {
+    const options = claudeQueryOptions({ ...base, hookEnv: { MARCSH_APPROVAL_MODE: "auto", MARCSH_AGENT: "acme/flows/ftd" } });
+    expect(options.env).toMatchObject({ MARCSH_APPROVAL_MODE: "auto", MARCSH_AGENT: "acme/flows/ftd" });
+    expect(options.env?.PATH).toBe(process.env.PATH);
+  });
+
+  test("without one the options carry no env, as before", () => {
+    expect("env" in claudeQueryOptions(base)).toBe(false);
   });
 });

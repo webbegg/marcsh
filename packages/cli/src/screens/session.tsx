@@ -3,7 +3,7 @@ import { TextAttributes } from "@opentui/core";
 import { useParams, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import type { ModeType } from "../lib/modes";
+import { Mode, type ModeType } from "../lib/modes";
 import { agentModelFits, builtinAgentId, findAgent, turnSubagents, type Agent } from "../lib/agents";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
@@ -36,6 +36,7 @@ import { SessionCommandsContext } from "../components/command-menu/session-comma
 import { escapeTranscriptText } from "../lib/display-text";
 import { openSnapshots } from "../lib/session-snapshots";
 import { userCommandTurn } from "../lib/user-commands";
+import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { backgroundMessageText, createBackgroundHub, noticeOf, type BackgroundBatch } from "../lib/background/hub";
 import { BackgroundContext } from "../lib/background/context";
 
@@ -208,7 +209,7 @@ function SessionChat({
         userText,
         mode: turnAgent.mode,
         // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack.
-        turnAgent: { name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
+        turnAgent: { id: turnAgent.id, name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
         ...(attachments?.length ? { attachments } : {}),
         ...(background ? { background } : {}),
       };
@@ -265,9 +266,18 @@ function SessionChat({
   // What the user typed: one of their custom commands runs as its expanded prompt, as the agent and model it names for this turn only.
   const sendTyped = useCallback(
     (text: string, attachments?: MessageAttachment[]) => {
-      const turn = userCommandTurn(text, { cwd: session.cwd, engine: session.engine, agents, builtinNames: COMMAND_NAMES });
+      // From a read-only agent (Plan), a pack command's build agent answers in plan for this turn, and the user is told (L6).
+      const turn = userCommandTurn(text, {
+        cwd: session.cwd,
+        engine: session.engine,
+        agents,
+        selected: agent,
+        builtinNames: COMMAND_NAMES,
+        engineNames: engineCommandNames(session.engine),
+      });
       if (!turn) return send(text, agent, model, undefined, attachments);
-      if (turn.warning) toast.show({ variant: "info", message: turn.warning });
+      const said = [turn.warning, turn.notice].filter(Boolean).join(" ");
+      if (said) toast.show({ variant: "info", message: said });
       send(turn.text, turn.agent ?? agent, model, turn.model, attachments);
     },
     [session.cwd, session.engine, agents, agent, model, send, toast],
@@ -346,7 +356,9 @@ function SessionChat({
     hasSubmittedInitialPromptRef.current = true;
     // A prompt that names no agent (older navigation state) runs as the selected agent, or as the built-in one when the mode it carries differs.
     const fallback = agent.mode === initialPrompt.mode ? agent.id : builtinAgentId(initialPrompt.mode);
-    const first = findAgent(agents, initialPrompt.agentId ?? fallback);
+    const found = findAgent(agents, initialPrompt.agentId ?? fallback);
+    // A pack command typed on the home screen from Plan carries plan for its build agent (L6): the turn stays read-only.
+    const first = initialPrompt.mode === Mode.PLAN && found.mode !== Mode.PLAN ? { ...found, mode: Mode.PLAN } : found;
     send(initialPrompt.message, first, initialPrompt.model, initialPrompt.agentModel);
   }, [initialPrompt, agents, agent, send]);
 

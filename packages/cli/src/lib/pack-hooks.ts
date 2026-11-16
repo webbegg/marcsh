@@ -22,6 +22,14 @@ export const MAX_HOOK_TIMEOUT_SECONDS = 600;
 /** The events marcsh runs itself on pi (tool calls); every other event runs only where Claude runs it. */
 export const PI_HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
 
+/** What a pack's hooks are told about the call's mode: the session's approval mode, or `plan` for a plan turn (and a read-only child). */
+export type HookPermissionMode = "normal" | "auto" | "yolo" | "plan";
+
+/** The environment a pack's hook process gets on top of marcsh's own, on both engines: the mode and the ID of the turn's agent (when known). */
+export function packHookEnv(mode: HookPermissionMode, agent?: string): Record<string, string> {
+  return { MARCSH_APPROVAL_MODE: mode, ...(agent ? { MARCSH_AGENT: agent } : {}) };
+}
+
 /** The marcsh-owned file of the view's `hooks/` that holds the pack's original commands; a pack file may not use the name. */
 export const COMMANDS_FILE = ".marcsh-commands.json";
 

@@ -152,8 +152,14 @@ const baseProperties = {
 
 const agentProperty = (subagents: readonly TurnSubagent[]) =>
   subagents.length > 0
-    ? { agent: { type: "string", description: `The named subagent to run, one of: ${subagents.map((sub) => sub.name).join(", ")}. Leave it out for a plain subagent.` } }
+    ? { agent: { type: "string", description: `The named subagent to run, one of: ${listedNames(subagents)}. Leave it out for a plain subagent.` } }
     : {};
+
+/** The subagents' names for the `agent` parameter, bounded like the Task description's list. */
+function listedNames(subagents: readonly TurnSubagent[]): string {
+  const names = subagents.slice(0, MAX_LISTED_SUBAGENTS).map((sub) => sub.name).join(", ");
+  return subagents.length > MAX_LISTED_SUBAGENTS ? `${names} …and ${subagents.length - MAX_LISTED_SUBAGENTS} more` : names;
+}
 
 const parametersFor = (background: boolean, subagents: readonly TurnSubagent[]) =>
   ({
