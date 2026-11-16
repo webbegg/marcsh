@@ -288,7 +288,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
           {escapeProjectText(request.cwd)}
         </text>
         <text attributes={TextAttributes.DIM}>
-          {request.resources.length} {request.resources.length === 1 ? "item" : "items"} pi would load or run, most dangerous first
+          {request.resources.length} {request.resources.length === 1 ? "item" : "items"} marcsh would load or use, most dangerous first
           {changes?.removed.length ? `, ${changes.removed.length} removed` : ""}
         </text>
         {changes && !changes.known ? <text attributes={TextAttributes.DIM}>{NO_RECORD_NOTICE}</text> : null}
@@ -314,7 +314,7 @@ export function TrustPrompt({ request, layer = "base" }: Props) {
           </text>
         ) : null}
         <text attributes={TextAttributes.DIM}>
-          {reviewable ? "Trusting lets pi load these files and run their code with your permissions." : unreadableNotice}
+          {reviewable ? "Trusting lets these files load and run with your permissions." : unreadableNotice}
         </text>
         <box flexDirection="row" gap={2}>
           {keyHints}

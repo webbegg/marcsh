@@ -68,7 +68,7 @@ test("S18: at 80x24 the title, folder, item count and key hints are all on scree
 
   const text = flat();
   expect(text).toContain("Trust this project's files?");
-  expect(text).toContain("items pi would load or run");
+  expect(text).toContain("items marcsh would load or use");
   expect(text).toContain("d don't trust");
   expect(text).toContain("server evil: sh -c echo");
   expect(existsSync(join(dir, "evil-ran"))).toBe(false);

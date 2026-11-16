@@ -364,12 +364,12 @@ describe("the trust prompt fits any terminal (S18)", () => {
       const text = frame();
       expect(lines[1]).toContain(TITLE);
       // The folder wraps onto as many rows as its length needs (a long TMPDIR makes it several); the list starts right under the count.
-      const count = lines.findIndex((line) => line.includes("items pi would load or run, most dangerous first"));
+      const count = lines.findIndex((line) => line.includes("items marcsh would load or use, most dangerous first"));
       expect(count).toBeGreaterThan(2);
       expect(count).toBeLessThanOrEqual(2 + Math.ceil(realpathSync(cwd).length / 70));
       expect(lines.slice(2, count).map((line) => line.replace(/[│┃\s]+/g, "")).join("")).toContain("marcsh-pi-trust-");
       expect(lines[count + 1]).toMatch(/^│ {2}• \.pi\/mcp\.json — server evil: sh -c echo/);
-      expect(text).toContain("Trusting lets pi load these files and run their code with your permissions.");
+      expect(text).toContain("Trusting lets these files load and run with your permissions.");
       expect(lines[height - 2]).toMatch(/d {2}don't trust {2}Esc {2}not now \(this turn only\)/);
       expect(lines[height - 2]).toContain("scroll to the end first");
       const position = indicator();
@@ -482,7 +482,7 @@ describe("a project with a file marcsh could not read (S18)", () => {
     expect(prompt).toContain("Esc not now (this turn only)");
     expect(prompt).not.toContain("trust (then Enter)");
     expect(prompt).not.toContain("scroll to the end first");
-    expect(prompt).not.toContain("Trusting lets pi load these files");
+    expect(prompt).not.toContain("Trusting lets these files load");
     expect(existsSync(marker())).toBe(false);
   }, 30000);
 
@@ -593,8 +593,8 @@ describe("/trust (S18)", () => {
     expect(prompt).toContain(TITLE);
     expect(prompt).toContain(".pi/extensions/marker.ts");
     expect(prompt).toContain("server fixture: fixture-mcp-server --stdio");
-    expect(prompt).toContain("2 items pi would load or run, most dangerous first");
-    expect(prompt).toContain("Trusting lets pi load these files and run their code with your permissions.");
+    expect(prompt).toContain("2 items marcsh would load or use, most dangerous first");
+    expect(prompt).toContain("Trusting lets these files load and run with your permissions.");
     expect(getStorage().getProjectTrust(cwd)).toBeNull();
     expect(existsSync(marker())).toBe(false);
   }, 30000);

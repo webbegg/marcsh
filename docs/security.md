@@ -171,7 +171,7 @@ A trust holds only while the project is as you reviewed it. If a pi file or a pr
 
 On the first pi turn in a project that has pi files or project commands, before pi loads anything of the project, marcsh shows a full-screen question: `Trust this project's files?`
 
-It lists everything pi would load or run, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come last, each as `.marcsh/commands/<name>.md — project command /<name>`.
+It lists everything marcsh and pi would load or use, most dangerous first: MCP servers with their command, arguments and environment, settings that run or install things, extensions, then skills, prompt templates, themes and system prompt files. Files that a setting points to elsewhere are listed too. The project's commands come last, each as `.marcsh/commands/<name>.md — project command /<name>`.
 
 | Key | What it does |
 | --- | --- |
