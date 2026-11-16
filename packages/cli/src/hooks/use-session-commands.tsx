@@ -263,7 +263,8 @@ export function useSessionCommands(params: Params): SessionCommands {
 
     const ps = () => {
       const hub = current().background;
-      if (!hub || hub.disposed) return info("Background terminals run in pi sessions only.");
+      // Without background terminals (a Claude session) it still lists the leftover processes this marcsh run's tools started.
+      if (!hub || hub.disposed) return ui.current.dialog.open({ title: "Leftover processes", children: <PsDialogContent /> });
       ui.current.dialog.open({ title: "Background terminals", children: <PsDialogContent hub={hub} /> });
     };
 

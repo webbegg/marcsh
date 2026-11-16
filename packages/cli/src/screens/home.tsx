@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Header } from "../components/header";
 import { InputBar } from "../components/input-bar";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
+import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { usePromptConfig } from "../providers/prompt-config";
 import { useToast } from "../providers/toast";
 import { userCommandTurn } from "../lib/user-commands";
@@ -15,12 +16,21 @@ export function Home() {
 
   const handleSubmit = useCallback(
     (text: string) => {
-      // One of the user's commands runs as its expanded prompt, as the agent and model it names.
-      const turn = userCommandTurn(text, { cwd: process.cwd(), engine: defaultEngine, agents, builtinNames: COMMAND_NAMES });
-      if (turn?.warning) toast.show({ variant: "info", message: turn.warning });
+      // One of the user's commands runs as its expanded prompt, as the agent and model it names (a pack's agent stays read-only from Plan:
+      // its mode is plan, which the session keeps).
+      const turn = userCommandTurn(text, {
+        cwd: process.cwd(),
+        engine: defaultEngine,
+        agents,
+        selected: agent,
+        builtinNames: COMMAND_NAMES,
+        engineNames: engineCommandNames(defaultEngine),
+      });
+      const said = [turn?.warning, turn?.notice].filter(Boolean).join(" ");
+      if (said) toast.show({ variant: "info", message: said });
       const turnAgent = turn?.agent ?? agent;
       navigate("/sessions/new", {
-        state: { message: turn?.text ?? text, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}) },
+        state: { message: turn?.text ?? text, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}), ...(turnAgent.tools?.deny?.length ? { agentDeny: [...turnAgent.tools.deny] } : {}) },
       });
     },
     [navigate, toast, agent, agents, model, defaultEngine],

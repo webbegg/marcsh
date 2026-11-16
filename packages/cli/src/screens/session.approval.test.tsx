@@ -53,6 +53,7 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { NORMAL_MODE_LINE } = await import("../lib/approval-policy");
 const { engines } = await import("../lib/engine");
 
 // pi is the default engine and its status line asks the pi runtime: a stand-in without one keeps the real pi engine from loading.
@@ -229,7 +230,7 @@ describe("session approvals (S7)", () => {
       cwd: "/tmp/marcsh-cwd",
       model: "opus",
       permissionMode: "default",
-      systemPrompt: { type: "preset", preset: "claude_code" },
+      systemPrompt: { type: "preset", preset: "claude_code", append: NORMAL_MODE_LINE },
       settingSources: ["user", "project", "local"],
     });
     expect(options.resume).toBeUndefined();

@@ -277,7 +277,7 @@ Copy the last reply to the clipboard.
 
 ### /ps
 
-Show this session's background terminals.
+Show this session's background terminals and the leftover processes of this marcsh run.
 
 ```
 /ps
@@ -287,7 +287,8 @@ Show this session's background terminals.
 - `Up` and `Down` move. `Enter` opens the selected terminal's output. It is read-only and follows new output. `t` switches between stdout and stderr. `Left` goes back to the list.
 - `x` kills the selected terminal, in the list and in the output view. The agent is told it was killed.
 - The output view strips colors and other terminal codes. It shows the last 3000 lines; the full log file is named at the top.
-- Background terminals stop when you leave the session or quit marcsh. On Claude, `/ps` says they run in pi sessions only.
+- Background terminals stop when you leave the session or quit marcsh. Background terminals exist on pi only; on Claude, `/ps` says so and lists only the leftover processes.
+- Under the terminals, **Leftover processes** lists what the agent's tools started in this marcsh run that is still running on its own after the command, tool call or terminal that started it ended. Examples are a server started with `cmd &`, a browser a test left open, or a watcher. Each row shows the pid, age, memory, command and, when known, the background terminal that started it (`bt-2`). `x` stops the selected one: `SIGTERM`, then `SIGKILL` after 2 seconds. marcsh never stops them on its own. Only processes carrying this run's marker are listed, and only those can be stopped; see [What marcsh may stop](security.md#what-marcsh-may-stop). The list is read when `/ps` opens and after each stop.
 
 ### /subagents
 
@@ -353,7 +354,7 @@ The `/` menu lists the commands and skills of the engine you are on. The list is
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
 
-Your [custom commands](#custom-commands) are the exception: marcsh expands them itself before sending.
+Your [custom commands](#custom-commands) and the [pack commands that name an agent](#pack-commands) are the exception: marcsh expands them itself before sending.
 
 ## Custom commands
 
@@ -397,6 +398,7 @@ Pay special attention to: src/app.ts error handling
   - `description`: the text in the `/` menu. Without it, the first line of the prompt is shown.
   - `agent`: the agent to run the turn as, by ID (`user/reviewer`, `plan`) or by name. An unknown agent is reported and the selected agent is used.
   - `model`: the model for the turn. If the engine cannot use it (a pi model such as `openai/gpt-5` on Claude, or the reverse), it is reported and the session model is used.
+  - `argument-hint`: what the `/` menu shows after the name, such as `<file>` or `"[spec slug]"`. Quotes around it are dropped.
 - `agent` and `model` apply to that turn only. The next message runs as the selected agent on the session model.
 
 ### Arguments
@@ -414,7 +416,7 @@ Pay special attention to: src/app.ts error handling
 
 - They appear in the `/` menu with the tag `personal` or `project`. The files are read when the menu opens, so a new file shows up without a restart. Picking one puts `/name ` in the prompt; add the arguments and press `Enter`.
 - marcsh's own commands win a name clash: a `new.md` file is ignored. A command of yours also replaces an engine command with the same name.
-- A project command replaces a personal one with the same name.
+- A project command replaces a personal one with the same name, and a personal one replaces a [pack command](#pack-commands) with the same name.
 - To change where personal commands are read from, set `MARCSH_COMMANDS_DIR`.
 
 ### Project commands and trust
@@ -422,6 +424,41 @@ Pay special attention to: src/app.ts error handling
 A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
 
 Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
+
+## Pack commands
+
+An installed [pack](packs.md) can ship commands in its `commands/` folder. Most of them belong to the engine and work only while one of the pack's agents is selected. A pack command whose frontmatter names an `agent` works differently: marcsh runs it itself, from any agent.
+
+```markdown
+---
+description: Write a spec for an idea
+agent: asdd
+argument-hint: "<idea>"
+---
+Load the specify skill for this idea: $ARGUMENTS
+```
+
+With that file as `commands/spec.md` in the pack, typing `/spec offline mode` while Build is selected does this:
+
+- The prompt is expanded the same way as a [custom command](#arguments) (`$ARGUMENTS`, `$1` to `$9`). The chat shows the expanded prompt.
+- The turn runs as the pack's ASDD agent, with that agent's prompt, tools, pack skills, subagents and enabled hooks. This works because the turn's agent belongs to the pack.
+- The next message runs as the selected agent again, which is Build here.
+
+The `agent` field names the file of one of the pack's own agents (`asdd` for `agents/asdd.md`, in any letter case), that agent's `name`, or `build` or `plan`. If the agent is another pack's, one of yours, a subagent or unknown, or if `agent:` is empty, marcsh warns and runs the turn as the selected agent.
+
+A pack command never lifts Plan. If Plan (or another read-only agent) is selected and the command's agent can change files, the turn still runs as that agent, with its prompt, skills, subagents and enabled hooks, but read-only, under Plan's rules: nothing is written, and the model is told it is in plan mode. marcsh says so, for example `/build runs as ASDD in Plan (read-only): switch to Build to let it change files.` From Build or another agent that can change files, the command's agent runs as usual.
+
+A pack command never gives the turn tools that the selected agent does not have. If the selected agent turns off a tool group (for example `bash: false`), that group stays off when the command's agent runs, as for a [subagent](agents.md). The install preview shows which agent each command runs as, for example `spec → ASDD`.
+
+Where they show and which one wins:
+
+- They appear in the `/` menu and the command palette while the pack is installed, whichever agent is selected. They are tagged with the pack's repository name and show their `argument-hint`.
+- A pack command never takes a name from another command. The order is: marcsh's own commands, then the engine's (Claude's or pi's built-in, plugin and template commands), then your project and personal commands, then pack commands. If two packs have a command with the same name, the pack whose ID sorts first keeps it.
+- A pack command that loses a clash is listed and run as `/<repo>:<name>` instead, tagged with the pack's repository name. For example, a `review` command in `webbegg/marcsh-rsc` is `/marcsh-rsc:review` on Claude, because Claude has its own `/review`. Typing `/review` runs Claude's.
+- If `/<repo>:<name>` is taken as well, the pack command is hidden. marcsh says so once, in a warning when the `/` menu opens. Claude's own copy of it (`/<owner>-<repo>:<name>`) is not listed either; typing that name still runs marcsh's command, as its agent, never the raw file.
+- marcsh knows the engine's commands from the list the engine last reported (after a turn, or when marcsh starts). Until it has one, a pack command keeps its name.
+- On Claude, the pack's view also has its own copy of the command, named `<owner>-<repo>:<name>`. That copy is not listed again, and typing its name runs marcsh's version.
+- A pack command without `agent` works as before: the engine runs it, and only while one of the pack's agents is selected.
 
 ## Bundled commands and skills
 

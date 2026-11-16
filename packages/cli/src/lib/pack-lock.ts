@@ -61,6 +61,11 @@ export function packPluginDir(id: string, root = packsRoot()) {
   return join(packDir(id, root), "plugin");
 }
 
+/** The plugin name of a pack's generated view (its `.claude-plugin/plugin.json`): Claude lists the view's commands as `<name>:<command>`. */
+export function packPluginName(id: string) {
+  return id.replace(/\//g, "-").replace(/[^A-Za-z0-9-]+/g, "-");
+}
+
 /** Where an installed pack's `agents/*.md` are read from. */
 export function packAgentsDir(id: string, root = packsRoot()) {
   assertPackId(id);

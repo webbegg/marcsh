@@ -107,8 +107,8 @@ describe("pi tools by group", () => {
     }
   });
 
-  test("marcsh's background terminal tools are in the bash group, and only there (S1a)", () => {
-    for (const name of ["bg_start", "bg_status", "bg_list", "bg_kill"]) {
+  test("marcsh's background terminal and leftover-process tools are in the bash group, and only there (S1a, M6)", () => {
+    for (const name of ["bg_start", "bg_status", "bg_list", "bg_kill", "proc_list", "proc_stop"]) {
       expect(PI_TOOL_GROUPS[name]).toEqual(["bash"]);
       expect(isPiToolDenied(name, ["bash"]), name).toBe(true);
       expect(isPiToolDenied(name, TOOL_GROUPS.filter((group) => group !== "bash")), name).toBe(false);

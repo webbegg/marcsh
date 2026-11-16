@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import type { ExtensionAPI, InlineExtension, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { MAX_AGENT_BYTES, readFrontmatter } from "../agent-file";
 import type { ClaudeCommand } from "../claude-commands";
 import { readPluginEntries } from "../plugin";
+import { printable } from "../safe-text";
 
 const PLUGIN_PREFIX = "marcsh:";
 
@@ -17,6 +19,23 @@ const isInside = (path: string, directory: string) => {
   const target = resolve(path);
   return target === root || target.startsWith(root + sep);
 };
+
+/**
+ * A prompt template's `argument-hint`, read from its file (pi lists none): pi reads the same frontmatter key. Empty for any other entry, a file
+ * that is not a regular file of at most MAX_AGENT_BYTES, or one that cannot be read. Only printable text: it is shown in the menu.
+ */
+function templateHint(item: SlashCommandInfo): string {
+  const path = item.source === "prompt" ? item.sourceInfo?.path : undefined;
+  if (!path) return "";
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.size > MAX_AGENT_BYTES) return "";
+    const hint = readFrontmatter(readFileSync(path, "utf8")).fields.get("argument-hint")?.trim();
+    return hint ? printable(hint) : "";
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Turns pi's command list (`SlashCommandInfo`: extension commands, prompt templates, skills; never pi's
@@ -40,7 +59,7 @@ export function normalizePiCommands(infos: readonly SlashCommandInfo[], pluginPa
     const name = fromPlugin ? `${PLUGIN_PREFIX}${invoke.replace(/^skill:/, "")}` : invoke;
     if (seen.has(name)) continue;
     seen.add(name);
-    commands.push({ name, invoke, description: item.description ?? "", argumentHint: "", source: item.source });
+    commands.push({ name, invoke, description: item.description ?? "", argumentHint: templateHint(item), source: item.source });
   }
   return commands;
 }

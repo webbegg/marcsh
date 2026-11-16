@@ -31,6 +31,7 @@ const { Home } = await import("./home");
 const { NewSession } = await import("./new-session");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { NORMAL_MODE_LINE, PLAN_MODE_LINE } = await import("../lib/approval-policy");
 const { engines } = await import("../lib/engine");
 const { DEFAULT_CHAT_MODEL_ID } = await import("../lib/models");
 const { preferencesPath, setDefaultEngine } = await import("../lib/preferences");
@@ -248,9 +249,9 @@ describe("running a custom command (S7)", () => {
 
     expect(calls).toHaveLength(2);
     expect(calls[0]!.options.permissionMode).toBe("plan");
-    expect(calls[0]!.options.systemPrompt.append).toBe("Review only.");
+    expect(calls[0]!.options.systemPrompt.append).toBe(`Review only.\n\n${PLAN_MODE_LINE}`);
     expect(calls[1]!.options.permissionMode).toBe("default");
-    expect("append" in calls[1]!.options.systemPrompt).toBe(false);
+    expect(calls[1]!.options.systemPrompt.append).toBe(NORMAL_MODE_LINE);
   });
 
   test("the model in the frontmatter runs that turn only", async () => {

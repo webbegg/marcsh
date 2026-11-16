@@ -1,15 +1,16 @@
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { MAX_AGENT_BYTES, parseAgentFile, type Agent } from "./agent-file";
+import { MAX_AGENT_BYTES, parseAgentFile, parseSubagentFile, type Agent, type Subagent } from "./agent-file";
 import { unsupportedGroups } from "./agent-tools";
+import type { TurnSubagent } from "./engine/types";
 import { Mode, type ModeType } from "./modes";
 import { hookEngines, hookEvents } from "./pack-hooks";
 import { inspectPackHooks, listPacks, packAgentsDir, packPluginDir, packsRoot, packViewLocation } from "./packs";
 import { printable } from "./safe-text";
 
 // Other modules import the agent type and the file parser from here.
-export { parseAgentFile, type Agent };
+export { parseAgentFile, type Agent, type Subagent };
 
 export const BUILD_AGENT_ID = "build";
 export const PLAN_AGENT_ID = "plan";
@@ -29,7 +30,13 @@ export function agentsDir() {
   return process.env.MARCSH_AGENTS_DIR?.trim() || join(homedir(), ".marcsh", "agents");
 }
 
-function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boolean }): Agent[] {
+function readAgentDir(dir: string, pack: string, options: { untrusted: boolean }): Agent[];
+function readAgentDir<T extends Agent>(dir: string, pack: string, options: { untrusted: boolean; parse: (text: string, at: { pack: string; file: string }) => T | null }): T[];
+function readAgentDir(
+  dir: string,
+  pack: string,
+  { untrusted, parse = parseAgentFile }: { untrusted: boolean; parse?: (text: string, at: { pack: string; file: string }) => Agent | null },
+): Agent[] {
   let files: string[];
   try {
     files = readdirSync(dir).filter((file) => file.endsWith(".md")).sort();
@@ -43,7 +50,7 @@ function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boo
       // A pack's file is read only when it is a regular file in the clone: a link could point at any file of the user's.
       const stat = untrusted ? lstatSync(path) : statSync(path);
       if (!stat.isFile() || (untrusted && stat.size > MAX_AGENT_BYTES)) continue;
-      const agent = parseAgentFile(readFileSync(path, "utf8"), { pack, file });
+      const agent = parse(readFileSync(path, "utf8"), { pack, file });
       if (!agent) continue;
       // A pack's names are shown in the status line and the menus: no escape sequence may get through.
       loaded.push(
@@ -70,7 +77,20 @@ function readAgentDir(dir: string, pack: string, { untrusted }: { untrusted: boo
  */
 export function loadAgents(dir = agentsDir(), packsDir = packsRoot()): Agent[] {
   const user = readAgentDir(dir, "user", { untrusted: false });
-  const packs = listPacks({ root: packsDir })
+  const packs = readPackAgents(packsDir, parseAgentFile);
+  // Two files can slug to the same ID ("My Agent.md", "my-agent.md"), which would trap Tab and repeat a key. Files are sorted, so the
+  // first one keeps the ID.
+  const taken = new Set<string>();
+  return [...BUILTIN_AGENTS, ...user, ...packs].filter((agent) => {
+    if (taken.has(agent.id)) return false;
+    taken.add(agent.id);
+    return true;
+  });
+}
+
+/** Every installed pack's agent files read with `parse` (by pack ID), each with its pack's plugin view. */
+function readPackAgents<T extends Agent>(packsDir: string, parse: (text: string, at: { pack: string; file: string }) => T | null): T[] {
+  return listPacks({ root: packsDir })
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .flatMap((pack) => {
       const agentsPath = packAgentsDir(pack.id, packsDir);
@@ -81,16 +101,37 @@ export function loadAgents(dir = agentsDir(), packsDir = packsRoot()): Agent[] {
         return [];
       }
       const pluginDir = packPluginDir(pack.id, packsDir);
-      return readAgentDir(agentsPath, pack.id, { untrusted: true }).map((agent) => ({ ...agent, pluginDir }));
+      return readAgentDir(agentsPath, pack.id, { untrusted: true, parse }).map((agent) => ({ ...agent, pluginDir }));
     });
-  // Two files can slug to the same ID ("My Agent.md", "my-agent.md"), which would trap Tab and repeat a key. Files are sorted, so the
-  // first one keeps the ID.
-  const taken = new Set<string>();
-  return [...BUILTIN_AGENTS, ...user, ...packs].filter((agent) => {
-    if (taken.has(agent.id)) return false;
-    taken.add(agent.id);
-    return true;
-  });
+}
+
+/** The named subagents (`mode: subagent` files): the user's in `dir` (sorted by file name), then every installed pack's (by pack ID). Never selectable. */
+export function loadSubagents(dir = agentsDir(), packsDir = packsRoot()): Subagent[] {
+  return [...readAgentDir(dir, "user", { untrusted: false, parse: parseSubagentFile }), ...readPackAgents(packsDir, parseSubagentFile)];
+}
+
+/**
+ * The subagents a turn of `agent` may start, sorted by address: the user's own, plus those of the agent's pack when it comes from one
+ * (Build, Plan and the user's agents get only the user's). When a pack's subagent has the address of one of the user's, the pack's wins.
+ */
+export function availableSubagents(agent: Pick<Agent, "pack">, subagents: readonly Subagent[]): Subagent[] {
+  const own = agent.pack && agent.pack !== "user" ? subagents.filter((sub) => sub.pack === agent.pack) : [];
+  const taken = new Set(own.map((sub) => sub.address));
+  const user = subagents.filter((sub) => sub.pack === "user" && !taken.has(sub.address));
+  return [...own, ...user].sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+}
+
+/** What the engine needs of the subagents a turn of `agent` may start (see {@link availableSubagents}). */
+export function turnSubagents(agent: Pick<Agent, "pack">, subagents: readonly Subagent[] = loadSubagents()): TurnSubagent[] {
+  return availableSubagents(agent, subagents).map((sub) => ({
+    name: sub.address,
+    description: sub.description,
+    prompt: sub.prompt,
+    ...(sub.model ? { model: sub.model } : {}),
+    readOnly: sub.mode === Mode.PLAN,
+    ...(sub.tools && sub.tools.deny.length > 0 ? { deniedTools: sub.tools.deny } : {}),
+    ...(sub.pluginDir ? { pluginDir: sub.pluginDir } : {}),
+  }));
 }
 
 /** The agent with this ID, else Build. */

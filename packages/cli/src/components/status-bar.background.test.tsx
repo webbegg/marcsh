@@ -60,6 +60,19 @@ describe("StatusBar background segment", () => {
     expect(runningBackgroundText(2, 1)).toBe("2 terminals, 1 subagent running · /ps /subagents");
   });
 
+  test("counts leftover processes and points at /ps (M6)", () => {
+    expect(runningBackgroundText(0, 0, 0)).toBe("");
+    expect(runningBackgroundText(0, 0, 2)).toBe("2 leftover · /ps");
+    expect(runningBackgroundText(2, 0, 1)).toBe("2 background terminals running · 1 leftover · /ps");
+    expect(runningBackgroundText(0, 1, 1)).toBe("1 background subagent running · /subagents · 1 leftover · /ps");
+    expect(runningBackgroundText(1, 2, 3)).toBe("1 terminal, 2 subagents running · 3 leftover · /ps /subagents");
+  });
+
+  test("shows the leftover count on the line", async () => {
+    const frame = await render(<StatusBar cwd="/repo" readGit={git} messages={[usage]} background={runningBackgroundText(0, 0, 3)} hint="enter" />, 140);
+    expect(frame).toContain("3 files changed · 3 leftover · /ps · enter");
+  });
+
   test("shows terminals and subagents together", async () => {
     const frame = await render(<StatusBar cwd="/repo" readGit={git} messages={[usage]} background={runningBackgroundText(1, 2)} hint="enter" />, 140);
     expect(frame).toContain("3 files changed · 1 terminal, 2 subagents running · /ps /subagents · enter");

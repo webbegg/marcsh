@@ -3,13 +3,21 @@ import { COMMANDS } from "./commands";
 import { mergeCommands, type ClaudeCommand } from "../../lib/claude-commands";
 import type { UserCommand } from "../../lib/user-commands";
 
+/** The menu's tag for a user command: where it comes from, a pack's command by the pack's repository name. */
+const userSource = (command: UserCommand) => (command.pack ? (command.pack.split("/")[1] ?? command.pack) : command.source);
+
 /**
- * Marcsh's commands, then the user's and the given engine's commands (marcsh wins name clashes, then the user's own).
- * Commands without a source are Claude's. The commands on the open session (`scope: "session"`) are left out with `inSession` false.
+ * Marcsh's commands, then the user's (packs' included) and the given engine's commands (marcsh wins name clashes, then the user's own).
+ * The engine's copy of a pack command marcsh runs (Claude's `<plugin>:<name>`) is not listed a second time, nor that of a pack command
+ * hidden by a clash (`hidden`). Commands without a source are Claude's. The commands on the open session (`scope: "session"`) are left
+ * out with `inSession` false.
  */
-export function getMenuCommands(claude: ClaudeCommand[], user: UserCommand[] = [], inSession = true): Command[] {
-  const own = new Set(user.map((command) => command.name));
-  const fromUser = user.map((command) => ({ name: command.name, description: command.description, argumentHint: "", source: command.source }));
+export function getMenuCommands(claude: ClaudeCommand[], user: UserCommand[] = [], inSession = true, hidden: readonly UserCommand[] = []): Command[] {
+  const own = new Set([
+    ...user.flatMap((command) => (command.engineName ? [command.name, command.engineName] : [command.name])),
+    ...hidden.flatMap((command) => (command.engineName ? [command.engineName] : [])),
+  ]);
+  const fromUser = user.map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint ?? "", source: userSource(command) }));
   const merged = mergeCommands(COMMANDS, [...fromUser, ...claude.filter((command) => !own.has(command.name))], (command) => ({
     name: command.name,
     description: command.description,

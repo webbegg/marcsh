@@ -6,7 +6,7 @@ import { act, useState } from "react";
 import type { GitStatus } from "../lib/git-status";
 
 const { testRender } = await import("@opentui/react/test-utils");
-const { useGitStatus, trustedForGit } = await import("./use-git-status");
+const { useGitStatus, useBranchState, trustedForGit } = await import("./use-git-status");
 const { getStorage } = await import("../lib/storage");
 
 // S6: the git segment is refreshed every few seconds and after tool calls, with one git call at a time.
@@ -64,6 +64,18 @@ describe("useGitStatus", () => {
     expect(latest).toBeNull();
     await fake.answer({ branch: "main", changed: 2 });
     expect(latest).toEqual({ branch: "main", changed: 2 });
+  });
+
+  // M5: the worktree name is part of the state, so a read that only changes it still updates.
+  test("shows a read that changes only the worktree name", async () => {
+    const fake = fakeRead();
+    await mount(<Host cwd="/repo" read={fake.read} />);
+    await fake.answer({ branch: "feat/x", changed: null });
+
+    await act(async () => setTrigger(1));
+    await fake.answer({ branch: "feat/x", changed: null, worktree: "pack-integration" });
+
+    expect(latest).toEqual({ branch: "feat/x", changed: null, worktree: "pack-integration" });
   });
 
   test("does nothing without a folder", async () => {
@@ -264,6 +276,79 @@ describe("useGitStatus without a reader", () => {
     } finally {
       getStorage().setProjectTrust(repo, null);
     }
+  });
+});
+
+// R3-2 / R3-10: where the checkout stands (for the status line's paused mode) is read asynchronously, never in render: when the
+// trigger changes (the polled branch) and, while `poll` is on (git status off or failing), on its own short poll.
+describe("useBranchState", () => {
+  type State = import("../lib/git-branch").BranchState;
+  let state: State | null = null;
+  const MAIN: State = { kind: "default", branch: "main" };
+  const FEATURE: State = { kind: "feature", branch: "feat/x" };
+  let setKey: (value: string) => void = () => {};
+  function BranchProbe(props: { cwd?: string; read: (cwd: string) => Promise<State>; poll?: boolean; pollMs?: number }) {
+    const [key, set] = useState("a");
+    setKey = set;
+    state = useBranchState(props.cwd, { read: props.read, trigger: key, poll: props.poll ?? false, pollMs: props.pollMs ?? 60_000 });
+    return <text>probe</text>;
+  }
+  afterEach(() => {
+    state = null;
+  });
+
+  test("reads on mount and again when the trigger changes, never while rendering", async () => {
+    let now: State = MAIN;
+    const calls: string[] = [];
+    const read = async (cwd: string) => (calls.push(cwd), now);
+    await mount(<BranchProbe cwd="/repo-a" read={read} />);
+    expect(state).toEqual(MAIN);
+    expect(calls).toEqual(["/repo-a"]);
+
+    now = FEATURE;
+    await act(async () => setKey("b"));
+    await settle();
+    expect(state).toEqual(FEATURE);
+    expect(calls.length).toBe(2);
+  });
+
+  test("with poll on (git status off or failing), polls on its own", async () => {
+    let now: State = MAIN;
+    const read = async () => now;
+    await mount(<BranchProbe cwd="/repo-b" read={read} poll pollMs={30} />);
+    expect(state).toEqual(MAIN);
+    now = FEATURE;
+    await settle(120);
+    expect(state).toEqual(FEATURE);
+  });
+
+  test("without poll, does not poll", async () => {
+    let now: State = MAIN;
+    const read = async () => now;
+    await mount(<BranchProbe cwd="/repo-c" read={read} pollMs={30} />);
+    now = FEATURE;
+    await settle(120);
+    expect(state).toEqual(MAIN);
+  });
+
+  test("a read that fails keeps the last state; no folder reads nothing", async () => {
+    let fail = false;
+    const read = async () => {
+      if (fail) throw new Error("git broke");
+      return FEATURE;
+    };
+    await mount(<BranchProbe cwd="/repo-d" read={read} />);
+    expect(state).toEqual(FEATURE);
+    fail = true;
+    await act(async () => setKey("c"));
+    await settle();
+    expect(state).toEqual(FEATURE);
+
+    await act(async () => screen!.renderer.destroy());
+    let called = false;
+    await mount(<BranchProbe read={async () => ((called = true), MAIN)} />);
+    expect(state).toBeNull();
+    expect(called).toBe(false);
   });
 });
 

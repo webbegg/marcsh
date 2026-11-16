@@ -84,6 +84,8 @@ describe("runHeadless: text format", () => {
     expect(requests[0]).toMatchObject({ prompt: "say hello", cwd, mode: "BUILD", model: "opus" });
     expect(requests[0]!.resumeRef).toBeUndefined();
     expect(requests[0]!.systemPromptAppend).toBeUndefined();
+    // Normal, with nobody to approve: the engine's mode line says asks are denied (T8 f).
+    expect(requests[0]).toMatchObject({ approvalMode: "normal", noApprover: true });
   });
 
   test("only the text after the last tool is the final reply", async () => {

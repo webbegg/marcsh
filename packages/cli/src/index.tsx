@@ -16,6 +16,9 @@ if (args.kind === "error") {
   console.error(`marcsh: ${args.message}\n\n${USAGE.trimEnd()}`);
   process.exit(2);
 }
+// Before anything is started: every process marcsh starts inherits this run's MARCSH_SESSION, which is how its leftover processes are
+// found and the only thing that lets marcsh stop one (see lib/background/leftovers.ts).
+(await import("./lib/background/session-marker")).startSessionMarker();
 if (args.kind === "run") {
   const { runCommand } = await import("./run/main");
   process.exit(await runCommand(args));
