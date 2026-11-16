@@ -73,6 +73,18 @@ describe("selectReleaseFiles", () => {
     }
   });
 
+  // R1-8: OpenTUI's native library (it links LGPL FFmpeg) comes from npm at install time, with its own notices; marcsh never ships one.
+  test("never ships a native binary, wherever it sits", () => {
+    const natives = [
+      "packages/cli/src/lib/libopentui.dylib",
+      "packages/cli/src/vendor/libopentui.so",
+      "packages/cli/bin/opentui.dll",
+      "packages/cli/plugin/addon.node",
+      "node_modules/@opentui/core-darwin-arm64/libopentui.dylib",
+    ];
+    expect(selectReleaseFiles([...tracked, ...natives]).filter((path) => natives.includes(path))).toEqual([]);
+  });
+
   test("leaves out every test file and test preload", () => {
     expect(selected.filter((path) => /\.test\.tsx?$/.test(path))).toEqual([]);
     expect(selected.filter((path) => /(^|\/)test-preload[^/]*$/.test(path))).toEqual([]);
