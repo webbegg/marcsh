@@ -1,0 +1,48 @@
+# Runs the typecheck and the full test suite on every pull request (whatever branch it targets, so the children of a
+# feature chain are checked too) and on every push to main. release.yml does not run the tests: a release is cut from a
+# commit on main that has passed this workflow.
+#
+# macOS only for now: it is the platform the installer supports and the one the suite is known to pass on. Linux
+# (the leftover-process /proc reader, the native clipboard) has never run and would be a separate job.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only: the tests need no write access to anything.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run; runs on main never cancel each other.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: cd packages/cli && bunx tsc --noEmit -p .
+
+      # Some tests make commits in temporary repositories; give git an identity there and nowhere else.
+      - name: Test
+        env:
+          GIT_AUTHOR_NAME: marcsh-ci
+          GIT_AUTHOR_EMAIL: ci@marcsh.invalid
+          GIT_COMMITTER_NAME: marcsh-ci
+          GIT_COMMITTER_EMAIL: ci@marcsh.invalid
+        run: bun run test
