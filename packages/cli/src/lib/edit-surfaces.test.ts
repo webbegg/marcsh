@@ -15,7 +15,7 @@ describe("validateSurfaces", () => {
   });
 
   test("rejects the repository root in every spelling, naming the entry", () => {
-    for (const root of [".", "./", ".//", "./.", "*", "**", "**/*", "./**", "./*", " . "]) {
+    for (const root of [".", "./", ".//", "./.", "*", "**", "**/*", "./**", "./*", " . ", "**/**", "**/**/*", "./**/**", "**/**/**"]) {
       const problems = validateSurfaces([root]);
       expect(problems).toHaveLength(1);
       expect(problems[0]).toContain(`"${root}"`);
@@ -56,6 +56,12 @@ describe("validateSurfaces", () => {
 describe("normalizeSurfaces", () => {
   test("trims, drops a leading ./ and trailing slashes, and uses forward slashes", () => {
     expect(normalizeSurfaces([" ./src/a.ts ", "tests/", "a\\b\\c.ts"])).toEqual(["src/a.ts", "tests", "a/b/c.ts"]);
+  });
+
+  test("drops an inner ./ and doubled slashes, so each path has one spelling", () => {
+    expect(normalizeSurfaces(["src/./a.ts", "src//a.ts", "./src/./sub//", "src/**/./x"])).toEqual(["src/a.ts", "src/a.ts", "src/sub", "src/**/x"]);
+    expect(isWithinSurfaces("src/a.ts", ["src/./a.ts"])).toBe(true);
+    expect(isWithinSurfaces("src//a.ts", ["src/a.ts"])).toBe(true);
   });
 });
 
@@ -100,6 +106,12 @@ describe("surfacesOverlap", () => {
 
   test("the same entry overlaps itself, and a leading ./ does not hide it", () => {
     expect(surfacesOverlap(["src/a.ts"], ["./src/a.ts"])).toBeDefined();
+  });
+
+  test("an inner ./ or a doubled slash does not hide an overlap", () => {
+    expect(surfacesOverlap(["src//a"], ["src/a"])).toBeDefined();
+    expect(surfacesOverlap(["src/./a.ts"], ["src/a.ts"])).toBeDefined();
+    expect(surfacesOverlap(["src/./a"], ["src/b"])).toBeUndefined();
   });
 
   test("it is conservative: two globs in one directory may be reported", () => {

@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createSurfaceGuard, diffSnapshots, outsideSurfaces, parsePorcelain, runGitHardened, type RunGit, type Snapshot, takeSnapshot } from "./pi-surfaces";
+import { createSurfaceGuard, diffSnapshots, outsideSurfaces, parsePorcelain, readHead, runGitHardened, type RunGit, type Snapshot, takeSnapshot } from "./pi-surfaces";
 
 // The surfaces guard on its own: the working-tree snapshot (ported from brigadev's worktree-snapshot) and the two extensions, driven
 // through a stand-in for pi's extension API.
@@ -98,6 +98,34 @@ describe("takeSnapshot against a real repository", () => {
     expect(diffSnapshots(first!, (await takeSnapshot(runGitHardened, root))!)).toEqual(["link"]);
   });
 
+  test("since a commit, a change that was committed meanwhile still shows; a file that was dirty and unchanged does not", async () => {
+    git(root, "init", "-q");
+    for (const [file, content] of [["a.txt", "a\n"], ["dirty.txt", "d\n"]] as const) writeFileSync(join(root, file), content);
+    git(root, "add", ".");
+    git(root, "commit", "-qm", "init");
+    writeFileSync(join(root, "dirty.txt"), "dirty\n");
+    const head = await readHead(runGitHardened, root);
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    const before = await takeSnapshot(runGitHardened, root);
+
+    writeFileSync(join(root, "a.txt"), "changed\n");
+    writeFileSync(join(root, "new.txt"), "new\n");
+    git(root, "add", "a.txt", "new.txt");
+    git(root, "commit", "-qm", "second");
+    // Status alone sees nothing but the dirty file; since the first commit, the committed changes show.
+    expect(diffSnapshots(before!, (await takeSnapshot(runGitHardened, root))!)).toEqual([]);
+    expect(diffSnapshots(before!, (await takeSnapshot(runGitHardened, root, head))!)).toEqual(["a.txt", "new.txt"]);
+    // A commit git cannot find leaves the status as it was.
+    expect(diffSnapshots(before!, (await takeSnapshot(runGitHardened, root, "0".repeat(40)))!)).toEqual([]);
+  });
+
+  test("readHead: undefined with no commit yet or outside a repository", async () => {
+    expect(await readHead(runGitHardened, root)).toBeUndefined();
+    git(root, "init", "-q");
+    expect(await readHead(runGitHardened, root)).toBeUndefined();
+    expect(await readHead(async () => null, root)).toBeUndefined();
+  });
+
   test("returns undefined outside a repository, or when git cannot run", async () => {
     expect(await takeSnapshot(runGitHardened, root)).toBeUndefined();
     expect(await takeSnapshot(async () => null, root)).toBeUndefined();
@@ -161,6 +189,37 @@ describe("the gate", () => {
     expect((await gateFor(["src/dangling"]).emit("tool_call", call("write", { path: "src/dangling" })))?.block).toBe(true);
   });
 
+  test("a file:// URL is judged by the path pi decodes it to, fragment and query dropped", async () => {
+    const { emit } = gateFor(["src/**", "**/*.test.ts"]);
+    const decoded = await emit("tool_call", call("write", { path: `file://${root}/src/a%2Eb.ts` }));
+    expect(decoded).toBeUndefined();
+    expect(await emit("tool_call", call("write", { path: `file://${root}/src/a.ts#frag` }))).toBeUndefined();
+    expect(await emit("tool_call", call("write", { path: `file://${root}/src/a.ts?x=1` }))).toBeUndefined();
+    const fragment = await emit("tool_call", call("write", { path: `file://${root}/README.md#/x.test.ts` }));
+    expect(fragment?.reason).toContain("README.md is outside");
+    expect((await emit("tool_call", call("edit", { path: `file://${root}/README.md?/src/x` })))?.block).toBe(true);
+    expect((await emit("tool_call", call("write", { path: `file://${tmpdir()}/elsewhere.test.ts` })))?.block).toBe(true);
+  });
+
+  test("a file:// URL pi would reject is refused, as is one that points through a link out of the surfaces", async () => {
+    const { emit } = gateFor(["**/*.ts"]);
+    for (const bad of [`file://${root}/src/a%2Fb.ts`, "file://remote-host/src/a.ts", "file://", "file://%zz"]) {
+      expect((await emit("tool_call", call("write", { path: bad })))?.block).toBe(true);
+    }
+    // Not `file://`: pi resolves it as a plain relative name, which is what the guard judges too.
+    expect((await emit("tool_call", call("write", { path: "file:/src/a.ts" })))?.block).toBeUndefined();
+  });
+
+  test("unusual spaces are normalized as pi does, and only those", async () => {
+    mkdirSync(join(root, "my dir"));
+    const { emit } = gateFor(["my dir/**"]);
+    // U+00A0, U+2003 and U+3000 are spaces to pi; U+1680 is not, so that name is a different folder.
+    for (const code of [0xa0, 0x2003, 0x3000]) {
+      expect(await emit("tool_call", call("write", { path: `my${String.fromCharCode(code)}dir/x.ts` }))).toBeUndefined();
+    }
+    expect((await emit("tool_call", call("write", { path: `my${String.fromCharCode(0x1680)}dir/x.ts` })))?.block).toBe(true);
+  });
+
   test("a call with no path, and tools it does not judge, pass", async () => {
     const { emit } = gateFor(["src/a.ts"]);
     expect(await emit("tool_call", call("write", {}))).toBeUndefined();
@@ -196,7 +255,9 @@ describe("the watch", () => {
   const fakeGit = (trees: Record<string, string>[]): RunGit => {
     let current: Record<string, string> = {};
     return async (_cwd, args) => {
+      if (args[0] === "rev-parse" && args.includes("--verify")) return { out: "", code: 1 };
       if (args[0] === "rev-parse") return { out: `${root}\n`, code: 0 };
+      if (args[0] === "diff") return { out: "", code: 0 };
       current = trees.shift() ?? current;
       for (const [path, content] of Object.entries(current)) writeFileSync(join(root, path), content);
       return { out: Object.keys(current).map((path) => ` M ${path}\0`).join(""), code: 0 };
@@ -240,6 +301,16 @@ describe("the watch", () => {
     expect(await emit("tool_result", { ...result, toolName: "write", toolCallId: "w1" })).toBeUndefined();
     expect(await emit("tool_result", result)).toBeUndefined();
     expect(await guard.outside()).toEqual([]);
+  });
+
+  test("a path flagged by one call stays in outside() even when the tree is clean again", async () => {
+    mkdirSync(join(root, "src"));
+    // The call changes README.md (flagged); by the end it is clean again (committed, stashed or reverted).
+    const guard = createSurfaceGuard({ cwd: root, surfaces: ["src/a.ts"], runGit: fakeGit([{}, { "README.md": "X" }, {}, {}]) });
+    const { emit } = load(guard.watch);
+    await emit("tool_call", bashCall);
+    expect((await emit("tool_result", result))?.isError).toBe(true);
+    expect(await guard.outside()).toEqual(["README.md"]);
   });
 
   test("outside() is the whole run since the first bash call; without a bash call, or without git, it is empty", async () => {

@@ -3,9 +3,14 @@
 
 const GLOB_CHARS = /[*?[\]{}]/;
 
-/** A surface as it is compared: trimmed, forward slashes, no leading `./`, no trailing `/`. */
+/** A surface as it is compared: trimmed, forward slashes, no `.` segments (`./` anywhere), no empty ones (`//`, trailing `/`). */
 function normalize(path: string): string {
-  return path.trim().replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".")
+    .join("/");
 }
 
 /** The surfaces in the form the rest of the module compares and shows them. */
@@ -13,8 +18,16 @@ export function normalizeSurfaces(surfaces: readonly string[]): string[] {
   return surfaces.map(normalize);
 }
 
-/** Entries that name the whole repository once normalized (`.`, `./`, `./.`, `*`, `**`, `**\/*`, `./**`). */
-const WHOLE_REPOSITORY = new Set(["", ".", "*", "**", "**/*", "./*", "./**"]);
+/**
+ * Whether a normalized entry names the whole repository: nothing left (`.`, `./`), or only `**` segments ending in `*` or `**`
+ * (`*`, `**`, `**\/*`, `**\/**`, `**\/**\/*`, `./**\/**`).
+ */
+function coversWholeRepository(path: string): boolean {
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length === 0) return true;
+  const last = segments[segments.length - 1]!;
+  return (last === "*" || last === "**") && segments.slice(0, -1).every((segment) => segment === "**");
+}
 
 /**
  * The problems with a list of surfaces, each naming the bad entry; an empty list means the surfaces are valid. Rejected: no entries,
@@ -34,7 +47,7 @@ export function validateSurfaces(surfaces: readonly unknown[] | undefined): stri
     else if (trimmed.startsWith("/") || trimmed.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("~")) {
       problems.push(`"${raw}" must be repository-relative, not absolute`);
     } else if (path.split("/").includes("..")) problems.push(`"${raw}" must not escape the repository with ".."`);
-    else if (WHOLE_REPOSITORY.has(path) || path.split("/").every((segment) => segment === "." || segment === "")) {
+    else if (coversWholeRepository(path)) {
       problems.push(`"${raw}" covers the whole repository`);
     }
   }

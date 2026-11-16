@@ -8,7 +8,9 @@
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { writesOutsideSurfaces } from "../bash-writes";
 import { isWithinSurfaces, normalizeSurfaces } from "../edit-surfaces";
@@ -85,21 +87,42 @@ function contentMarker(absolute: string): string {
   }
 }
 
+/** The commit HEAD names under `root`; undefined when there is none (no repository, no commit yet) or git fails. */
+export async function readHead(runGit: RunGit, root: string): Promise<string | undefined> {
+  try {
+    const head = await runGit(root, ["rev-parse", "--verify", "-q", "HEAD"]);
+    return head && head.code === 0 && head.out.trim() ? head.out.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Paths from `git diff --name-only -z` (null-separated, no rename detection). */
+function parseNames(output: string): string[] {
+  return output.split("\0").filter((name) => name !== "");
+}
+
 /**
  * Snapshot of the dirty files under `root` (their content, so a further change to a file that was already dirty shows): undefined when
  * git is missing, `root` is not in a repository, or git fails. Files git ignores are not covered.
+ *
+ * With `since` (a commit, usually the HEAD recorded earlier) it also covers the files that differ from that commit, so a change that a
+ * commit made clean again still shows: a file committed since then is in the snapshot with its content.
  */
-export async function takeSnapshot(runGit: RunGit, root: string): Promise<Snapshot | undefined> {
+export async function takeSnapshot(runGit: RunGit, root: string, since?: string): Promise<Snapshot | undefined> {
   try {
     const top = await runGit(root, ["rev-parse", "--show-toplevel"]);
     if (!top || top.code !== 0 || !top.out.trim()) return undefined;
     const status = await runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
     if (!status || status.code !== 0) return undefined;
+    // A commit that cannot be diffed (gone after a gc or a rewrite) leaves the status alone.
+    const committed = since ? await runGit(root, ["diff", "--name-only", "-z", "--no-renames", since, "--", "."]) : null;
 
     const toplevel = realTarget(top.out.trim()) ?? top.out.trim();
     const projectRoot = realTarget(root) ?? root;
     const snapshot = new Map<string, string>();
-    for (const path of parsePorcelain(status.out)) {
+    const paths = [...parsePorcelain(status.out), ...(committed && committed.code === 0 ? parseNames(committed.out) : [])];
+    for (const path of paths) {
       const absolute = join(toplevel, path);
       snapshot.set(relative(projectRoot, absolute).split(sep).join("/"), contentMarker(absolute));
     }
@@ -109,18 +132,29 @@ export async function takeSnapshot(runGit: RunGit, root: string): Promise<Snapsh
   }
 }
 
-// Every space separator (no-break, en/em, narrow, ideographic…) is a plain space, as pi's own path handling reads it.
-const UNICODE_SPACES = /\p{Zs}/gu;
+// The spaces pi's path handling turns into a plain space (`UNICODE_SPACES` in pi's `utils/paths.js`: exactly this set, not every \p{Zs}).
+// (U+00A0, U+2000-U+200A, U+202F, U+205F, U+3000.)
+const isPiSpace = (code: number) => code === 0xa0 || (code >= 0x2000 && code <= 0x200a) || code === 0x202f || code === 0x205f || code === 0x3000;
+const normalizeSpaces = (text: string) => Array.from(text, (ch) => (isPiSpace(ch.charCodeAt(0)) ? " " : ch)).join("");
 
 /**
- * The path a file tool names, as pi resolves it (a leading `@` dropped, `~` expanded, odd spaces normalized), against `cwd`. Null for a
- * dangling symlink, whose target cannot be told.
+ * The file pi's `edit`/`write` would open for a path, resolved exactly as pi does (`resolveToCwd`: unusual spaces normalized, a leading
+ * `@` dropped, `~` expanded, a `file://` URL decoded to its path, then resolved against the working folder), then through symlinks.
+ * Null when it cannot be told: a dangling symlink, or a `file://` URL pi would reject. Keep in step with pi's `normalizePath`.
  */
 function resolveToolPath(raw: string, cwd: string): string | null {
-  const cleaned = raw.replace(UNICODE_SPACES, " ").replace(/^@/, "");
-  const home = process.env.HOME;
-  const expanded = home && (cleaned === "~" || cleaned.startsWith("~/")) ? `${home}${cleaned.slice(1)}` : cleaned;
-  return realTarget(resolve(cwd, expanded));
+  let path = normalizeSpaces(raw);
+  if (path.startsWith("@")) path = path.slice(1);
+  if (path === "~") path = homedir();
+  else if (path.startsWith("~/")) path = join(homedir(), path.slice(2));
+  else if (/^file:\/\//.test(path)) {
+    try {
+      path = fileURLToPath(path);
+    } catch {
+      return null;
+    }
+  }
+  return realTarget(isAbsolute(path) ? resolve(path) : resolve(cwd, path));
 }
 
 /** What to show for a path the surfaces rule out: its project-relative name, or the path as given when it is outside the project. */
@@ -160,11 +194,15 @@ export type SurfaceGuard = {
   /** Flags the files a `bash` call changed outside the surfaces. Goes after the approval extension, so a call waiting to be approved is not counted. */
   watch: ExtensionFactory;
   /**
-   * The files changed outside the surfaces since the first `bash` call began (the whole run); empty when it ran none or the tree cannot be
-   * compared. Git runs only around a `bash` call the user approved: `edit` and `write` cannot reach outside the surfaces.
+   * The files changed outside the surfaces since the first `bash` call began (the whole run, committed changes included: the tree is
+   * compared with the HEAD of that moment), plus every path any `bash` call was flagged for, even if it was reverted, committed or stashed
+   * later. Empty when it ran no `bash` and nothing was flagged, or the tree cannot be compared. Git runs only around a `bash` call the user
+   * approved: `edit` and `write` cannot reach outside the surfaces. Safe to call at any time, also while the child is still running.
    */
   outside(): Promise<string[]>;
 };
+
+const sorted = (paths: Iterable<string>) => [...new Set(paths)].sort();
 
 /** The tools that run a shell command. `bg_start` runs it in the background, so only its literal writes can be judged. */
 const SHELL_TOOLS = new Set(["bash", "bg_start"]);
@@ -176,9 +214,12 @@ export function createSurfaceGuard(options: SurfaceGuardOptions): SurfaceGuard {
   const root = realTarget(cwd) ?? cwd;
   const runGit = options.runGit ?? runGitHardened;
   const others = () => normalizeSurfaces(options.others?.() ?? []);
-  const take = () => takeSnapshot(runGit, cwd);
-  // The tree as it was when the first `bash` call began: nothing else can change a file outside the surfaces, so the run starts there.
+  const take = (since?: string) => takeSnapshot(runGit, cwd, since);
+  // The tree and HEAD as they were when the first `bash` call began: nothing else can change a file outside the surfaces, so the run starts there.
   let runStart: Snapshot | undefined;
+  let runHead: string | undefined;
+  // Every path a `bash` call was flagged for: once flagged, always listed.
+  const flagged = new Set<string>();
   const outsideNow = (before: Snapshot, after: Snapshot) => outsideSurfaces(diffSnapshots(before, after), [...surfaces, ...others()]);
 
   const gate: ExtensionFactory = (pi) => {
@@ -199,14 +240,18 @@ export function createSurfaceGuard(options: SurfaceGuardOptions): SurfaceGuard {
     });
   };
 
-  const before = new Map<string, Snapshot>();
+  const before = new Map<string, { snapshot: Snapshot; head: string | undefined }>();
   const watch: ExtensionFactory = (pi) => {
     pi.on("tool_call", async (event) => {
       if (event.toolName !== "bash") return undefined;
       const snapshot = await take();
       if (snapshot) {
-        before.set(event.toolCallId, snapshot);
-        runStart ??= snapshot;
+        const head = await readHead(runGit, cwd);
+        before.set(event.toolCallId, { snapshot, head });
+        if (!runStart) {
+          runStart = snapshot;
+          runHead = head;
+        }
       }
       return undefined;
     });
@@ -214,10 +259,12 @@ export function createSurfaceGuard(options: SurfaceGuardOptions): SurfaceGuard {
       const start = before.get(event.toolCallId);
       if (!start) return undefined;
       before.delete(event.toolCallId);
-      const after = await take();
+      // Compared with the HEAD of the call's start, so a commit the call made does not hide what it changed.
+      const after = await take(start.head);
       if (!after) return undefined;
-      const outside = outsideNow(start, after);
+      const outside = outsideNow(start.snapshot, after);
       if (outside.length === 0) return undefined;
+      for (const path of outside) flagged.add(path);
       return { content: [...event.content, { type: "text" as const, text: surfaceChangedNotice(outside) }], isError: true };
     });
   };
@@ -226,9 +273,9 @@ export function createSurfaceGuard(options: SurfaceGuardOptions): SurfaceGuard {
     gate,
     watch,
     async outside() {
-      if (!runStart) return [];
-      const after = await take();
-      return after ? outsideNow(runStart, after) : [];
+      if (!runStart) return sorted(flagged);
+      const after = await take(runHead);
+      return sorted([...flagged, ...(after ? outsideNow(runStart, after) : [])]);
     },
   };
 }

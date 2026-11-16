@@ -35,7 +35,7 @@ Start one with `Task` and `agent: <name>` (on Claude, Claude's `Task` by that na
 
 Derive the surfaces yourself; never ask the human to author paths. List the files the unit must touch plus directories where it may create files, as narrow repository-relative paths or globs. Never `.`, the repository root, absolute paths, or `..`. A surface wider than the task is a defect, and overlapping surfaces between parallel writers are not allowed.
 
-- **pi:** pass the list as `editSurfaces` in `Task` (an array of strings), and also under `Allowed edit surfaces` in the task prompt so the writer sees it. The runtime denies the writer's `Edit`/`Write` outside the list, blocks `Bash` writes to literal paths outside it, flags files `Bash` changed outside it (in a git repository), rejects a launch whose surfaces overlap a running writer's, and ends the `Task` result with a warning that lists files changed outside the list. It reverts nothing. Invalid surfaces (`.`, root, absolute, `..`, empty) are rejected with the entry named.
+- **pi:** pass the list as `editSurfaces` in `Task` (an array of strings), and also under `Allowed edit surfaces` in the task prompt so the writer sees it. The runtime denies the writer's `Edit`/`Write` outside the list, blocks `Bash` writes to literal paths outside it, flags files `Bash` changed outside it (in a git repository), rejects a launch whose surfaces overlap a running writer's, and ends the `Task` result with a warning that lists files changed outside the list (also when the writer fails, times out, or is interrupted). The warning is best effort (files git ignores, an undone stash/reset, or a cancelled background writer are not listed), so after each writer also run `git diff --stat` and compare it with the list. It reverts nothing. Invalid surfaces (`.`, root, `**/**` and other whole-repository globs, absolute, `..`, empty) are rejected with the entry named.
 - **Claude:** `Task` has no such parameter and nothing enforces the list. Put it under `Allowed edit surfaces` in the task prompt, and after each writer returns run `git diff --stat` and compare it with the list.
 
 A change outside the list is a defect: report it, and revert it only with the user's approval.
@@ -45,7 +45,7 @@ If a writer returns `interaction_required` for a path, present its derived candi
 ## After a writer returns
 
 1. Read its report: covered `S#`, commands run with observed results, open items.
-2. Spot-check: re-run one reported command yourself, and check for changes outside the surfaces as above (the `Task` result's warning on pi, `git diff --stat` on Claude).
+2. Spot-check: re-run one reported command yourself, and check for changes outside the surfaces as above (on pi both the `Task` result's warning and `git diff --stat`; on Claude `git diff --stat`).
 3. After parallel units finish, run one inline full-suite command to catch seams between units.
 4. Decide the Risk line from the actual diff, not the writer's summary.
 
