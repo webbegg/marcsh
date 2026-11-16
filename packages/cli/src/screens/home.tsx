@@ -4,7 +4,9 @@ import { Header } from "../components/header";
 import { InputBar } from "../components/input-bar";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
 import { engineCommandNames } from "../components/command-menu/use-command-menu";
+import { openCommandQuestions } from "../components/dialogs/command-questions";
 import { usePromptConfig } from "../providers/prompt-config";
+import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
 import { userCommandTurn } from "../lib/user-commands";
 import { TextAttributes } from "@opentui/core";
@@ -12,6 +14,7 @@ import { TextAttributes } from "@opentui/core";
 export function Home() {
   const navigate = useNavigate();
   const toast = useToast();
+  const dialog = useDialog();
   const { agent, agents, model, defaultEngine } = usePromptConfig();
 
   const handleSubmit = useCallback(
@@ -26,14 +29,21 @@ export function Home() {
         builtinNames: COMMAND_NAMES,
         engineNames: engineCommandNames(defaultEngine),
       });
+      // A command whose questions are invalid sends nothing, and no session is opened for it.
+      if (turn?.error !== undefined) return void toast.show({ variant: "error", message: turn.error });
       const said = [turn?.warning, turn?.notice].filter(Boolean).join(" ");
       if (said) toast.show({ variant: "info", message: said });
       const turnAgent = turn?.agent ?? agent;
-      navigate("/sessions/new", {
-        state: { message: turn?.text ?? text, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}), ...(turnAgent.tools?.deny?.length ? { agentDeny: [...turnAgent.tools.deny] } : {}) },
-      });
+      const start = (message: string) =>
+        navigate("/sessions/new", {
+          state: { message, mode: turnAgent.mode, model, agentId: turnAgent.id, ...(turn?.model ? { agentModel: turn.model } : {}), ...(turnAgent.tools?.deny?.length ? { agentDeny: [...turnAgent.tools.deny] } : {}) },
+        });
+      // A command with questions asks them here, before any session exists: Esc or Cancel leaves the home screen as it was, and the session's
+      // first message is the composed request, never the raw template.
+      if (turn?.form) return void openCommandQuestions(dialog, { form: turn.form, cwd: process.cwd(), onStart: start });
+      start(turn?.text ?? text);
     },
-    [navigate, toast, agent, agents, model, defaultEngine],
+    [navigate, toast, dialog, agent, agents, model, defaultEngine],
   );
 
   return (
