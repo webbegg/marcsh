@@ -236,7 +236,7 @@ describe("S13 child tool calls go through approval, guard and rules", () => {
     const childOffered = offered(seen.child![0]!.messages).sort();
     const parentOffered = offered(seen.parent![0]!.messages).sort();
     console.log("PLAN offered parent", parentOffered, "child", childOffered, "results", JSON.stringify(results(seen.child!.at(-1)!.messages)));
-    expect(parentOffered).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
+    expect(parentOffered).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read", "todo"]);
     expect(childOffered).toEqual(["find", "grep", "ls", "read"]);
     expect(r.asks).toEqual([]);
     expect(existsSync(m)).toBe(false);

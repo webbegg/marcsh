@@ -191,6 +191,7 @@ How the model starts one:
 Agents work on both engines. A few details differ:
 
 - **Web tools.** Claude has web tools, so `web: false` takes them away. pi has none, so there is nothing to remove. If you write `web: false` by name, marcsh warns that it changes nothing on pi. It does not warn when `web` is removed by a list or by `"*"`.
+- **Task list.** On pi, the agent has a `todo` tool: it sets, updates, lists and clears a list of tasks (`pending`, `in_progress`, `done`, `blocked`, `dropped`; `blocked` and `dropped` need a note). It changes no files, so it runs without asking, also in Plan, and a subagent does not get it. The list is kept in the conversation's tool results, so it comes back when you resume; if compaction drops those results, the agent can ask for the list again. On Claude the agent uses Claude's own `TodoWrite`; no tool group in an agent's `tools` field takes it away.
 - **Models.** Each engine takes its own kind of model name. See [Model](#model-and-fallback).
 - **Pack hooks.** Only some hook events run on pi. See [Pack hooks](pack-hooks.md).
 - **Subagent time limit.** On pi, a subagent started with `Task` is stopped after 3 minutes. Time spent waiting for you to answer one of its approvals doesn't count. The model gets an error that says so. In a session that can run background subagents (not in Plan), it suggests `background: true` for longer work.
