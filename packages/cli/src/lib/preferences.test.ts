@@ -8,6 +8,7 @@ import {
   getDefaultEngine,
   getFavoriteModels,
   getNotifyMode,
+  getPasteMode,
   getPiModel,
   getRecentModels,
   preferencesPath,
@@ -290,5 +291,18 @@ describe("notify preference", () => {
     expect(getNotifyMode(path)).toBe("bell");
     writeRaw(JSON.stringify({ notify: false }));
     expect(getNotifyMode(path)).toBe("bell");
+  });
+});
+
+describe("paste preference", () => {
+  test("large pastes collapse by default", () => {
+    expect(getPasteMode(path)).toBe("compact");
+  });
+
+  test("full keeps them as they are; anything else is the default", () => {
+    updatePreferences({ paste: "full" }, path);
+    expect(getPasteMode(path)).toBe("full");
+    writeRaw(JSON.stringify({ paste: "huge" }));
+    expect(getPasteMode(path)).toBe("compact");
   });
 });

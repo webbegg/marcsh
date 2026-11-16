@@ -53,7 +53,8 @@ Ported or adapted in marcsh (paths under `packages/cli/src/`):
 - `lib/clipboard.ts`: the clipboard reads and writes over OpenTUI follow `packages/tui/src/clipboard.ts`
 - `lib/clipboard.test.ts`: the clipboard service cases follow `packages/tui/test/clipboard.test.ts`
 - `providers/clipboard/index.tsx`: follows `packages/tui/src/context/clipboard.tsx`
-- `components/input-bar.tsx`: the paste queue follows `enqueuePaste`, the `prompt.paste` command and `onPaste` in `packages/tui/src/component/prompt/index.tsx`
+- `components/input-bar.tsx`: the paste queue and the large-paste placeholders follow `enqueuePaste`, the `prompt.paste` command, `onPaste`, `pasteInputText`, `pasteText`, `expandPastedText` and the extmark sync in `packages/tui/src/component/prompt/index.tsx`
+- `lib/paste.ts`: follows `pasteInputText` and `expandTrackedPastedText` in `packages/tui/src/prompt/part.ts`
 
 ```text
 MIT License

@@ -24,7 +24,8 @@ Type `/` at the start of the input to open the command menu. See [Commands](comm
 
 Paste with your terminal's paste key (`Cmd+V` on a Mac, `Ctrl+Shift+V` in most Linux terminals), or with `Ctrl+V`, which marcsh handles itself and reads the clipboard directly.
 
-- **Text** goes into the input where the cursor is.
+- **Text** goes into the input where the cursor is. Colors and other escape sequences are removed, and Windows line ends become ordinary new lines.
+- **A large paste** (3 lines or more, or over 150 characters) shows as one placeholder, `[Pasted ~12 lines]`, so the input stays short. Your message is sent with the full text, and the history (`Up`) brings back the full text. `Left`, `Right` and `Backspace` treat the placeholder as one piece. Paste the same text again right after it to see the full text in its place. To always paste the full text, set `"paste": "full"` in your [preferences](configuration.md#preferences).
 - **A file path** (or a file dropped on the terminal, which pastes its path) attaches the file inside a session. See [Attaching files and images](commands.md#attaching-files-and-images).
 - **An image** (a screenshot, an image you copied) needs `Ctrl+V`: terminals paste only text. Some terminals send an empty paste for an image, and then `Cmd+V` works too. The image is attached to your next message as `[image: clipboard-1.png]`, numbered from 1 in each session. Images can be attached inside a session only; on the home screen a toast says so.
 - **Where images go.** marcsh saves each one as a PNG file in `~/.marcsh/attachments/<session ID>/` (set `MARCSH_ATTACHMENTS_DIR` to move it). The folder and the files are private to you. They are kept after the message is sent, so that the session can still show them; delete the folder to free the space.

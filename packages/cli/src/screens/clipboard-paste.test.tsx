@@ -284,6 +284,131 @@ describe("a read that ends after the input changed", () => {
   });
 });
 
+describe("a large paste", () => {
+  const LINES = "first line\nsecond line\nthird line\nfourth line";
+  const backspace = async () => {
+    await act(async () => screen!.mockInput.pressBackspace());
+    await settle(50);
+  };
+  afterEach(() => {
+    rmSync(process.env.MARCSH_PREFERENCES_PATH!, { force: true });
+  });
+
+  test("shows as a placeholder, and the message sent (and kept) has the full text", async () => {
+    await open();
+
+    await type("look: ");
+    await paste(LINES);
+    await type("thanks");
+    expect(frame()).toContain("look: [Pasted ~4 lines] thanks");
+    expect(frame()).not.toContain("second line");
+
+    await enter();
+    expect(calls[0]!.prompt).toBe(`look: ${LINES} thanks`);
+    const stored = getStorage().getSession(sessionId)!.messages.find((m) => m.role === "user")!;
+    expect(stored.parts).toEqual([{ type: "text", text: `look: ${LINES} thanks` }]);
+  });
+
+  test("a long single line collapses too", async () => {
+    await open();
+
+    await paste("x".repeat(200));
+
+    expect(frame()).toContain("[Pasted ~1 lines]");
+  });
+
+  test("Backspace removes the placeholder as one piece", async () => {
+    await open();
+    await paste(LINES);
+
+    await backspace();
+    await backspace();
+
+    expect(frame()).not.toContain("[Pasted");
+    expect(frame()).not.toContain("Pasted ~4");
+    expect(frame()).toContain("Ask anything");
+  });
+
+  test("undo brings a deleted placeholder back, still standing for its paste", async () => {
+    await open();
+    await paste(LINES);
+    await backspace();
+    await backspace();
+
+    await act(async () => screen!.mockInput.pressKey("z", { super: true }));
+    await settle(50);
+    expect(frame()).toContain("[Pasted ~4 lines]");
+
+    await enter();
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("pasting the same text again right after puts the full text in its place", async () => {
+    await open();
+    await paste(LINES);
+
+    await paste(LINES);
+
+    expect(frame()).not.toContain("[Pasted");
+    expect(frame()).toContain("fourth line");
+    await enter();
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("with the preference paste: full it goes in as it is", async () => {
+    writeFileSync(process.env.MARCSH_PREFERENCES_PATH!, JSON.stringify({ paste: "full" }));
+    await open();
+
+    await paste(LINES);
+
+    expect(frame()).not.toContain("[Pasted");
+    expect(frame()).toContain("fourth line");
+  });
+
+  test("a large text from Ctrl+V collapses the same way", async () => {
+    answer = text(LINES);
+    await open();
+
+    await ctrlV();
+
+    expect(frame()).toContain("[Pasted ~4 lines]");
+    await enter();
+    expect(calls[0]!.prompt).toBe(LINES);
+  });
+
+  test("the history keeps the full text", async () => {
+    await open();
+    await paste(LINES);
+    await enter();
+
+    await act(async () => screen!.mockInput.pressArrow("up"));
+    await settle(50);
+
+    expect(frame()).toContain("fourth line");
+  });
+});
+
+describe("pasted text is cleaned", () => {
+  test("escape sequences are dropped and \\r\\n or \\r line ends become \\n", async () => {
+    await open();
+
+    await paste("red\u001b[31m text\r\nnext");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe("red text\nnext");
+  });
+
+  test("a large paste with \\r line ends counts its lines", async () => {
+    await open();
+
+    await paste("1\r2\r3");
+    expect(frame()).toContain("[Pasted ~3 lines]");
+
+    await enter();
+    expect(calls[0]!.prompt).toBe("1\n2\n3");
+  });
+});
+
 describe("/copy", () => {
   test("writes the last reply through the app's clipboard", async () => {
     await open([
