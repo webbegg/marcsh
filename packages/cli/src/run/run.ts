@@ -187,7 +187,7 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     { id: replyId, role: "assistant", parts: [], metadata },
   ];
   let resumeRef = session.engineSessionRef ?? undefined;
-  // A session with messages but no engine conversation (a fork) starts one primed with what was said; what is saved is what was typed.
+  // A session with messages but no engine conversation (a fork) starts one primed with what was said; what is saved is the expanded command text (the session title is the prompt as typed).
   const enginePrompt = !resumeRef && session.messages.length > 0 ? primeWithTranscript(expanded, session, session.messages) : expanded;
   // A resumed Claude conversation reports its running total: the turn subtracts what the session had cost already.
   const priorCostUsd = resumeRef ? priorCumulativeCost(session.messages) : undefined;

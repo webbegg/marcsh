@@ -30,6 +30,12 @@ export type TodoInput = {
 
 export const TODO_GLYPH: Record<TodoStatus, string> = { pending: "○", in_progress: "◐", done: "✓", blocked: "⊘", dropped: "✕" };
 
+/** Size limits: a list that is too long or an item too wordy is refused, so the list stays readable and the tool result small. */
+export const MAX_TODOS = 100;
+export const MAX_ID_LENGTH = 40;
+export const MAX_TEXT_LENGTH = 500;
+export const MAX_NOTE_LENGTH = 500;
+
 const isStatus = (value: unknown): value is TodoStatus => (TODO_STATUSES as readonly unknown[]).includes(value);
 const STATUS_ERROR = `status must be one of ${TODO_STATUSES.join(", ")}`;
 
@@ -45,9 +51,12 @@ function itemFrom(raw: unknown): Todo {
   const item = (raw ?? {}) as Record<string, unknown>;
   if (typeof item.id !== "string" || item.id.trim() === "") throw new Error("Every todo needs an id");
   const id = item.id;
+  if (id.length > MAX_ID_LENGTH) throw new Error(`Todo id is longer than ${MAX_ID_LENGTH} characters: ${id.slice(0, 20).replace(CONTROL, " ")}...`);
   if (typeof item.text !== "string" || item.text.trim() === "") throw new Error(`Todo ${id} needs text`);
   if (item.status !== undefined && !isStatus(item.status)) throw new Error(`Todo ${id}: ${STATUS_ERROR}`);
+  if (item.text.length > MAX_TEXT_LENGTH) throw new Error(`Todo ${id}: text is longer than ${MAX_TEXT_LENGTH} characters`);
   if (item.note !== undefined && typeof item.note !== "string") throw new Error(`Todo ${id}: note must be text`);
+  if (typeof item.note === "string" && item.note.length > MAX_NOTE_LENGTH) throw new Error(`Todo ${id}: note is longer than ${MAX_NOTE_LENGTH} characters`);
   const todo: Todo = { id, text: item.text, status: item.status ?? "pending", ...(item.note ? { note: item.note } : {}) };
   const error = missingNote(todo);
   if (error) throw new Error(error);
@@ -56,6 +65,7 @@ function itemFrom(raw: unknown): Todo {
 
 function setList(raw: unknown): Todo[] {
   if (raw !== undefined && !Array.isArray(raw)) throw new Error("todos must be a list of {id, text, status?, note?}");
+  if (raw !== undefined && raw.length > MAX_TODOS) throw new Error(`A list holds at most ${MAX_TODOS} todos (got ${raw.length})`);
   const seen = new Set<string>();
   return (raw ?? []).map((entry: unknown) => {
     const todo = itemFrom(entry);
@@ -72,6 +82,7 @@ function updateList(current: readonly Todo[], input: TodoInput): Todo[] {
   if (input.status === undefined && input.note === undefined) throw new Error("update needs a status or a note");
   if (input.status !== undefined && !isStatus(input.status)) throw new Error(STATUS_ERROR);
   if (input.note !== undefined && typeof input.note !== "string") throw new Error("note must be text");
+  if (typeof input.note === "string" && input.note.length > MAX_NOTE_LENGTH) throw new Error(`Todo ${input.id}: note is longer than ${MAX_NOTE_LENGTH} characters`);
 
   const { note: _kept, ...rest } = current[at]!;
   const note = input.note === undefined ? current[at]!.note : input.note || undefined;
@@ -97,10 +108,15 @@ export function applyTodo(current: readonly Todo[], input: TodoInput): Todo[] {
   }
 }
 
-/** One line per item: glyph, id, text, the note and the `[status]`. */
+/** Line breaks (a run of them is one space) and the other control characters, which no field may carry into the list. */
+const LINE_BREAKS = /[\r\n\u2028\u2029]+/g;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+const oneLine = (value: string): string => value.replace(LINE_BREAKS, " ").replace(CONTROL, "");
+
+/** One line per item: glyph, id, text, the note and the `[status]`. Each field stays on that line, so a note cannot add list lines of its own. */
 export function renderTodos(todos: readonly Todo[]): string {
   if (todos.length === 0) return "No todos";
-  return todos.map((todo) => `${TODO_GLYPH[todo.status]} ${todo.id} ${todo.text}${todo.note ? ` — ${todo.note}` : ""} [${todo.status}]`).join("\n");
+  return todos.map((todo) => `${TODO_GLYPH[todo.status]} ${oneLine(todo.id)} ${oneLine(todo.text)}${todo.note ? ` — ${oneLine(todo.note)}` : ""} [${todo.status}]`).join("\n");
 }
 
 /** A stored list that is valid as a whole, as a copy; undefined for anything else. */

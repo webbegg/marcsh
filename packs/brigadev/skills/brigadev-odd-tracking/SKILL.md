@@ -38,7 +38,7 @@ Rules:
 - A requirement change appends its verbatim `## Log` entry, rewrites only the affected `S#`, and reopens only its linked tasks.
 - Check off only observed outcomes with proof. Record failed, skipped, or pending checks honestly.
 - Obsolete tasks become `dropped` with the reason in `## Log`; never mark them done. Tasks waiting on something outside the list become `blocked` with a note naming what unblocks them.
-- If a memory tool (for example `mem_save`) is available, mirror the full document under topic `odd/<feature-name>` after each update. If not, the file alone is the authority.
+- The feature document is the only authority: do not mirror it elsewhere.
 
 ## Task list projection
 
@@ -46,7 +46,7 @@ When the `todo` tool (pi) or `TodoWrite` (Claude) is available, it is the visibl
 
 ## Resume
 
-Read the feature document (and memory mirror, if any). Reconcile requirements, code, and proof before continuing the next unfinished task. Reproduce a reported failure by running it; reading code is not reproduction.
+Read the feature document. Reconcile requirements, code, and proof before continuing the next unfinished task. Reproduce a reported failure by running it; reading code is not reproduction.
 
 ## Close gate
 

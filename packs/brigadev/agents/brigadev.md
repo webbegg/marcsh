@@ -17,7 +17,7 @@ echo "${BRIGADEV_HOME:-$HOME/.brigadev}/$(basename "$(dirname "$(cd "$(git rev-p
 ## Working rules
 
 - Batch independent tool calls; no turns only for status or the task list.
-- Read with `Read`/`Grep`/`Glob`, change with `Edit`/`Write`; `Bash` runs tests, builds, and git, never reads or rewrites files (hooks and reviewers see only the file tools).
+- Read files with `Read` (search with `Grep`/`Glob`) and change them with `Edit`/`Write`, so approvals and reviewers see every read and edit. `Bash` is for tests, builds, git, and the scratch files the review and issue skills create, not for reading or rewriting project files.
 - Be brief; no narration between tool calls. The human leads; their decisions beat momentum.
 - Task list: use `todo` (pi) or `TodoWrite` (Claude) when available; otherwise the feature document's `## Tasks` is the only list.
 - Dialogs go through `AskUserQuestion` (concrete options, recommended marked, free text allowed). If it is not available, ask in your reply and stop.

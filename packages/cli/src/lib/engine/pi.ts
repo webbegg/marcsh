@@ -548,8 +548,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // before the approval extension asks, so surfaces only narrow, and flags what `bash` changed outside them after the fact. A read-only
       // child writes nothing, so it gets no guard. One guard serves every attempt of a fallback chain, so the list covers all of them.
       // A child that fails on a limit, an auth error or a provider error (after pi's own retries) restarts from its prompt on the next model of its
-      // chain, with a notice; any other failure (context length, an invalid request, a stop) is the Task's error, as before. The model that failed is
-      // skipped by later launches for a while (see `model-fallback.ts`).
+      // chain, with a notice, but only when that attempt ran no tool call: a restart replays the prompt in a fresh session, so a step it already
+      // took (a commit, an append, a deploy) would run twice. A child that ran tools fails the Task with the provider error and a line saying so.
+      // Any other failure (context length, an invalid request, a stop) is the Task's error, as before. The model that failed is skipped by
+      // later launches for a while (see `model-fallback.ts`).
       const runChild = async ({ subagent, editSurfaces, otherSurfaces, report, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[], notice: NonNullable<TurnHost["notify"]>) => {
         const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
         const own = subagent?.deniedTools ?? [];
@@ -563,9 +565,15 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const queue = await childSteps(subagent);
         for (;;) {
           const step = queue.shift()!;
+          // Tool calls this attempt started, counted even when it throws (the error carries nothing else).
+          let toolCalls = 0;
           try {
             const run = await runChildSession(pi, {
               ...request,
+              onEvent: (event) => {
+                if (event.type === "tool_execution_start") toolCalls += 1;
+                request.onEvent?.(event);
+              },
               cwd,
               agentDir,
               models,
@@ -586,6 +594,12 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
             // The next model that is not cooling; those that are cooling and stand in between are dropped.
             const at = queue.findIndex((candidate) => !cooldowns.isCooling(candidate.ref));
             if (at === -1) throw error;
+            if (toolCalls > 0) {
+              const cause = error instanceof Error ? error.message : String(error);
+              throw new Error(
+                `${cause}\nThe subagent stopped after running ${toolCalls} tool call${toolCalls === 1 ? "" : "s"} on ${step.ref} and was not restarted so its steps would not run twice.`,
+              );
+            }
             queue.splice(0, at);
             notice(`${subagent ? `Subagent ${subagent.name}` : "A subagent"}: ${step.ref} hit ${categoryText(category)}; restarting it on ${queue[0]!.ref}`, "warning");
           }
@@ -711,6 +725,8 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // settled (see `recover`); without one it is reported as soon as it is known, exactly as before.
       const chain = routing?.fallback ?? [];
       let held: string | null = null;
+      // The request the model is working on, as the user typed it: the turn's prompt, then each queued message as it is delivered or run.
+      let latestRequest = prompt;
       session.subscribe((event) => {
         const failure = errors.observe(event);
         if (failure) {
@@ -736,7 +752,10 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
         const queued = queue.observe(event);
         if (queued) {
           // What was streamed so far belongs to the reply before the message that was just sent.
-          if (queued.type === "delivered") feed.flush();
+          if (queued.type === "delivered") {
+            feed.flush();
+            latestRequest = asTyped(queued.text);
+          }
           if (queued.type === "queue") announceQueue(queued.steering, queued.followUp);
           else if (queued.type === "delivered") host.emit({ ...queued, text: asTyped(queued.text) });
           else host.emit(queued);
@@ -783,18 +802,21 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           const failed: string | null = held ?? errors.flush();
           held = null;
           if (!failed || aborted) return;
+          const request = latestRequest;
           const current = started.model ? refOf(started.model) : model;
           const category = classifyFailure(failed);
           if (category) cooldowns.cool(current, cooldownMs(category));
           tried.add(current);
           const next = category ? await takeNext() : undefined;
+          // An interrupt that came during the switch stops here: the next model is not told to go on.
+          if (aborted) return;
           if (!category || !next) {
             if (category) host.notify?.(`${current} hit ${categoryText(category)}; no other model of the profile's fallback chain can take over.`, "warning");
             return fail(failed);
           }
           host.notify?.(`${current} hit ${categoryText(category)}; continuing on ${refOf(next)}.`, "warning");
           await started.sendCustomMessage(
-            { customType: FALLBACK_MESSAGE, content: fallbackContinuation(current, refOf(next), categoryText(category), prompt), display: false },
+            { customType: FALLBACK_MESSAGE, content: fallbackContinuation(current, refOf(next), categoryText(category), request), display: false },
             { triggerTurn: true },
           );
           await started.waitForIdle();
@@ -835,6 +857,7 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
           const { steering, followUp } = session.clearQueue();
           for (const text of [...steering, ...followUp]) {
             if (aborted) break;
+            latestRequest = asTyped(text);
             await session.prompt(text, { expandPromptTemplates: false });
             await session.waitForIdle();
             if (chain.length > 0) await recover();

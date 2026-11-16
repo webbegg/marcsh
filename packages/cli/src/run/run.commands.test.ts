@@ -88,6 +88,15 @@ describe("marcsh run with a user command", () => {
     expect(requests[0]!.prompt).not.toContain("{{");
   });
 
+  test("the saved session keeps the expanded text as the user message and the typed prompt as the title", async () => {
+    command("hello", "---\ndescription: Say hi\n---\nSay hi to $ARGUMENTS.\n");
+    expect(await run("/hello the team")).toBe(0);
+    const saved = storage.getSession(storage.listSessions()[0]!.id)!;
+    expect(saved.title).toBe("/hello the team");
+    const user = saved.messages.find((message) => message.role === "user")!;
+    expect(user.parts).toEqual([{ type: "text", text: "Say hi to the team." }]);
+  });
+
   test("a required answer nobody gave is a usage error (exit 2) that sends nothing and creates no session", async () => {
     command("quick", QUICK);
     expect(await run("/quick")).toBe(2);

@@ -19,7 +19,7 @@ Run one independent, adversarial review of the frozen target the parent names (r
 ## Mode
 
 - **Initial discovery**: return candidate findings only.
-- **Scoped re-judgment** (when the parent sends frozen IDs and a fix diff): resolve only those IDs and regressions on the fixed lines. Do not add new findings. Return one outcome per ID: `verified` (fixed), `corroborated` (still present), or `regression` (the fix broke something).
+- **Scoped re-judgment** (when the parent sends frozen IDs and a fix diff): resolve only those IDs and regressions on the fixed lines. Do not add new findings. Return one outcome per ID: `resolved` (fixed), `still-present` (the finding is still there after the fix), or `regression` (the fix broke something).
 
 ## Output
 
@@ -41,6 +41,6 @@ Scoped re-judgment:
 ```
 resolutions:
 - id: <frozen ID>
-  outcome: verified | corroborated | regression
+  outcome: resolved | still-present | regression
   evidence: <what you checked>
 ```
