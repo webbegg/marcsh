@@ -60,7 +60,7 @@ An [agent](agents.md) can name its own model. marcsh uses it only if the current
 
 ### Models set by a profile
 
-A [model profile](configuration.md#model-profiles) routes models per subagent and for the main turn, with fallback chains for when a model hits a limit or an error. `/profile use <name>` switches the session's model to the profile's `primary` model (you can change it afterwards with `/models`); `/profile` shows what is in force. On pi a failing model is replaced by the next one of its chain, for the main turn (the conversation goes on) and for subagents (they start again). On Claude the first Claude model of the chain is the SDK's fallback model, and subagents use their routed model. Thinking levels in a profile apply on pi only.
+A [model profile](configuration.md#model-profiles) routes models per subagent and for the main turn, with fallback chains for when a model hits a limit or an error. `/profile use <name>` switches the session's model to the profile's `primary` model (you can change it afterwards with `/models`); `/profile` shows what is in force. On pi a failing model is replaced by the next one of its chain, for the main turn (the conversation goes on) and for subagents (they start again, unless they had already run a tool: those are not restarted, so their steps do not run twice). On Claude the first Claude model of the chain is the SDK's fallback model, and subagents use their routed model. Thinking levels in a profile apply on pi only.
 
 ## Sign in
 

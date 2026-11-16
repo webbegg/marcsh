@@ -56,6 +56,72 @@ describe("classifyFailure", () => {
   });
 });
 
+// R4-003 / R4-004: realistic provider bodies, one table per kind of provider; the category decides the cooldown (quota and auth 30 minutes, the rest 2).
+describe("classifyFailure with provider bodies", () => {
+  const bodies: Array<[string, string, FailureCategory | undefined]> = [
+    // Rate limits are transient: never a quota, whatever the provider calls the limit.
+    ["openai tokens per min", "429 Rate limit reached for gpt-4o in organization org-abc on tokens per min (TPM): Limit 30000, Used 29000, Requested 5000. Please try again in 4s. Visit https://platform.openai.com/account/rate-limits to learn more.", "rate_limit"],
+    ["openai requests per min", "429 Rate limit reached for gpt-4 in organization org-abc on requests per min (RPM): Limit 3, Used 3, Requested 1.", "rate_limit"],
+    ["google per minute", "429 {\"error\":{\"code\":429,\"message\":\"Quota exceeded for quota metric 'Generate Content API requests per minute' and limit 'GenerateContent request limit per minute for a region' of service 'generativelanguage.googleapis.com'\",\"status\":\"RESOURCE_EXHAUSTED\"}}", "rate_limit"],
+    ["google free tier per minute", "429 You exceeded your current quota, please check your plan and billing details. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15 PerMinutePerProject", "rate_limit"],
+    ["anthropic rate limit", "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your organization's rate limit of 30,000 input tokens per minute\"}}", "rate_limit"],
+    ["429 with retry-after", "429 Too fast. retry-after: 12", "rate_limit"],
+    // Real quota and billing: the model is out for a long while.
+    ["openai insufficient_quota", "429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs.", "quota"],
+    ["openai insufficient_quota body", "429 {\"error\":{\"message\":\"You exceeded your current quota\",\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}", "quota"],
+    ["openai tokens per day", "429 Rate limit reached for gpt-4o on tokens per day (TPD): Limit 500000, Used 499000", "quota"],
+    ["anthropic credit balance", "400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}", "quota"],
+    ["anthropic usage limits", "400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.\"}}", "quota"],
+    ["google daily quota", "429 {\"error\":{\"code\":429,\"message\":\"Quota exceeded for quota metric 'Generate Content API requests' and limit 'requests per day'\",\"status\":\"RESOURCE_EXHAUSTED\"}}", "quota"],
+    ["monthly spend", "Monthly spend limit exceeded for this workspace", "quota"],
+    // Auth before the invalid-request veto: a bad key is reported as an invalid request by OpenAI.
+    ["openai invalid_api_key", "401 {\"error\":{\"message\":\"Incorrect API key provided: sk-abc***xyz.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_api_key\"}}", "auth"],
+    ["anthropic authentication_error", "401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}", "auth"],
+    ["anthropic permission_error", "403 {\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Your API key does not have permission to use the specified resource.\"}}", "auth"],
+    ["google api key not valid", "400 {\"error\":{\"code\":400,\"message\":\"API key not valid. Please pass a valid API key.\",\"status\":\"INVALID_ARGUMENT\"}}", "auth"],
+    ["google permission denied", "403 {\"error\":{\"code\":403,\"message\":\"The caller does not have permission\",\"status\":\"PERMISSION_DENIED\"}}", "auth"],
+    // Provider trouble.
+    ["anthropic overloaded", "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}", "provider_unavailable"],
+    ["openai server_error", "500 {\"error\":{\"message\":\"The server had an error while processing your request.\",\"type\":\"server_error\"}}", "provider_unavailable"],
+    ["google unavailable", "503 {\"error\":{\"code\":503,\"message\":\"The model is overloaded. Please try again later.\",\"status\":\"UNAVAILABLE\"}}", "provider_unavailable"],
+    ["google deadline", "504 {\"error\":{\"code\":504,\"message\":\"Deadline expired before operation could complete.\",\"status\":\"DEADLINE_EXCEEDED\"}}", "provider_unavailable"],
+    // Network: a connection that was aborted is not the user's stop.
+    ["connection aborted", "Connection aborted by peer", "network"],
+    ["econnaborted", "read ECONNABORTED", "network"],
+    ["timeout abort", "TimeoutError: The operation was aborted due to timeout", "timeout"],
+    // Never a fallback: a malformed request, however the provider words it.
+    ["openai invalid request", "400 {\"error\":{\"message\":\"Invalid value for 'messages[0].role'.\",\"type\":\"invalid_request_error\",\"param\":\"messages\",\"code\":null}}", undefined],
+    ["openai context", "400 {\"error\":{\"message\":\"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", undefined],
+    ["anthropic invalid request", "400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages: roles must alternate between \\\"user\\\" and \\\"assistant\\\"\"}}", undefined],
+    ["google invalid argument", "400 {\"error\":{\"code\":400,\"message\":\"Request contains an invalid argument.\",\"status\":\"INVALID_ARGUMENT\"}}", undefined],
+    ["google too many tokens", "400 {\"error\":{\"code\":400,\"message\":\"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).\",\"status\":\"INVALID_ARGUMENT\"}}", undefined],
+    ["anthropic stop", "Request was aborted.", undefined],
+    ["fetch abort", "This operation was aborted", undefined],
+  ];
+
+  for (const [name, message, expected] of bodies) {
+    test(`${name} → ${expected ?? "no fallback"}`, () => {
+      expect(classifyFailure(message)).toBe(expected);
+    });
+  }
+
+  test("a rate limit cools for 2 minutes, a quota or a bad key for 30", () => {
+    expect(cooldownMs(classifyFailure(bodies[0]![1])!)).toBe(TRANSIENT_COOLDOWN_MS);
+    expect(cooldownMs(classifyFailure(bodies.find(([name]) => name === "openai insufficient_quota")![1])!)).toBe(LIMIT_COOLDOWN_MS);
+    expect(cooldownMs(classifyFailure(bodies.find(([name]) => name === "openai invalid_api_key")![1])!)).toBe(LIMIT_COOLDOWN_MS);
+  });
+
+  test("a 400 or 422 inside a number or a message is not a status", () => {
+    // Auth does not match, and no status 400: the text falls to the categories it does match.
+    expect(classifyFailure("502 Bad Gateway while sending 4000 tokens, 422 bytes read")).toBe("provider_unavailable");
+    expect(classifyFailure("read ECONNRESET after 400 ms")).toBe("network");
+    expect(classifyFailure("Error 422 Unprocessable Entity")).toBeUndefined();
+    expect(classifyFailure("HTTP 400 Bad Request")).toBeUndefined();
+    expect(classifyFailure("status: 400")).toBeUndefined();
+    expect(classifyFailure("{\"error\":{\"code\":400,\"message\":\"x\"}}")).toBeUndefined();
+  });
+});
+
 describe("cooldown length", () => {
   test("30 minutes after a quota or auth failure, 2 after a transient one", () => {
     expect(LIMIT_COOLDOWN_MS).toBe(30 * 60_000);

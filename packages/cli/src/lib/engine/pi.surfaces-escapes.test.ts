@@ -127,8 +127,8 @@ describe("a writer that does not finish still reports its outside changes", () =
   }, 60000);
 });
 
-describe("a writer that restarts on the next model of its chain (fallback)", () => {
-  test("the Task result lists what both attempts changed outside the surfaces", async () => {
+describe("a writer that fails on a fallback-worthy error after running tools", () => {
+  test("is not restarted on the next model, and its error still lists what it changed outside the surfaces", async () => {
     mkdirSync(join(dir, "agent"), { recursive: true });
     // pi retries a quota failure by itself; the test turns that off.
     writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));
@@ -136,10 +136,12 @@ describe("a writer that restarts on the next model of its chain (fallback)", () 
     const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
     modelRuntime.registerNativeProvider(faux.provider);
     const parentResults: string[][] = [];
+    const asked: string[] = [];
     const router: FauxResponseStep = (context, _options, _state, model) => {
       const messages = context.messages as Message[];
       const results = toolResults(messages);
       if (firstUserText(messages) === CHILD_PROMPT) {
+        asked.push(model.id);
         const bash = (command: string) => fauxAssistantMessage([fauxToolCall("bash", { command } as never, { id: `c${results.length}` })], { stopReason: "toolUse" });
         if (model.id === "faux-2") {
           return results.length === 0
@@ -168,10 +170,13 @@ describe("a writer that restarts on the next model of its chain (fallback)", () 
       host,
     ).done;
     const task = parentResults.at(-1)![0] ?? "";
-    expect(task).toContain("child done on faux-3");
+    // The attempt on faux-2 ran a tool, so a restart could run its steps twice: faux-3 is never asked.
+    expect(asked).not.toContain("faux-3");
+    expect(task).toContain("exceeded your current quota");
+    expect(task).toContain("not restarted");
     expect(task).toContain("Warning: files changed outside the allowed edit surfaces");
-    expect(task).toContain("NOTES.md");
     expect(task).toContain("README.md");
+    expect(task).not.toContain("NOTES.md");
   }, 60000);
 });
 
