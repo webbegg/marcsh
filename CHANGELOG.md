@@ -2,6 +2,49 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.4.0
+
+Pasting anything into the prompt, packs that work closely with marcsh, and tracking of processes your tools leave running.
+
+### Paste
+- **Ctrl+V** reads the clipboard; you can rebind it with the `paste` action in `keybinds.json`.
+  - A copied image or screenshot is attached as `[image: clipboard-N.png]`. It is saved privately (folder 0700, file 0600) under `~/.marcsh/attachments/<session>`, and deleted when you remove its chip or delete the session.
+  - Terminals that send an empty paste when the clipboard holds an image get the same with Cmd+V.
+- **Large pastes** (3 lines or more, or over 150 characters) show as `[Pasted ~N lines: <start>…]`.
+  - The full text is what is sent, kept in history and kept as a draft.
+  - Backspace, the arrows, selections and undo treat the placeholder as one piece.
+  - `"paste": "full"` in preferences keeps full pastes. See [docs/screen.md](docs/screen.md).
+- **Shift+arrow selections** in the prompt cover exactly what you moved over, in both directions.
+- **`/copy`** writes to this machine's clipboard and to the terminal (OSC 52).
+
+### Packs
+- **Subagents:** an agent file with `mode: subagent` is a subagent.
+  - The agent can start it by name: with `Task` and `agent` on pi, and through Claude's own subagents.
+  - It runs with its own prompt, its pack's skills and its model. Its tools can only narrow the agent's, never widen them, and a read-only one never writes. See [docs/agents.md](docs/agents.md).
+- **Commands:** a pack command can name its `agent` and an `argument-hint`, and runs that turn as that agent.
+  - It never lifts Plan and never widens the tools of the agent you selected.
+  - Commands of marcsh, the engine and your own win a name clash; the pack's then shows as `/<repo>:<name>`.
+  - The install preview shows which agent each command runs as.
+- **Mode line:** the model is always told the approval mode, including normal and Plan.
+- **Hooks:** pack hooks on pi get `permission_mode` and `agent`, plus `MARCSH_APPROVAL_MODE` and `MARCSH_AGENT`. While auto or yolo is paused they are told `normal`. See [docs/pack-hooks.md](docs/pack-hooks.md).
+
+### Leftover processes
+- **Tracking:** marcsh marks every process its tools start, so it can show the ones still running after their tool call has ended.
+  - `/ps` lists them, and `x` stops one. The status line counts them.
+  - On pi the agent has `proc_list` and `proc_stop`.
+- **Stopping:** `proc_stop` always asks, in every approval mode. A process that may be yours is flagged and never suggested.
+- **Unattended:** nothing is stopped by itself.
+- **Limit:** on macOS, Apple's own programs can't be seen. See [docs/security.md](docs/security.md).
+
+### Status line
+- **Paused mode:** a mode that is chosen but paused (auto or yolo on the default branch) is struck through, followed by a red `!`.
+- **Worktree:** in a linked git worktree, the git part names the worktree.
+
+### Under the hood
+- **OpenTUI 0.9:** marcsh now runs on OpenTUI 0.9.0, and uses its native clipboard (on macOS no extra tools are needed). The spinner is marcsh's own, with the same look.
+- **Wrapping:** text that fills a row exactly now stays on that line, so wrapped text can break one word later.
+- **Notices:** see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for code ported from opencode and cli-spinners. OpenTUI's native packages include LGPL FFmpeg, installed from npm and not shipped in the release.
+
 ## 0.3.0
 
 Background work on the pi engine, and a richer status line.
