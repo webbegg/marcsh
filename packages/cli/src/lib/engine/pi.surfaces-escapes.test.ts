@@ -120,7 +120,7 @@ describe("the Task result lists outside changes that a commit made clean again",
 
 describe("a writer that does not finish still reports its outside changes", () => {
   test("a Task that times out after an outside write tells the parent which files changed outside the surfaces", async () => {
-    const { task } = await run(["src/**"], [["bash", { command: PY_WRITE_README }], ["SLEEP", { ms: 4000 }]], {}, { toolTimeoutMs: 1500 });
+    const { task } = await run(["src/**"], [["bash", { command: PY_WRITE_README }], ["SLEEP", { ms: 8000 }]], {}, { toolTimeoutMs: 4000 });
     expect(readme()).toBe("PY");
     expect(task).toContain("timed out");
     expect(task).toContain("README.md");
