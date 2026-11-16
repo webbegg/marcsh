@@ -11,6 +11,8 @@ import { extend } from "@opentui/react";
 import { Mode, type ModeType } from "../lib/modes";
 import { useTheme } from "../providers/theme";
 
+// The spinner renderable follows opencode's TUI spinner (MIT); see THIRD_PARTY_NOTICES.md.
+
 // cli-spinners' "aesthetic", the spinner marcsh has always shown.
 const FRAMES = ["▰▱▱▱▱▱▱", "▰▰▱▱▱▱▱", "▰▰▰▱▱▱▱", "▰▰▰▰▱▱▱", "▰▰▰▰▰▱▱", "▰▰▰▰▰▰▱", "▰▰▰▰▰▰▰", "▰▱▱▱▱▱▱"];
 const INTERVAL_MS = 80;

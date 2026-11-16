@@ -5,7 +5,7 @@ import { createContext, useContext, useMemo, useRef, useState, useCallback, useE
 
 import { decodePasteBytes, stripAnsiSequences, TextAttributes } from "@opentui/core";
 
-import type { TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
+import type { PasteEvent, TextareaRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { KeyBinding } from "@opentui/core";
 import { useNavigate } from "react-router";
@@ -25,11 +25,13 @@ import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
+import { useClipboard } from "../providers/clipboard";
 import { Mode } from "../lib/modes";
 import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
-import { attachmentLabel, mentionFor, parsePastedPaths, resolvePastedAttachments } from "../lib/attachments";
+import { attachmentLabel, MAX_ATTACHMENT_BYTES, mentionFor, parsePastedPaths, resolvePastedAttachments, tooBigToAttach } from "../lib/attachments";
+import { saveClipboardImage } from "../lib/clipboard-images";
 import { slashInputKind } from "../lib/claude-commands";
 import { warmUpEngineCommands } from "../lib/engine";
 import { quitApp } from "../lib/quit";
@@ -408,6 +410,87 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const canAttach = session !== null && !typeOnly;
   const pasteStateRef = useRef({ canAttach, disabled, isTopLayer, cwd });
   pasteStateRef.current = { canAttach, disabled, isTopLayer, cwd };
+  const clipboard = useClipboard();
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const pasteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Pastes run one at a time, in order. Reading the clipboard or the file system takes a moment: a paste whose input changed meanwhile
+  // (other text, another session, another mode, the bar turned off) is dropped, through `changed`. What fails is said in a toast.
+  // Follows opencode's prompt `enqueuePaste` (MIT; see THIRD_PARTY_NOTICES.md).
+  const enqueuePaste = useCallback((run: (changed: () => boolean) => Promise<void>) => {
+    pasteQueueRef.current = pasteQueueRef.current
+      .then(async () => {
+        const textarea = textareaRef.current;
+        if (!mountedRef.current || !textarea || textarea.isDestroyed || pasteStateRef.current.disabled) return;
+        const before = { key: draftKeyRef.current, mode: modeRef.current, text: textarea.plainText };
+        await run(
+          () =>
+            !mountedRef.current ||
+            textareaRef.current !== textarea ||
+            textarea.isDestroyed ||
+            pasteStateRef.current.disabled ||
+            draftKeyRef.current !== before.key ||
+            modeRef.current !== before.mode ||
+            textarea.plainText !== before.text,
+        );
+      })
+      .catch((error: unknown) => {
+        if (mountedRef.current) toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+  }, [toast]);
+
+  // Terminals paste a dropped file as its path. A paste that is made of existing paths attaches them (only where a message can carry
+  // them); anything else goes in as text.
+  const pasteInputText = useCallback(async (text: string, changed: () => boolean) => {
+    const textarea = textareaRef.current;
+    const state = pasteStateRef.current;
+    if (!textarea) return;
+    if (state.canAttach && parsePastedPaths(text)) {
+      const found = await resolvePastedAttachments(text, state.cwd).catch(() => null);
+      if (changed()) return;
+      if (found) {
+        for (const problem of found.problems) toast.show({ variant: "error", message: problem });
+        const chips = found.attachments.filter((attachment) => attachment.kind !== "file");
+        const mentions = found.attachments.filter((attachment) => attachment.kind === "file").map((attachment) => `${mentionFor(attachment.path, state.cwd)} `);
+        if (chips.length > 0) setAttachments((current) => [...current, ...chips]);
+        if (mentions.length > 0) textarea.insertText(mentions.join(""));
+        return;
+      }
+    }
+    textarea.insertText(text);
+  }, [toast]);
+
+  // An image from the clipboard is saved as a PNG under the session (see saveClipboardImage) and attached like a pasted path.
+  const attachClipboardImage = useCallback(async (bytes: Uint8Array) => {
+    if (!pasteStateRef.current.canAttach) {
+      toast.show({ variant: "info", message: "Images from the clipboard can be attached inside a session." });
+      return;
+    }
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      toast.show({ variant: "error", message: tooBigToAttach("The clipboard image") });
+      return;
+    }
+    const path = await saveClipboardImage(bytes, draftKeyRef.current ?? "pending");
+    setAttachments((current) => [...current, { path, mime: "image/png", kind: "image" }]);
+  }, [toast]);
+
+  // Ctrl+V (the `paste` keybind), and the empty paste some terminals send for an image: what the clipboard holds goes in.
+  const pasteFromClipboard = useCallback(() => {
+    enqueuePaste(async (changed) => {
+      const content = await clipboard.read();
+      if (!content || changed()) return;
+      if (content.mime === "image/png") await attachClipboardImage(content.bytes);
+      else await pasteInputText(stripAnsiSequences(content.text), changed);
+    });
+  }, [enqueuePaste, clipboard, attachClipboardImage, pasteInputText]);
 
   const [activeMention, setActiveMention] = useState<MentionMatch | null>(null);
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
@@ -566,32 +649,30 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     });
   }, [renderer]);
 
-  // Terminals paste a dropped file as its path. A paste that is made of existing paths attaches them; the check is asynchronous, so the
-  // paste is held back only when it looks like paths, and goes in as text if it turns out not to be (the same text the textarea would have taken).
+  // The check for paths is asynchronous, so a paste is held back only when it looks like paths, and goes in as text if it turns out not
+  // to be (the same text the textarea would have taken). Any other paste is the textarea's.
   useEffect(() => {
-    const onPaste = (event: { bytes: Uint8Array; preventDefault(): void }) => {
+    const onPaste = (event: PasteEvent) => {
       const state = pasteStateRef.current;
       const textarea = textareaRef.current;
-      if (!textarea || !state.canAttach || state.disabled || !state.isTopLayer("base")) return;
+      if (!textarea || state.disabled || !state.isTopLayer("base")) return;
+      // Some terminals paste an image in the clipboard as nothing at all: the clipboard is read instead.
+      if (event.bytes.length === 0) {
+        event.preventDefault();
+        pasteFromClipboard();
+        return;
+      }
+      if (!state.canAttach) return;
       const text = stripAnsiSequences(decodePasteBytes(event.bytes));
       if (!parsePastedPaths(text)) return;
       event.preventDefault();
-      void resolvePastedAttachments(text, state.cwd)
-        .catch(() => null)
-        .then((found) => {
-          if (!found) return void textarea.insertText(text);
-          for (const problem of found.problems) toast.show({ variant: "error", message: problem });
-          const chips = found.attachments.filter((attachment) => attachment.kind !== "file");
-          const mentions = found.attachments.filter((attachment) => attachment.kind === "file").map((attachment) => `${mentionFor(attachment.path, state.cwd)} `);
-          if (chips.length > 0) setAttachments((current) => [...current, ...chips]);
-          if (mentions.length > 0) textarea.insertText(mentions.join(""));
-        });
+      enqueuePaste((changed) => pasteInputText(text, changed));
     };
     renderer.keyInput.on("paste", onPaste);
     return () => {
       renderer.keyInput.off("paste", onPaste);
     };
-  }, [renderer, toast]);
+  }, [renderer, pasteFromClipboard, enqueuePaste, pasteInputText]);
 
   // A disabled bar must not leave a menu layer on top of the base layer (it would swallow approval keys).
   useEffect(() => {
@@ -704,6 +785,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
 
   const runKeyAction = (action: KeyAction) => {
     if (action.action === "palette") openPalette();
+    else if (action.action === "paste") pasteFromClipboard();
     else runPaletteCommand(COMMANDS.find((command) => command.name === action.name)!);
   };
 
@@ -881,7 +963,13 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
       setAttachments((current) => current.slice(0, -1));
       return;
     }
-    // The palette and the leader work where a command can run: not on a screen that only takes keys. A key bound here is not typing.
+    // Paste works on every input; the palette and the leader work where a command can run: not on a screen that only takes keys. A key
+    // bound here is not typing.
+    if (typeOnly && resolveKey(keybinds, key, false)?.action === "paste") {
+      key.preventDefault();
+      pasteFromClipboard();
+      return;
+    }
     if (!typeOnly) {
       if (leaderRef.current) {
         // The key after the leader runs its command; any other key (Esc included) only ends the wait, and none is typed.

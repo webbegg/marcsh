@@ -493,6 +493,7 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |
+| `Ctrl+V` | Paste what the clipboard holds: an image is attached, text is pasted. See [Pasting](screen.md#pasting). |
 | `Ctrl+X`, then a key | Run a command (`Ctrl+X` `n` is `/new`). The status line shows the leader is waiting; it ends after 2 seconds. See [Keybinds](keybinds.md). |
 | `@` | Mention a file or folder. See below. |
 | `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
@@ -523,6 +524,7 @@ Paste or drop a file into the prompt of a session and it goes with your next mes
 - **Remove** the last chip with `Backspace` when the prompt is empty. `Ctrl+C` on an empty prompt clears all of them.
 - Text that is not a path, or a path that does not exist, is pasted as ordinary text. A bare name such as `package.json` is also ordinary text; write `./package.json` or paste the full path to attach it. Relative image and PDF names (`shot.png`) are looked up in the project folder.
 - An image or PDF over 20 MB, or one that cannot be read, is not attached, and a message says why ("shot.png is larger than 20 MB, so it was not attached."). The file is read when you send, not when you paste. If it has gone by then, it is sent as an `@path` mention and a message says so.
+- **An image in the clipboard** (a screenshot, an image you copied) is attached with `Ctrl+V`, and shows as `[image: clipboard-1.png]`. marcsh saves it as a PNG file in `~/.marcsh/attachments/<session ID>/`, private to you. See [Pasting](screen.md#pasting).
 
 How each engine takes them:
 

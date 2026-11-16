@@ -11,6 +11,7 @@ marcsh keeps its files in one folder, `~/.marcsh`. This page lists what is in it
 | `work/` | Feature docs made by [`/marcsh:feature`](commands.md#marcshfeature), one folder per project. An environment variable cannot move it. |
 | `agents/` | Your own agent files, one `.md` file per agent. See [Agents](agents.md). |
 | `packs/` | Installed packs and the `packs.json` file that pins each one to a commit. See [Packs](packs.md). |
+| `attachments/` | Images you pasted from the clipboard, one folder per session. See [Pasting](screen.md#pasting). |
 | `agent/` | Everything pi keeps: logins (`auth.json`), custom models (`models.json`), MCP settings (`mcp.json`) and pi's own settings and sessions. |
 
 `~/.marcsh`, `~/.marcsh/agent` and `marcsh.db` are private to your user account, so other users on the machine cannot read your sessions or logins.
@@ -99,6 +100,7 @@ These variables move marcsh's files. All of them are optional. An empty value is
 | `MARCSH_AGENTS_DIR` | The folder with your own agent files. | `~/.marcsh/agents` |
 | `MARCSH_PACKS_DIR` | The folder where packs are installed. | `~/.marcsh/packs` |
 | `MARCSH_AGENT_DIR` | The folder where pi keeps its logins, MCP settings and sessions. | `~/.marcsh/agent` |
+| `MARCSH_ATTACHMENTS_DIR` | The folder where images pasted from the clipboard are saved. | `~/.marcsh/attachments` |
 
 For example, to use a separate database and preferences file:
 
