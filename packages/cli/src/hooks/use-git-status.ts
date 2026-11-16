@@ -42,7 +42,8 @@ const safely = (isTrusted: (cwd: string) => boolean, cwd: string) => {
 /** The longest wait between two polls after reads that found nothing (or an `intervalMs` above it). */
 export const MAX_GIT_BACKOFF_MS = 60_000;
 
-const same = (a: GitStatus | null, b: GitStatus | null) => a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed);
+const same = (a: GitStatus | null, b: GitStatus | null) =>
+  a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed && a.worktree === b.worktree);
 
 /**
  * The git state of `cwd`, read on mount, every `intervalMs` and whenever `trigger` changes; null until known, outside a repo
