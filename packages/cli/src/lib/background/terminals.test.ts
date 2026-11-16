@@ -233,6 +233,13 @@ describe("background terminals (S1)", () => {
     const script = `const { createTerminals } = await import(${JSON.stringify(join(import.meta.dir, "terminals.ts"))});
       const terminals = createTerminals({ logBase: ${JSON.stringify(base)} });
       const snap = await terminals.start({ command: "sleep 30 & sleep 30 & wait", title: "server", cwd: ${JSON.stringify(base)} });
+      // Exit once the shell has started both sleeps, as a real session ends long after its terminals started: a process the shell
+      // is still forking when the group is signalled can escape it (seen on a GitHub macOS runner).
+      for (let i = 0; i < 250; i++) {
+        const members = Bun.spawnSync(["pgrep", "-g", String(snap.pid)]).stdout.toString().trim().split("\\n").filter(Boolean);
+        if (members.length >= 3) break;
+        await Bun.sleep(20);
+      }
       console.log(snap.pid);
       process.exit(0);`;
     const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
