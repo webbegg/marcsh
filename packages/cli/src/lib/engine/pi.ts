@@ -25,6 +25,7 @@ import { createProcToolsExtension, PROC_PLAN_TOOLS, type ProcToolsOptions } from
 import type { HookPermissionMode } from "../pack-hooks";
 import { effectiveApprovalMode } from "../approval-policy";
 import { createPiUiContext } from "./pi-ui";
+import { createSurfaceGuard } from "./pi-surfaces";
 import { type BackgroundRunChild, createSubagentExtension, runChildSession, type RunChild, TASK_PLAN_TOOLS, TASK_TOOL } from "./pi-subagent";
 import { createBashTimeoutExtension } from "./pi-tool-timeout";
 import { isProjectTrusted, resolveProjectTrust, type ProjectTrustRecords } from "./pi-trust";
@@ -507,37 +508,45 @@ export function createPiEngine(options: PiEngineOptions = {}): PiEngine {
       // background hub, so it has no bg tools, no task tools and cannot start background subagents.
       // A named subagent only narrows that: its denied groups are added to the parent's, and a read-only one gets plan's rules and tools.
       // `approvalAndHooks` gets whether the child is read-only, for its approval extension.
-      const runChild = async ({ subagent, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[]) => {
+      // A writer with `editSurfaces` (`Task`) is also held to them by the surfaces guard (`pi-surfaces.ts`): it denies a write outside them
+      // before the approval extension asks, so surfaces only narrow, and flags what `bash` changed outside them after the fact. A read-only
+      // child writes nothing, so it gets no guard.
+      const runChild = async ({ subagent, editSurfaces, otherSurfaces, ...request }: Parameters<RunChild>[0], approvalAndHooks: (readOnly: boolean) => ExtensionFactory[]) => {
         const readOnly = mode === Mode.PLAN || subagent?.readOnly === true;
         const own = subagent?.deniedTools ?? [];
         const childDenied = own.length > 0 ? [...new Set([...denied, ...own])] : denied;
         const narrowing = own.length > 0 ? [createDeniedToolsExtension(childDenied)] : tools.childExtensions;
         const allowed = (name: string) => !isPiToolDenied(name, childDenied);
         const model = (subagent && (await subagentModel(subagent.model))) || resolved;
-        return runChildSession(pi, {
+        const surfaces =
+          editSurfaces && !readOnly ? createSurfaceGuard({ cwd, surfaces: editSurfaces, ...(otherSurfaces ? { others: otherSurfaces } : {}) }) : undefined;
+        const run = await runChildSession(pi, {
           ...request,
           cwd,
           agentDir,
           models,
           model,
           projectTrusted,
-          extensions: [...narrowing, ...approvalAndHooks(readOnly), ...narrowing],
+          extensions: [...narrowing, ...(surfaces ? [surfaces.gate] : []), ...approvalAndHooks(readOnly), ...(surfaces ? [surfaces.watch] : []), ...narrowing],
           ...(readOnly ? { tools: READ_ONLY_TOOLS.filter(allowed) } : buildToolsOption(settingsManager)),
           ...childResources(subagent, readOnly),
         });
+        if (!surfaces) return run;
+        const outside = await surfaces.outside();
+        return outside.length > 0 ? { ...run, outsideSurfaces: outside } : run;
       };
       // A background child outlives the turn: its approvals go to the session's ask channel (labelled with its description), read at
       // each ask; with nobody to answer (no channel) a call is denied. Its pack hooks and approvals end with the child, not the turn.
       // It follows the session's plan mode as it is at each call: once the session is in plan, only its read-only calls run.
       const runBackgroundChild: BackgroundRunChild | undefined =
         background &&
-        (({ description, prompt, subagent, signal: childSignal, onProgress, onEvent }) => {
+        (({ description, prompt, subagent, editSurfaces, otherSurfaces, signal: childSignal, onProgress, onEvent }) => {
           const askHost: Pick<TurnHost, "askPermission"> = {
             askPermission: (ask, askSignal) =>
               background.host ? background.host.askPermission({ ...ask, description: `Background subagent: ${description}` }, askSignal) : Promise.resolve("deny"),
           };
           const notify: NonNullable<TurnHost["notify"]> = (message, level) => background.host?.notify?.(message, level);
-          return runChild({ prompt, ...(subagent ? { subagent } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
+          return runChild({ prompt, ...(subagent ? { subagent } : {}), ...(editSurfaces ? { editSurfaces } : {}), ...(otherSurfaces ? { otherSurfaces } : {}), signal: childSignal, onProgress, onEvent }, (readOnly) => [
             ...packHooksFor(childSignal, notify, readOnly, true),
             createApprovalExtension({ ...approval, host: askHost, signal: childSignal, planMode: readOnly, ...(currentPlanMode ? { currentPlanMode } : {}) }),
           ]);
