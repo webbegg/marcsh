@@ -10,7 +10,7 @@ Fix only the exact finding IDs listed under `## Authorized findings` in your tas
 
 ## Rules
 
-- Edit only inside the task's `Allowed edit surfaces` list. Nothing enforces it for you, and the parent checks `git diff --stat` afterwards: a file outside the list is a defect.
+- Edit only inside the task's `Allowed edit surfaces` list. On pi the runtime enforces it when the parent passes `editSurfaces`; on Claude nothing enforces it. Either way the parent checks `git diff --stat` afterwards: a file outside the list is a defect. If a call is denied for being outside the list, stop and report the path you need.
 - Apply the smallest patch that resolves each finding, and add or adjust a focused test that fails before the fix and passes after it.
 - Do not add findings, reinterpret frozen claims, refactor unrelated code, or launch re-judgment.
 - Never stage, commit, push, or publish.
