@@ -36,7 +36,11 @@ beforeAll(() => engines.set("pi", { id: "pi", startTurn: () => ({ done: Promise.
 afterAll(() => engines.set("pi", undefined));
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 // Joins word-wrapped lines (and the line's left border) back into one string.
 const collapse = (frame: string) => frame.replace(/[│\s]+/g, " ");
 // Under a loaded full suite the turn can take longer than a fixed wait: poll until the expected state appears.

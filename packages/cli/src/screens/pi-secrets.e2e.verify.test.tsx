@@ -19,7 +19,11 @@ const { createPiEngine } = await import("../lib/engine/pi");
 const KEY = "sk-ant-api03-E2ELEAK1234567890abcdefghijklmnop";
 const BEARER = "eyJhbGciOiJIUzI1NiJ9xyz.E2EBEARERpayload123456.sigE2E";
 const OTOKEN = "ghp_E2EOPAQUE0123456789abcdefghijklmnopq";
-const settle = (ms = 60) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 60, screen?: Awaited<ReturnType<typeof testRender>>) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 const faux = fauxProvider({ models: [{ id: "faux-1" }] });
 const modelRuntime = await pi.ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false });
 modelRuntime.registerNativeProvider(faux.provider);
@@ -48,8 +52,8 @@ async function run(responses: any[], prompt: string) {
   await settle(150);
   await act(() => screen.mockInput.typeText(prompt));
   await act(() => screen.mockInput.pressEnter());
-  for (let i = 0; i < 40; i++) { await settle(100); if (!screen.captureCharFrame().includes("esc")) break; }
-  await settle(400);
+  for (let i = 0; i < 40; i++) { await settle(100, screen); if (!screen.captureCharFrame().includes("esc")) break; }
+  await settle(400, screen);
   const frame = screen.captureCharFrame();
   await act(async () => screen.renderer.destroy());
   const row = getStorage().getSession?.(session.id) as any;

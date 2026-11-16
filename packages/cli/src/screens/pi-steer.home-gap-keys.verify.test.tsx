@@ -53,7 +53,11 @@ afterEach(async () => {
   screen = null;
 });
 
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 const frame = () => screen!.captureCharFrame().replace(/[│\s]+/g, " ");
 const frameContaining = async (text: string, timeoutMs = 8000) => {
   const start = Date.now();

@@ -25,7 +25,11 @@ const { getStorage } = await import("../lib/storage");
 const { preferencesPath, setDefaultEngine } = await import("../lib/preferences");
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 const type = async (text: string) => {
   await act(() => screen!.mockInput.typeText(text));
   await settle(60);
