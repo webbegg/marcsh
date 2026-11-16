@@ -27,8 +27,8 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const marker = () => join(cwd, "marker-written.txt");
 const extension = (name: string) => join(cwd, ".pi", "extensions", name);
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
-const CHANGED = "This project's pi files changed since you trusted them";
+const TITLE = "Trust this project's files?";
+const CHANGED = "This project's files changed since you trusted them";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-review-"));
@@ -276,7 +276,7 @@ describe("/trust after a trusted project changed (S1)", () => {
 
     const dialog = await openTrust();
 
-    expect(dialog).toContain("Now: not trusted (this project's pi files changed since you trusted them)");
+    expect(dialog).toContain("Now: not trusted (this project's files changed since you trusted them)");
   }, 30000);
 
   test("shows the plain 'Now: trusted' while the files are as reviewed", async () => {

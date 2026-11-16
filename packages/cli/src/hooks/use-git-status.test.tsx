@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act, useState } from "react";
@@ -8,6 +8,7 @@ import type { GitStatus } from "../lib/git-status";
 const { testRender } = await import("@opentui/react/test-utils");
 const { useGitStatus, useBranchState, trustedForGit } = await import("./use-git-status");
 const { getStorage } = await import("../lib/storage");
+const { reviewProject } = await import("../lib/engine/pi-trust");
 
 // S6: the git segment is refreshed every few seconds and after tool calls, with one git call at a time.
 
@@ -267,7 +268,7 @@ describe("useGitStatus without a reader", () => {
 
   test("and counts the changed files of a trusted one", async () => {
     delete process.env.MARCSH_GIT_STATUS;
-    getStorage().setProjectTrust(repo, "trusted");
+    getStorage().setProjectTrust(repo, "trusted", reviewProject(repo).record);
     try {
       await mount(<DefaultProbe cwd={repo} />);
       const start = Date.now();
@@ -367,7 +368,22 @@ describe("trustedForGit", () => {
     expect(trustedForGit(folder)).toBe(false);
     getStorage().setProjectTrust(folder, "untrusted");
     expect(trustedForGit(folder)).toBe(false);
-    getStorage().setProjectTrust(folder, "trusted");
+    getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
     expect(trustedForGit(folder)).toBe(true);
+  });
+
+  test("is false for a trust stored without a review (from before reviews)", () => {
+    getStorage().setProjectTrust(folder, "trusted");
+    expect(trustedForGit(folder)).toBe(false);
+  });
+
+  test("is false once the trust is stale: a project command appeared after the review", () => {
+    getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
+    expect(trustedForGit(folder)).toBe(true);
+
+    mkdirSync(join(folder, ".marcsh", "commands"), { recursive: true });
+    writeFileSync(join(folder, ".marcsh", "commands", "deploy.md"), "Deploy.");
+
+    expect(trustedForGit(folder)).toBe(false);
   });
 });

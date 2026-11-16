@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PROJECT_COMMANDS_DIR, commandFiles } from "../command-files";
 import type { Storage, StoredReview } from "../storage";
 
 /*
@@ -19,6 +20,9 @@ import type { Storage, StoredReview } from "../storage";
  * Trusting also lets `<project>/.pi/settings.json` send pi to files anywhere: `extensions`, `skills`, `prompts` and `themes`
  * paths, local `packages`, and the packages pi installs into the project (`.pi/npm`, `.pi/git`). Those are listed and
  * reviewed like the project's own files, resolved the way pi's package manager resolves them (see `settingsTargets`).
+ *
+ * The review a trust is stored with (`reviewProject`) also lists the project's own marcsh commands (`.marcsh/commands`), which
+ * marcsh uses only while that trust holds (`projectTrustHolds`), on any engine.
  */
 
 /** pi's project config folder (`piConfig.configDir` in its package.json). */
@@ -72,6 +76,34 @@ export const canonical = (path: string) => {
   }
 };
 
+/** What `stat` says of a path, enough to tell it changed: missing, or its identity, size and times (and its target's for a link). */
+function statSignature(path: string): { sign: string; mtimeMs: number } {
+  const sign = (info: Stats) => `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  let link: Stats;
+  try {
+    link = lstatSync(path);
+  } catch {
+    return { sign: "missing", mtimeMs: 0 };
+  }
+  if (!link.isSymbolicLink()) return { sign: sign(link), mtimeMs: link.mtimeMs };
+  try {
+    const target = statSync(path);
+    return { sign: `${sign(link)}>${sign(target)}`, mtimeMs: Math.max(link.mtimeMs, target.mtimeMs) };
+  } catch {
+    return { sign: `${sign(link)}>missing`, mtimeMs: link.mtimeMs };
+  }
+}
+
+/**
+ * While a review runs: every path it looks at (read, listed, or only checked for), with its stat signature from before it was
+ * looked at. A later change to any of them (a file written, an entry added to or removed from a folder, a missing path created)
+ * changes its signature, which is how a cached review is known to be out of date (see `currentProjectReview`).
+ */
+let touched: Map<string, { sign: string; mtimeMs: number }> | null = null;
+const note = (path: string) => {
+  if (touched && !touched.has(path)) touched.set(path, statSignature(path));
+};
+
 // Control characters (C0, DEL, C1: ESC and the sequences it starts included), format characters (zero-width, bidi marks,
 // embeddings, overrides and isolates, byte order mark, tags...), line and paragraph separators, lone surrogates
 // and unassigned code points (U+2065 sits inside the invisible-operators block).
@@ -108,6 +140,7 @@ type BytesRead = { bytes: Buffer } | { unreadable: string };
  * read forever and a device like /dev/zero would never end. The check is on the opened file, not the path, so it cannot be swapped in between.
  */
 function readBytes(path: string): BytesRead {
+  note(path);
   let fd: number | undefined;
   try {
     // O_NONBLOCK: opening a FIFO must not wait for a writer.
@@ -228,6 +261,7 @@ const isInside = (parent: string, child: string) => {
 };
 
 const isFolder = (path: string) => {
+  note(path);
   try {
     return statSync(path).isDirectory();
   } catch {
@@ -308,6 +342,7 @@ const globBase = (pattern: string) => {
 /** Where the `pi` manifest of `<root>/package.json` points for these kinds of file (pi-manifest.js `readPiManifest`; filters excluded), from `root`. */
 function manifestTargets(root: string, fields: readonly string[]): string[] {
   const file = join(root, "package.json");
+  note(file);
   if (!existsSync(file)) return [];
   const read = readJson(file);
   if ("unreadable" in read || !isRecord(read.value) || !isRecord(read.value.pi)) return [];
@@ -322,6 +357,7 @@ function manifestTargets(root: string, fields: readonly string[]): string[] {
 
 /** The folders directly inside `dir` that pi looks into (not hidden, not `node_modules`). */
 function childFolders(dir: string): string[] {
+  note(dir);
   try {
     return readdirSync(dir)
       .filter((name) => !name.startsWith(".") && name !== "node_modules" && isFolder(join(dir, name)))
@@ -359,6 +395,7 @@ function targetResources(project: string, targets: Target[]): RawResource[] {
   const queue = targets.map((target) => ({ target, depth: 0 }));
   for (let i = 0; i < queue.length; i++) {
     const { target, depth } = queue[i]!;
+    note(target.path);
     if (seen.has(target.path) || !existsSync(target.path)) continue;
     seen.add(target.path);
     const path = displayPath(project, target.path);
@@ -397,6 +434,7 @@ function settingsResources(file: string, path: string, project: string): { runs:
 
 /** The entries of a resource folder, one per child; an empty folder is itself the resource. */
 function folderResources(dir: string, path: string, detail?: string, skipGit?: true): RawResource[] {
+  note(dir);
   let children: string[];
   try {
     children = readdirSync(dir, { withFileTypes: true })
@@ -416,6 +454,7 @@ function agentsSkillDirs(project: string): string[] {
   const found: string[] = [];
   for (let dir = project; ; dir = dirname(dir)) {
     const skills = join(dir, ".agents", "skills");
+    if (skills !== userDir) note(skills);
     if (skills !== userDir && existsSync(skills)) found.push(skills);
     if (dirname(dir) === dir) return found;
   }
@@ -425,7 +464,10 @@ function agentsSkillDirs(project: string): string[] {
 function listResources(cwd: string): RawResource[] {
   const project = canonical(cwd);
   const config = join(project, CONFIG_DIR);
-  const has = (entry: string) => existsSync(join(config, entry));
+  const has = (entry: string) => {
+    note(join(config, entry));
+    return existsSync(join(config, entry));
+  };
   const settings = has("settings.json")
     ? settingsResources(join(config, "settings.json"), SETTINGS_FILE, project)
     : { runs: [], others: [], targets: { code: [], others: [] } as SettingsTargets };
@@ -491,6 +533,7 @@ type Digest = { digest: string } | { unreadable: string; at?: string };
  * only, within the caps. `skipGit` leaves out folders named `.git`.
  */
 function digestPath(path: string, budget: Budget, skipGit: boolean, depth = 0): Digest {
+  note(path);
   let isFolder: boolean;
   try {
     isFolder = statSync(path).isDirectory();
@@ -525,11 +568,64 @@ function digestPath(path: string, budget: Budget, skipGit: boolean, depth = 0): 
 const byPath = <T extends { path: string }>(a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
 /**
- * `findProjectResources` plus the record of what it lists. Contents are read with the same safe, size-capped reader the
- * listing uses (regular files only), so a file or folder entry marcsh cannot read in full is listed as unreadable too: trust
- * is never offered for what cannot be compared later.
+ * A project's own marcsh commands, exactly the files the command loader reads (`commandFiles`), one entry each after what pi
+ * loads. They are prompt templates a turn sends as your message, so they are reviewed like the rest.
+ */
+function commandResources(project: string): RawResource[] {
+  const dir = join(project, PROJECT_COMMANDS_DIR);
+  note(dir);
+  return commandFiles(dir, false, note).map(({ name, file, path }) => ({ path: `${PROJECT_COMMANDS_DIR}/${file}`, detail: `project command /${name}`, source: path }));
+}
+
+/**
+ * `findProjectResources` and the project's commands (`.marcsh/commands`), plus the record of what they list: what a trust covers.
+ * Contents are read with the same safe, size-capped reader the listing uses (regular files only), so a file or folder entry marcsh
+ * cannot read in full is listed as unreadable too: trust is never offered for what cannot be compared later.
+ * Always reads the project afresh; the result is kept for `currentProjectReview`.
  */
 export function reviewProject(cwd: string): ProjectReview {
+  const started = Date.now();
+  const seen: NonNullable<typeof touched> = new Map();
+  const outer = touched;
+  touched = seen;
+  try {
+    const review = reviewNow(cwd);
+    remember(canonical(cwd), review, seen, started);
+    return review;
+  } finally {
+    touched = outer;
+  }
+}
+
+// A review is not kept when anything it looked at changed this recently: on a file system with coarse times, a change made within
+// the same tick right after the review would leave the signature as it was (git treats racily clean index entries the same way).
+const RACY_MS = 2000;
+// Folders whose review is kept at once (the status line polls one; a few more are open in other sessions or tabs).
+const MAX_KEPT_REVIEWS = 32;
+
+type KeptReview = { home: string; touched: [path: string, sign: string][]; review: ProjectReview };
+const keptReviews = new Map<string, KeptReview>();
+
+function remember(project: string, review: ProjectReview, seen: NonNullable<typeof touched>, started: number) {
+  keptReviews.delete(project);
+  if ([...seen.values()].some(({ sign, mtimeMs }) => sign !== "missing" && mtimeMs >= started - RACY_MS)) return;
+  keptReviews.set(project, { home: process.env.HOME ?? "", touched: [...seen].map(([path, { sign }]) => [path, sign]), review });
+  if (keptReviews.size > MAX_KEPT_REVIEWS) keptReviews.delete(keptReviews.keys().next().value!);
+}
+
+/**
+ * `reviewProject`, without reading the project again while nothing it looked at changed: the last review is reused while every
+ * path it read, listed or checked for has the stat signature it had before it was looked at (identity, size, modified and
+ * changed times; still missing for a path that was missing). A file edited in place, an entry added or removed anywhere in a
+ * reviewed folder, or a missing file or folder created reads the project again. Cheap enough for the status line's poll.
+ */
+export function currentProjectReview(cwd: string): ProjectReview {
+  const kept = keptReviews.get(canonical(cwd));
+  if (kept && kept.home === (process.env.HOME ?? "") && kept.touched.every(([path, sign]) => statSignature(path).sign === sign)) return kept.review;
+  return reviewProject(cwd);
+}
+
+function reviewNow(cwd: string): ProjectReview {
   const budget: Budget = { entries: 0, bytes: 0 };
   const digests = new Map<string, Digest>();
   const digestOf = (source: string, skipGit = false) => {
@@ -538,7 +634,7 @@ export function reviewProject(cwd: string): ProjectReview {
     if (!digest) digests.set(key, (digest = digestPath(source, budget, skipGit)));
     return digest;
   };
-  const hashed = listResources(cwd).map((raw): { resource: ProjectResource; digest: string } => {
+  const hashed = [...listResources(cwd), ...commandResources(canonical(cwd))].map((raw): { resource: ProjectResource; digest: string } => {
     // Each listed entry counts once here; what is inside a folder is counted as the folder is read.
     budget.entries += 1;
     if (raw.unreadable) return { resource: raw, digest: "unreadable" };
@@ -607,9 +703,10 @@ export type ResolveProjectTrustOptions = {
 };
 
 /**
- * Whether pi may load the project's own files for this turn.
+ * Whether pi may load the project's own files for this turn. What is reviewed is `reviewProject`'s listing, so a project with
+ * only commands (`.marcsh/commands`) is asked about too, and a changed command asks again.
  *
- * - No project files: false, nothing is asked or stored (there is nothing to load).
+ * - No pi files and no project commands: false, nothing is asked or stored (there is nothing to load).
  * - An entry marcsh could not read (see `unreadableResources`): never true. Trusting would load what the user cannot be shown,
  *   and the file may have grown since an earlier "trusted", so that decision is not honored: the user is told again (the
  *   question offers only "distrust" and "skip"; a "trust" answer is ignored). A stored "untrusted" stays, without asking.
@@ -657,18 +754,30 @@ export async function resolveProjectTrust({ cwd, records, ask, signal }: Resolve
 }
 
 /**
- * Whether pi may load the project's own files without asking anyone, as warm-up needs: a stored "trusted" whose review still
- * equals the project's files, and nothing unreadable.
+ * Whether the trust stored for the project at `cwd` holds now, the one rule every use of project trust follows (project commands,
+ * the status line's git count, pi warm-up, `marcsh mcp`; the pi turn asks with the same rule): the stored decision is "trusted" and
+ * the review stored with it equals the project's review now (the empty one included), with nothing unreadable. A "trusted" stored
+ * without a review (from before reviews were kept) does not hold, nor does anything when the store cannot be read. Never asks.
+ * The store is read first, so an undecided project costs no review; the review is `currentProjectReview` (cached).
  */
-export function isProjectTrusted(cwd: string, records: () => ProjectTrustRecords): boolean {
-  const { resources, record } = reviewProject(cwd);
-  if (resources.length === 0 || unreadableResources(resources).length > 0) return false;
+export function projectTrustHolds(cwd: string, records: ProjectTrustRecords | (() => ProjectTrustRecords)): boolean {
   try {
-    const store = records();
+    const store = typeof records === "function" ? records() : records;
     if (store.getProjectTrust(cwd) !== "trusted") return false;
-    const reviewed = store.getProjectReview?.(cwd);
-    return !!reviewed && sameReview(reviewed, record);
+    const reviewed = store.getProjectReview?.(cwd) ?? null;
+    if (!reviewed) return false;
+    const { resources, record } = currentProjectReview(cwd);
+    return unreadableResources(resources).length === 0 && sameReview(reviewed, record);
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether pi may load the project's own files without asking anyone, as warm-up needs: `projectTrustHolds`, for a project that has
+ * something to load (otherwise false, and the store is not opened).
+ */
+export function isProjectTrusted(cwd: string, records: () => ProjectTrustRecords): boolean {
+  if (currentProjectReview(cwd).resources.length === 0) return false;
+  return projectTrustHolds(cwd, records);
 }

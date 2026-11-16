@@ -251,7 +251,7 @@ describe("a prompt that opens while the user is composing (S4)", () => {
     await distrust.mount();
     await type("draft");
     await distrust.open();
-    expect(await frameContaining("Trust this project's pi files?")).toContain(LOCK_LINE);
+    expect(await frameContaining("Trust this project's files?")).toContain(LOCK_LINE);
     await settle(400);
     await press("d");
     await press("t");
@@ -268,7 +268,7 @@ describe("a prompt that opens while the user is composing (S4)", () => {
     await skip.mount();
     await type("draft");
     await skip.open();
-    expect(await frameContaining("Trust this project's pi files?")).toContain(LOCK_LINE);
+    expect(await frameContaining("Trust this project's files?")).toContain(LOCK_LINE);
     await press("ESCAPE");
     expect(skip.answers).toEqual(["skip"]);
   }, 30000);

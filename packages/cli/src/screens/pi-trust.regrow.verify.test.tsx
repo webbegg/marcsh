@@ -93,7 +93,7 @@ for (const [width, height] of [
     expect(flat()).not.toContain("too small");
     expect(flat()).toContain("scroll to the end first");
     expect(lines[height - 2]).toMatch(/d {2}don't trust {2}Esc {2}not now \(this turn only\)/);
-    expect(lines[height - 3]).toContain("Trusting lets pi load these files and run their code with your permissions.");
+    expect(lines[height - 3]).toContain("Trusting lets these files load and run with your permissions.");
     expect(lines[height - 4]).toMatch(/rows 1–\d+ of \d+ · ↑\/↓ PgUp\/PgDn/);
 
     await press("t");

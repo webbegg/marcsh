@@ -64,7 +64,7 @@ describe("changed-mode trust prompt (verifier)", () => {
     await render(dir, changes, answers);
     const r = rows();
 
-    expect(r.some((row) => row.startsWith("This project's pi files changed since you trusted them. Trust them again?"))).toBe(true);
+    expect(r.some((row) => row.startsWith("This project's files changed since you trusted them. Trust them again?"))).toBe(true);
     const listed = r.filter((row) => /^\[(added|changed|unchanged|removed)\]/.test(row));
     // every row starts with exactly one real mark and only keep.ts is unchanged
     expect(listed.filter((row) => row.startsWith("[unchanged]"))).toEqual(["[unchanged] .pi/extensions/keep.ts"]);

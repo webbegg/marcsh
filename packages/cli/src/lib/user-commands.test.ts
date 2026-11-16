@@ -7,7 +7,11 @@ process.env.MARCSH_DB_PATH = ":memory:";
 
 const { getStorage } = await import("./storage");
 const { PLAN_AGENT_ID, BUILTIN_AGENTS } = await import("./agents");
-const { expandCommand, loadUserCommands, parseInvocation, userCommandTurn, userCommandsDir } = await import("./user-commands");
+const { expandCommand, loadUserCommands, parseInvocation, takePackCommandNotices, userCommandTurn, userCommandsDir } = await import("./user-commands");
+const { reviewProject } = await import("./engine/pi-trust");
+
+/** Trusts the project as it is now: the decision and the review of what it holds. */
+const trustProject = (cwd: string) => getStorage().setProjectTrust(cwd, "trusted", reviewProject(cwd).record);
 
 let root: string;
 let personal: string;
@@ -129,8 +133,44 @@ describe("loadUserCommands (S7)", () => {
     expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
     getStorage().setProjectTrust(project, "untrusted");
     expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
-    getStorage().setProjectTrust(project, "trusted");
+    trustProject(project);
     expect(names(loadUserCommands({ cwd: project }))).toEqual(["theirs"]);
+  });
+
+  test("a trust stored without a review (from before reviews) does not load the project's commands", () => {
+    projectFile("theirs.md", "theirs");
+    getStorage().setProjectTrust(project, "trusted");
+
+    expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+  });
+
+  test("a trust gone stale loads none of the project's commands: one added, changed or removed since the review", () => {
+    projectFile("theirs.md", "theirs");
+    trustProject(project);
+    expect(names(loadUserCommands({ cwd: project }))).toEqual(["theirs"]);
+
+    projectFile("sneaky.md", "added after the review");
+    expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+    rmSync(join(project, ".marcsh", "commands", "sneaky.md"));
+    expect(names(loadUserCommands({ cwd: project }))).toEqual(["theirs"]);
+
+    projectFile("theirs.md", "changed after the review");
+    expect(names(loadUserCommands({ cwd: project }))).toEqual([]);
+  });
+
+  test("a project with commands that are not used says once to run /trust; a project without commands says nothing", () => {
+    takePackCommandNotices();
+    const empty = join(root, "empty");
+    mkdirSync(empty);
+    loadUserCommands({ cwd: empty });
+    expect(takePackCommandNotices()).toEqual([]);
+
+    projectFile("theirs.md", "theirs");
+    loadUserCommands({ cwd: project });
+    loadUserCommands({ cwd: project });
+    expect(takePackCommandNotices()).toEqual(["This project has its own commands (.marcsh/commands): run /trust to use them."]);
+    loadUserCommands({ cwd: project });
+    expect(takePackCommandNotices()).toEqual([]);
   });
 
   test("a project command that is a symlink is not followed", () => {
@@ -235,7 +275,7 @@ describe("userCommandTurn (S7)", () => {
     projectFile("deploy.md", "Deploy $ARGUMENTS");
 
     expect(userCommandTurn("/deploy now", base())).toBeNull();
-    getStorage().setProjectTrust(project, "trusted");
+    trustProject(project);
     expect(userCommandTurn("/deploy now", base())).toEqual({ text: "Deploy now" });
   });
 });

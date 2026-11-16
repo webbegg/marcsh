@@ -111,14 +111,16 @@ Remove a pi provider login.
 
 ### /trust
 
-Trust or distrust this project's pi files.
+Trust or distrust this project: its pi files, its commands (`.marcsh/commands`) and the git changed-file count. Works for any project, on either engine.
 
 ```
 /trust
 ```
 
 - Opens "Project Trust" with three choices: "Don't trust", "Trust" and "Forget".
-- A change applies from the next turn.
+- "Trust" lists what you trust first. A project with no pi files and no project commands is trusted in one step.
+- Project commands and the git count follow a change at once; pi follows it from the next turn.
+- A trust stops applying when a pi file or a project command is added, changed or removed. Run `/trust` again to review the project.
 
 See [Security](security.md#change-a-decision-trust) for what each choice does, the review list and the keys, and for what trusting a project allows.
 
@@ -421,7 +423,9 @@ Pay special attention to: src/app.ts error handling
 
 ### Project commands and trust
 
-A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
+A project's commands are text from that project, so they are part of what you review when you trust the project, and they are loaded only while that trust holds (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed. Opening the `/` menu then says once `This project has its own commands (.marcsh/commands): run /trust to use them.`
+
+Adding, changing or removing a project command makes the trust stale: no project command is used until you review the project again (`/trust`, or the trust question of the next pi turn).
 
 Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
 

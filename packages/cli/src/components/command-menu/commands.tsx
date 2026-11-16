@@ -155,7 +155,7 @@ export const COMMANDS: Command[] = [
   },
   {
     name: "trust",
-    description: "Trust or distrust this project's pi files",
+    description: "Trust or distrust this project (pi files, commands, git status)",
     value: "/trust",
     action: (ctx) => {
       ctx.dialog.open({

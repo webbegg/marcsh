@@ -60,9 +60,9 @@ test("S18: every MCP command the project would start is in the trust prompt, how
   });
   screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 50 });
   const start = Date.now();
-  while (!frame().includes("Trust this project's pi files?") && Date.now() - start < 8000) await settle(25);
+  while (!frame().includes("Trust this project's files?") && Date.now() - start < 8000) await settle(25);
 
-  expect(frame()).toContain("Trust this project's pi files?");
+  expect(frame()).toContain("Trust this project's files?");
   expect(frame()).toContain("server hidden: sh -c touch hidden-ran");
   expect(existsSync(join(cwd, "hidden-ran"))).toBe(false);
 }, 30000);
