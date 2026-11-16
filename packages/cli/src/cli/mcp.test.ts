@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpArgs } from "../cli-args";
 import { mcpCommand } from "./mcp";
+import { openStorage } from "../lib/storage";
+import { reviewProject } from "../lib/engine/pi-trust";
 
 /** The arguments of one action, without the `kind` every command carries (`Omit` alone would merge the actions). */
 type Without<T> = T extends unknown ? Omit<T, "kind"> : never;
@@ -166,6 +168,51 @@ describe("mcp list", () => {
     trusted = true;
     await run({ action: "list" });
     expect(out).toContain(`${projectFile()} (project, trusted)`);
+  });
+
+  describe("with marcsh's trust store", () => {
+    const servers = () => {
+      mkdirSync(join(project, ".pi"));
+      writeFileSync(projectFile(), JSON.stringify({ mcpServers: { local: { command: "./srv" } } }));
+    };
+    const list = (storage: ReturnType<typeof openStorage>) => mcpCommand({ kind: "mcp", action: "list" } as McpArgs, { io, cwd: project, records: () => storage });
+
+    test("a project trusted before commands were reviewed (pi files only) is still trusted, with nothing on stderr", async () => {
+      servers();
+      mkdirSync(join(project, ".marcsh", "commands"), { recursive: true });
+      writeFileSync(join(project, ".marcsh", "commands", "deploy.md"), "Deploy.");
+      const storage = openStorage(":memory:");
+      const legacy = reviewProject(project)
+        .record.filter((entry) => entry.kind === "pi")
+        .map(({ path, shown, content }) => ({ path, shown, content }));
+      storage.setProjectTrust(project, "trusted", legacy);
+
+      expect(await list(storage)).toBe(0);
+
+      expect(out).toContain(`${projectFile()} (project, trusted)`);
+      expect(err).toBe("");
+    });
+
+    test("a trust whose pi files changed since says so on stderr: run marcsh and /trust", async () => {
+      servers();
+      const storage = openStorage(":memory:");
+      storage.setProjectTrust(project, "trusted", reviewProject(project).record);
+      writeFileSync(projectFile(), JSON.stringify({ mcpServers: { local: { command: "./other" } } }));
+
+      await list(storage);
+
+      expect(out).toContain(`${projectFile()} (project, not trusted: pi does not load it)`);
+      expect(err).toBe("marcsh: this project's pi files changed since you trusted them, so pi does not load them: run marcsh and /trust\n");
+    });
+
+    test("an undecided or untrusted project says nothing on stderr", async () => {
+      servers();
+      const storage = openStorage(":memory:");
+      await list(storage);
+      storage.setProjectTrust(project, "untrusted");
+      await list(storage);
+      expect(err).toBe("");
+    });
   });
 
   test("an unreadable file is reported and exits 1, the other file is still listed", async () => {

@@ -377,13 +377,77 @@ describe("trustedForGit", () => {
     expect(trustedForGit(folder)).toBe(false);
   });
 
-  test("is false once the trust is stale: a project command appeared after the review", () => {
+  test("follows the git part only: a project command appearing leaves it on, a changed .git/config or .gitattributes turns it off", () => {
+    mkdirSync(join(folder, ".git"), { recursive: true });
+    writeFileSync(join(folder, ".git", "config"), "[core]\n");
     getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
     expect(trustedForGit(folder)).toBe(true);
 
     mkdirSync(join(folder, ".marcsh", "commands"), { recursive: true });
     writeFileSync(join(folder, ".marcsh", "commands", "deploy.md"), "Deploy.");
+    expect(trustedForGit(folder)).toBe(true);
+
+    writeFileSync(join(folder, ".git", "config"), '[filter "x"]\n\tclean = ./run-me\n');
+    expect(trustedForGit(folder)).toBe(false);
+
+    getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
+    writeFileSync(join(folder, ".gitattributes"), "* filter=x\n");
+    expect(trustedForGit(folder)).toBe(false);
+  });
+
+  test("a trust stored before git settings were reviewed (pi files only) keeps the count off", () => {
+    mkdirSync(join(folder, ".git"), { recursive: true });
+    writeFileSync(join(folder, ".git", "config"), "[core]\n");
+    mkdirSync(join(folder, ".pi"), { recursive: true });
+    writeFileSync(join(folder, ".pi", "SYSTEM.md"), "be nice");
+    const legacy = reviewProject(folder)
+      .record.filter((entry) => entry.kind === "pi")
+      .map(({ path, shown, content }) => ({ path, shown, content }));
+    getStorage().setProjectTrust(folder, "trusted", legacy);
 
     expect(trustedForGit(folder)).toBe(false);
+  });
+});
+
+describe("the hint when the count is off (R3-3)", () => {
+  let folder: string;
+  const notices: string[] = [];
+  function NoticeProbe(props: { cwd: string }) {
+    latest = useGitStatus(props.cwd, { read: async () => ({ branch: "main", changed: null }), onNotice: (message) => notices.push(message), intervalMs: 60_000 });
+    return <text>probe</text>;
+  }
+  const remount = async (cwd: string) => {
+    if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
+    await mount(<NoticeProbe cwd={cwd} />);
+  };
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "marcsh-git-notice-"));
+    mkdirSync(join(folder, ".git"), { recursive: true });
+    writeFileSync(join(folder, ".git", "config"), "[core]\n");
+    notices.length = 0;
+  });
+  afterEach(() => {
+    getStorage().setProjectTrust(folder, null);
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  test("git settings changed since the trust: said once, whatever the polls", async () => {
+    getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
+    writeFileSync(join(folder, ".git", "config"), '[filter "x"]\n\tclean = ./run-me\n');
+
+    await remount(folder);
+    await remount(folder);
+
+    expect(notices).toEqual(["This project's git settings changed since you trusted them: run /trust to count its changed files."]);
+  });
+
+  test("nothing for an undecided or untrusted project, or one whose trust holds", async () => {
+    await remount(folder);
+    getStorage().setProjectTrust(folder, "untrusted");
+    await remount(folder);
+    getStorage().setProjectTrust(folder, "trusted", reviewProject(folder).record);
+    await remount(folder);
+
+    expect(notices).toEqual([]);
   });
 });

@@ -753,6 +753,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (notices.length > 0) toast.show({ variant: "info", message: `Warning: ${notices.join(" ")}`, duration: 8000 });
   }, [showCommandMenu, toast]);
 
+  // Why the status line counts no changed files, when there is something to say (a stale trust): once per project per run.
+  const showGitNotice = useCallback((message: string) => toast.show({ variant: "info", message, duration: 8000 }), [toast]);
+
   const showMentionMenu = activeMention !== null;
 
   const closeMentionMenu = useCallback(() => {
@@ -1411,7 +1414,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={`Ask anything... "Fix a bug in the database"`}
           />
-          <StatusBar engine={engineId} messages={messages} cwd={cwd} background={backgroundText} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
+          <StatusBar engine={engineId} messages={messages} cwd={cwd} background={backgroundText} onNotice={showGitNotice} hint={leaderPending ? leaderHint(keybinds) : turnHint(turnInput, disabled)} />
         </box>
       </box>
     </box>
