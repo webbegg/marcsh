@@ -1,0 +1,6 @@
+{
+  "name": "brigadev",
+  "description": "ODD workflow for marcsh: an orchestrator agent, bounded subagents, review and delivery skills, and workflow commands.",
+  "version": "0.1.0",
+  "license": "MIT"
+}
