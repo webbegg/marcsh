@@ -98,7 +98,11 @@ afterAll(() => {
 });
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 // Waits for what a turn does asynchronously (the plugin view, the first query) instead of guessing how long it takes: a loaded machine
 // is slower than any fixed sleep. A condition that never holds fails with its name rather than with a later, unrelated assertion.
 async function until(condition: () => boolean, what: string, timeoutMs = 3000) {

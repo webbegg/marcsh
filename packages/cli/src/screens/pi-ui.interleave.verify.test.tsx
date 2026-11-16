@@ -44,7 +44,11 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 const QUIET_MS = 350;
 const pressNow = async (key: string) => {
   await act(async () => screen!.mockInput.pressKey(key as never));

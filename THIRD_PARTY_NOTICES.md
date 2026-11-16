@@ -3,6 +3,11 @@
 marcsh includes code ported from, or modelled on, the projects below. Their licenses ask for the copyright and permission
 notice to be kept in every copy, so it is reproduced here unchanged.
 
+Runtime dependencies are not in the release archive: `bun install` fetches them from npm, each with its own license files.
+One of them, `@opentui/core-<platform>` (OpenTUI's native library, MIT AND LGPL-2.1-or-later), links a decode-only FFmpeg
+build under the LGPL; marcsh loads it from the installed package and never ships or changes it (see the package's
+`LICENSE-FFMPEG` and `FFMPEG-SOURCE.md`).
+
 ## my-pi-setup (davi7)
 
 Upstream: https://github.com/davis7dotsh/my-pi-setup
@@ -41,4 +46,60 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## opencode
+
+Upstream: https://github.com/anomalyco/opencode
+
+Ported or adapted in marcsh (paths under `packages/cli/src/`):
+
+- `components/spinner.tsx`: the spinner renderable follows opencode's TUI spinner
+- `lib/clipboard.ts`: the clipboard reads and writes over OpenTUI follow `packages/tui/src/clipboard.ts`
+- `lib/clipboard.test.ts`: the clipboard service cases follow `packages/tui/test/clipboard.test.ts`
+- `providers/clipboard/index.tsx`: follows `packages/tui/src/context/clipboard.tsx`
+- `components/input-bar.tsx`: the paste handling follows the `prompt.paste` command, `onPaste` and `pasteInputText` in `packages/tui/src/component/prompt/index.tsx`; an @-mention replaces only its own range like `insertPart` in `packages/tui/src/component/prompt/autocomplete.tsx`
+- `lib/paste-queue.ts`: follows `enqueuePaste` in `packages/tui/src/component/prompt/index.tsx`
+- `lib/paste.ts`: the large-paste placeholders follow `pasteText`, `expandPastedText` and the extmark sync in `packages/tui/src/component/prompt/index.tsx`, and `expandTrackedPastedText` in `packages/tui/src/prompt/part.ts`
+
+```text
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## cli-spinners
+
+Upstream: https://github.com/sindresorhus/cli-spinners
+
+Copied in marcsh: the "aesthetic" spinner frames in `packages/cli/src/components/spinner.tsx`.
+
+```text
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStorage } from "./storage";
@@ -68,6 +68,30 @@ describe("deleteSession", () => {
     expect(storage.getSession(doomed.id)).toBeNull();
     expect(storage.listSessions().map((s) => s.id)).toEqual([kept.id]);
     expect(storage.getSession(kept.id)?.messages).toEqual(conversation);
+  });
+
+  test("removes the images pasted from the clipboard in it", () => {
+    const saved = process.env.MARCSH_ATTACHMENTS_DIR;
+    const root = mkdtempSync(join(tmpdir(), "marcsh-storage-images-"));
+    process.env.MARCSH_ATTACHMENTS_DIR = root;
+    try {
+      const storage = openStorage(":memory:");
+      const doomed = storage.createSession({ title: "Doomed", cwd: "/work" });
+      const kept = storage.createSession({ title: "Kept", cwd: "/work" });
+      for (const id of [doomed.id, kept.id]) {
+        mkdirSync(join(root, id));
+        writeFileSync(join(root, id, "clipboard-1.png"), "png");
+      }
+
+      storage.deleteSession(doomed.id);
+
+      expect(existsSync(join(root, doomed.id))).toBe(false);
+      expect(existsSync(join(root, kept.id, "clipboard-1.png"))).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.MARCSH_ATTACHMENTS_DIR;
+      else process.env.MARCSH_ATTACHMENTS_DIR = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("returns false for an unknown id and changes nothing", () => {

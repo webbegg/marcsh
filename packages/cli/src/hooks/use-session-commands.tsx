@@ -13,7 +13,7 @@ import { stripControlChars } from "../components/ui-prompts";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
 import type { ChatMessage } from "../lib/chat-types";
-import { copyToClipboard } from "../lib/clipboard";
+import { useClipboard } from "../providers/clipboard";
 import { escapeTranscriptText } from "../lib/display-text";
 import {
   applyStep,
@@ -116,8 +116,9 @@ export function useSessionCommands(params: Params): SessionCommands {
   // The commands read the latest of everything without being rebuilt on each render.
   const latest = useRef(params);
   latest.current = params;
-  const ui = useRef({ navigate, toast, dialog });
-  ui.current = { navigate, toast, dialog };
+  const clipboard = useClipboard();
+  const ui = useRef({ navigate, toast, dialog, clipboard });
+  ui.current = { navigate, toast, dialog, clipboard };
 
   return useMemo<SessionCommands>(() => {
     const current = () => latest.current;
@@ -250,10 +251,10 @@ export function useSessionCommands(params: Params): SessionCommands {
       const text = lastReplyText(current().chat.getMessages());
       if (!text) return info("There is no reply to copy yet.");
       try {
-        const { method } = await copyToClipboard(text);
+        const { method } = await ui.current.clipboard.write(text);
         ui.current.toast.show({
           variant: "success",
-          message: method === "pbcopy" ? "Copied the last reply to the clipboard" : "Sent the last reply to your terminal's clipboard (OSC 52; the terminal must allow it)",
+          message: method === "osc52" ? "Sent the last reply to your terminal's clipboard (OSC 52; the terminal must allow it)" : "Copied the last reply to the clipboard",
         });
       } catch (error) {
         fail(`Could not copy: ${message(error)}`);

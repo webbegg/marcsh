@@ -60,6 +60,7 @@ Each name is an action, and its value is a key or a list of keys.
 | --- | --- | --- |
 | `palette` | Opens the command palette. | `ctrl+p` |
 | `leader` | Starts the leader wait. Keys pressed on their own only. | `ctrl+x` |
+| `paste` | Pastes what the clipboard holds into the prompt: an image becomes an attachment, text is pasted. Works on every screen with a prompt. See [Pasting](screen.md#pasting). | `ctrl+v` |
 | a command name: `new`, `agents`, `models`, `login`, `logout`, `trust`, `engine`, `permissions`, `sessions`, `rename`, `fork`, `export`, `undo`, `redo`, `diff`, `compact`, `copy`, `theme`, `exit` | Runs that command. | the table above |
 
 Only marcsh's own commands can be bound. Custom and engine commands are in the palette, and are not bindable.
@@ -77,7 +78,7 @@ The keys you give for an action replace its defaults. An empty list, `[]`, unbin
 
 The input keys (`Enter`, `Shift+Enter`, `Alt+Enter`, `Tab`, `Esc`, `Ctrl+C`, `Up` and `Down` for history) are fixed in this version and cannot be changed.
 
-If two actions in the file use the same key, the first in the file's order wins (`palette` and `leader` come before the commands), and one warning names the loser. A key you set beats a default of another command: setting `"models": ["<leader>n"]` takes `n` from `/new`.
+If two actions in the file use the same key, the first in the file's order wins (`palette`, `leader` and `paste` come before the commands), and one warning names the loser. A key you set beats a default of another action: setting `"models": ["<leader>n"]` takes `n` from `/new`, and `"models": ["ctrl+v"]` takes `ctrl+v` from `paste`.
 
 ### When the file has a mistake
 

@@ -16,6 +16,8 @@ process.env.MARCSH_DB_PATH = join(root, "marcsh.db");
 process.env.MARCSH_PREFERENCES_PATH = join(root, "preferences.json");
 process.env.MARCSH_AGENTS_DIR = join(root, "agents");
 process.env.MARCSH_PACKS_DIR = join(root, "packs");
+// Deleting a session deletes its clipboard images: never in the real ~/.marcsh/attachments.
+process.env.MARCSH_ATTACHMENTS_DIR = join(root, "attachments");
 process.env.MARCSH_SNAPSHOTS_DIR = join(root, "snapshots");
 // Turns take no project snapshots (undo/redo) unless a test turns them on: each would snapshot the test's working folder.
 process.env.MARCSH_SNAPSHOTS = "off";

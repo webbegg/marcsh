@@ -37,7 +37,11 @@ afterEach(async () => {
   screen = null;
 });
 
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 const frame = () => screen!.captureCharFrame().replace(/[│┃\s]+/g, " ");
 const PLACEHOLDER = "Ask anything";
 
@@ -165,6 +169,33 @@ describe("Up and Down walk the prompts sent before", () => {
     expect(frame()).toContain("beta two!");
   });
 
+  // The cursor counts display cells: a wide character takes two, so the end of such a text is past its length.
+  test("a prompt recalled with Down after wide characters has the cursor at its end", async () => {
+    seed("old", "日本語 new");
+    await open();
+    await press("up");
+    await press("up");
+    await press("down");
+
+    await type("!");
+    await enter();
+
+    expect(sent).toEqual(["日本語 new!"]);
+  });
+
+  test("the draft brought back past the newest prompt has the cursor at its end, after wide characters too", async () => {
+    seed("old");
+    await open();
+    await type("日本語 draft");
+    await press("up");
+    await press("down");
+
+    await type("!");
+    await enter();
+
+    expect(sent).toEqual(["日本語 draft!"]);
+  });
+
   test("Enter sends the recalled prompt as it is", async () => {
     seed("alpha one", "beta two");
     await open();
@@ -245,6 +276,23 @@ describe("the draft is kept per key", () => {
     // The cursor is at the end: typing goes on from there.
     await type("!");
     expect(frame()).toContain("half a thought!");
+  });
+
+  test("a draft with wide characters comes back with the cursor at its end", async () => {
+    const router = await open([
+      { path: "/", element: <Page draftKey="s1" /> },
+      { path: "away", element: <OtherPage /> },
+    ]);
+    await type("日本語 half");
+    await go(router, "/away");
+    await settle(100);
+    await go(router, "/");
+    await settle(100);
+
+    await type("!");
+    await enter();
+
+    expect(sent).toEqual(["日本語 half!"]);
   });
 
   test("another key does not get it, and the draft is not handed to the next screen's input", async () => {

@@ -13,11 +13,13 @@ const FOLDERS = ["packages/cli/bin/", "packages/cli/src/", "packages/cli/plugin/
 const isTestFile = (path: string) =>
   /\.test\.tsx?$/.test(path) || /(^|\/)test-[^/]*$/.test(path) || /(^|\/)fixtures\//.test(path);
 const isDependency = (path: string) => path.split("/").includes("node_modules");
+// Native libraries come from npm at install time, each with its own license files (OpenTUI's links LGPL FFmpeg); none ships here.
+const isNativeBinary = (path: string) => /\.(dylib|so|dll|node)$/.test(path);
 
 /** The tracked paths (relative to the repository root, `/`-separated) that ship, sorted so the tarball is reproducible. */
 export function selectReleaseFiles(tracked: readonly string[]): string[] {
   return tracked
     .filter((path) => FILES.has(path) || FOLDERS.some((folder) => path.startsWith(folder)))
-    .filter((path) => !isTestFile(path) && !isDependency(path))
+    .filter((path) => !isTestFile(path) && !isDependency(path) && !isNativeBinary(path))
     .sort();
 }

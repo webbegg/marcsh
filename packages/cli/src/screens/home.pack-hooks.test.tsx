@@ -73,7 +73,11 @@ afterAll(() => {
 });
 
 let screen: Awaited<ReturnType<typeof testRender>> | null = null;
-const settle = (ms = 30) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 30) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 // Toasts and dialogs wrap long lines inside their border, so the border goes too.
 const frame = () => screen!.captureCharFrame().replace(/[│┃█▀▄▌▐░▒▓\s]+/g, " ");
 const type = async (text: string) => {

@@ -28,7 +28,11 @@ afterAll(() => {
   engines.set("pi", undefined);
   rmSync(prefsDir, { recursive: true, force: true });
 });
-const settle = (ms = 60) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+// OpenTUI 0.9 paints a committed update on a later frame (and a frame cannot be read mid-paint): draw it before it is read.
+const settle = async (ms = 60, screen?: Screen) => {
+  await act(() => new Promise<void>((r) => setTimeout(r, ms)));
+  if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
+};
 
 type Screen = Awaited<ReturnType<typeof testRender>>;
 
@@ -50,7 +54,7 @@ async function openMenu(path: "session" | "home", size: { width: number; height:
   const screen = await testRender(<RouterProvider router={router} />, size);
   await settle(150);
   await act(() => screen.mockInput.typeText("/"));
-  await settle(120);
+  await settle(120, screen);
   return screen;
 }
 
@@ -85,7 +89,7 @@ describe("the / menu height", () => {
       expect(commandRows(screen)[0]).toContain("/new");
       for (const height of [14, 12]) {
         await act(async () => screen.resize(80, height));
-        await settle(150);
+        await settle(150, screen);
         const rows = commandRows(screen);
         expect(rows[0]).toContain("/new");
         expect(rows.length).toBeLessThanOrEqual(height - 8);

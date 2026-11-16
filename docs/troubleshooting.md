@@ -65,6 +65,24 @@ The prompt ignores keys until you have stopped typing for a moment, and shows `w
 
 macOS Terminal sends `Alt+Enter` only when "Use Option as Meta key" is on in its settings. Turn it on, or type `/queue your text` instead. Both work on pi sessions while a reply is running. See [Typing while the agent works](screen.md#typing-while-the-agent-works).
 
+### `Ctrl+V` says "Clipboard not available here"
+
+marcsh reads the clipboard of the machine it runs on, through its terminal library (OpenTUI), with no extra tools to install. That works on macOS, and is meant to work on Linux with a Wayland or X11 desktop session. It does not work:
+
+- **Over SSH.** The clipboard is on your own computer, not on the remote machine. Paste text with your terminal's paste key (`Cmd+V`, `Ctrl+Shift+V`). Images cannot be pasted over SSH; copy the file to the remote machine and paste its path instead.
+- **On Linux without a desktop session** (a console, a container, no `WAYLAND_DISPLAY` or `DISPLAY`).
+- **Where OpenTUI has no clipboard support for your system.** Windows is not tested.
+
+Other messages: "Clipboard read timed out" (the clipboard owner did not answer within a second: try again), "Clipboard content is too large" (over 20 MB).
+
+### `Cmd+V` pastes nothing when the clipboard holds an image
+
+Terminals paste only text. Some send an empty paste when the clipboard holds an image, and marcsh then reads the image itself; others send nothing at all. Press `Ctrl+V` instead: marcsh reads the clipboard directly. See [Pasting](screen.md#pasting).
+
+### `/copy` says "Sent the last reply to your terminal's clipboard"
+
+marcsh could not reach this machine's clipboard (over SSH, for example) and asked the terminal to copy the text with OSC 52. Whether that works depends on the terminal: some need it turned on in their settings, macOS Terminal does not support it.
+
 ### I can't type while Claude is replying
 
 On a Claude session the input is off until the reply ends. Press `Esc` to stop the reply. On pi you can type during a reply. See [Typing while the agent works](screen.md#typing-while-the-agent-works).
