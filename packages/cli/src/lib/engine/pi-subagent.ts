@@ -3,6 +3,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, MessagePart } from "../chat-types";
 import type { BackgroundHub } from "../background/hub";
 import { subagentsFor } from "../background/session-subagents";
+import { normalizeSurfaces, surfacesOverlap, validateSurfaces } from "../edit-surfaces";
 import { buildSubagentResult, MAX_RUNNING_SUBAGENTS, type BackgroundSubagents, type SubagentRunContext, type SubagentSnapshot } from "../background/subagents";
 import { formatElapsed } from "../background/terminals";
 import { friendlyPiError, redactSecrets } from "./pi-auth";
@@ -66,9 +67,22 @@ export function upsertTask(reply: ChatMessage, taskId: string, changes: Partial<
 export type ChildProgress = { lastToolName?: string; toolUses: number; totalTokens: number };
 
 /** What a finished child reports: its final text and what it used. */
-export type ChildRun = ChildProgress & { text: string; costUsd: number };
+export type ChildRun = ChildProgress & {
+  text: string;
+  costUsd: number;
+  /** A writer with `editSurfaces`: the files that changed outside them while it ran (absent or empty: none, or not checked). */
+  outsideSurfaces?: string[];
+};
 
-export type RunChild = (request: {
+/** What a writer child is held to (`Task` `editSurfaces`). */
+export type ChildSurfaces = {
+  /** The repository-relative paths or globs it may write, as `normalizeSurfaces` gives them. */
+  editSurfaces?: string[];
+  /** The surfaces of the other writers running now, read when it compares the working tree: their edits are not this child's. */
+  otherSurfaces?: () => string[];
+};
+
+export type RunChild = (request: ChildSurfaces & {
   prompt: string;
   /** The named subagent the child runs as (`Task` `agent`); absent for a plain child. */
   subagent?: TurnSubagent;
@@ -85,7 +99,7 @@ export type RunChild = (request: {
 }) => Promise<ChildRun>;
 
 /** Runs a background child: it is not bound to the turn, and its approvals go to the session's ask channel. */
-export type BackgroundRunChild = (request: { description: string; prompt: string; subagent?: TurnSubagent } & SubagentRunContext) => Promise<ChildRun>;
+export type BackgroundRunChild = (request: { description: string; prompt: string; subagent?: TurnSubagent } & ChildSurfaces & SubagentRunContext) => Promise<ChildRun>;
 
 export type BackgroundSubagentOptions = {
   /** The session's hub: its subagents (`subagentsFor`) and where their results go. */
@@ -116,16 +130,63 @@ function summarize(text: string): string {
   return line.length > MAX_SUMMARY ? `${line.slice(0, MAX_SUMMARY - 1)}…` : line;
 }
 
-function parseTaskInput(params: unknown, subagents: readonly TurnSubagent[]): { description: string; prompt: string; subagent?: TurnSubagent } {
-  const { description, prompt, agent } = (params ?? {}) as Record<string, unknown>;
+/** `editSurfaces`: absent, or a valid list of narrow repository-relative paths and globs (normalized); anything else is a tool error that names the bad entry. */
+function parseSurfaces(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${INVALID_INPUT} \`editSurfaces\`, when given, is a list of repository-relative paths or globs.`);
+  const problems = validateSurfaces(value);
+  if (problems.length > 0) {
+    throw new Error(`Invalid editSurfaces: ${problems.join("; ")}. Pass narrow repository-relative paths or globs, never ".", the repository root, an absolute path or "..".`);
+  }
+  return normalizeSurfaces(value as string[]);
+}
+
+function parseTaskInput(
+  params: unknown,
+  subagents: readonly TurnSubagent[],
+): { description: string; prompt: string; subagent?: TurnSubagent; editSurfaces?: string[] } {
+  const { description, prompt, agent, editSurfaces } = (params ?? {}) as Record<string, unknown>;
   if (typeof description !== "string" || typeof prompt !== "string" || !description.trim() || !prompt.trim()) throw new Error(INVALID_INPUT);
   if (agent !== undefined && agent !== null && typeof agent !== "string") throw new Error(`${INVALID_INPUT} \`agent\`, when given, is a subagent name.`);
+  const surfaces = parseSurfaces(editSurfaces);
+  const own = surfaces ? { editSurfaces: surfaces } : {};
   const name = typeof agent === "string" ? agent.trim() : "";
-  if (!name) return { description: description.trim(), prompt };
+  if (!name) return { description: description.trim(), prompt, ...own };
   if (subagents.length === 0) throw new Error(`No named subagents are available here. Run the Task without \`agent\`.`);
   const subagent = subagents.find((candidate) => candidate.name === name);
   if (!subagent) throw new Error(`Unknown subagent "${name}". Available: ${subagents.map((candidate) => candidate.name).join(", ")}.`);
-  return { description: description.trim(), prompt, subagent };
+  if (surfaces && subagent.readOnly) throw new Error(`${subagent.name} is read-only: do not pass editSurfaces.`);
+  return { description: description.trim(), prompt, subagent, ...own };
+}
+
+/** A running writer: what it was started for and the surfaces it is held to. */
+type Writer = { description: string; surfaces: readonly string[] };
+
+/** The background writers each session's subagents were started with, by subagent id. A settled one is forgotten when next read. */
+const backgroundWriters = new WeakMap<BackgroundSubagents, Map<string, Writer>>();
+
+function runningBackgroundWriters(subagents: BackgroundSubagents): Writer[] {
+  const known = backgroundWriters.get(subagents);
+  if (!known) return [];
+  const running: Writer[] = [];
+  for (const [id, writer] of known) {
+    if (subagents.get(id)?.status === "running") running.push(writer);
+    else known.delete(id);
+  }
+  return running;
+}
+
+const MAX_LISTED_OUTSIDE = 50;
+
+/** The result text with the files the writer changed outside its surfaces, when there are any. */
+function withOutsideWarning(text: string, outside: readonly string[] | undefined, surfaces: readonly string[] | undefined, background: boolean): string {
+  if (!outside || outside.length === 0) return text;
+  const shown = outside.slice(0, MAX_LISTED_OUTSIDE).join(", ") + (outside.length > MAX_LISTED_OUTSIDE ? `, and ${outside.length - MAX_LISTED_OUTSIDE} more` : "");
+  const meanwhile = background ? " (may include edits made meanwhile by you or another subagent)" : "";
+  const warning =
+    `Warning: files changed outside the allowed edit surfaces${surfaces ? ` (${surfaces.join(", ")})` : ""}${meanwhile}: ${shown}. ` +
+    `Nothing was reverted: review them (git diff) and keep or undo them.`;
+  return text ? `${text}\n\n${warning}` : warning;
 }
 
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -155,6 +216,17 @@ const agentProperty = (subagents: readonly TurnSubagent[]) =>
     ? { agent: { type: "string", description: `The named subagent to run, one of: ${listedNames(subagents)}. Leave it out for a plain subagent.` } }
     : {};
 
+const surfacesProperty = {
+  editSurfaces: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      'Limit where the subagent may write: narrow repository-relative paths or globs, e.g. ["src/auth/**", "tests/auth.test.ts"]; never ".", ' +
+      "the repository root, an absolute path or \"..\". Its edit and write outside them are denied, and files it changes outside them are reported back. " +
+      "Writers running at the same time need disjoint surfaces. Leave it out for a subagent that is not bound.",
+  },
+};
+
 /** The subagents' names for the `agent` parameter, bounded like the Task description's list. */
 function listedNames(subagents: readonly TurnSubagent[]): string {
   const names = subagents.slice(0, MAX_LISTED_SUBAGENTS).map((sub) => sub.name).join(", ");
@@ -168,6 +240,7 @@ const parametersFor = (background: boolean, subagents: readonly TurnSubagent[]) 
       ? {
           ...baseProperties,
           ...agentProperty(subagents),
+          ...surfacesProperty,
           background: {
             type: "boolean",
             description:
@@ -175,7 +248,7 @@ const parametersFor = (background: boolean, subagents: readonly TurnSubagent[]) 
               "finishes; task_wait collects it sooner, task_check peeks, task_cancel stops it.",
           },
         }
-      : { ...baseProperties, ...agentProperty(subagents) },
+      : { ...baseProperties, ...agentProperty(subagents), ...surfacesProperty },
     required: ["description", "prompt"],
   }) as unknown as ToolDefinition["parameters"];
 
@@ -185,6 +258,17 @@ const NO_BACKGROUND = "Background subagents are not available here. Run the Task
 
 export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = TOOL_CALL_TIMEOUT_MS, background, subagents = [] }: SubagentOptions): ToolDefinition {
   const canStart = background?.canStart === true;
+  // The writers of this turn's foreground Tasks that are running, and (below) the session's running background ones: writers that
+  // run together need disjoint surfaces.
+  const foregroundWriters = new Set<Writer>();
+  const runningWriters = (): Writer[] => [...foregroundWriters, ...(background ? runningBackgroundWriters(subagentsFor(background.hub)) : [])];
+  const overlapping = (surfaces: readonly string[]) => {
+    for (const writer of runningWriters()) {
+      const overlap = surfacesOverlap(surfaces, writer.surfaces);
+      if (overlap) return `${overlap} (the surfaces of the writer "${writer.description}", which is still running)`;
+    }
+    return undefined;
+  };
   return {
     name: TASK_TOOL,
     label: "Subagent task",
@@ -197,16 +281,39 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
     promptSnippet: "Launch a subagent for a self-contained task and get its final answer",
     parameters: parametersFor(canStart, subagents),
     async execute(toolCallId, params, toolSignal) {
-      const { description, prompt, subagent } = parseTaskInput(params, subagents);
+      const { description, prompt, subagent, editSurfaces } = parseTaskInput(params, subagents);
       const as = subagent ? { subagent } : {};
       const signal = toolSignal ? AbortSignal.any([toolSignal, turnEnded]) : turnEnded;
       if (signal.aborted) throw new Error(INTERRUPTED);
 
-      if (isBackgroundCall(params)) {
-        // Only a turn that can start one: never headless, a child session, or plan mode. Never run as an untimed foreground call.
-        if (!background || !canStart) throw new Error(NO_BACKGROUND);
+      const isBackground = isBackgroundCall(params);
+      // Only a turn that can start one: never headless, a child session, or plan mode. Never run as an untimed foreground call.
+      if (isBackground && (!background || !canStart)) throw new Error(NO_BACKGROUND);
+      // A writer bound to surfaces must not share them with one that is running (checked and registered below before anything awaits).
+      const writer: Writer | undefined = editSurfaces ? { description, surfaces: editSurfaces } : undefined;
+      if (editSurfaces) {
+        const clash = overlapping(editSurfaces);
+        if (clash) throw new Error(`Task not started: its editSurfaces overlap another writer's: ${clash}. Writers that run together need disjoint surfaces: pass other surfaces, or start this one when the other has finished.`);
+      }
+      const bound = (): ChildSurfaces =>
+        writer && editSurfaces ? { editSurfaces, otherSurfaces: () => runningWriters().filter((other) => other !== writer).flatMap((other) => [...other.surfaces]) } : {};
+
+      if (isBackground && background) {
         // Not bound to the turn or the call: it runs until it ends, is cancelled, or the session is left. Throws at the cap.
-        const snapshot = subagentsFor(background.hub).start({ description, prompt, run: (context) => background.runChild({ description, prompt, ...as, ...context }) });
+        const sessionSubagents = subagentsFor(background.hub);
+        const snapshot = sessionSubagents.start({
+          description,
+          prompt,
+          run: async (context) => {
+            const run = await background.runChild({ description, prompt, ...as, ...bound(), ...context });
+            return { ...run, text: withOutsideWarning(run.text, run.outsideSurfaces, editSurfaces, true) };
+          },
+        });
+        if (writer) {
+          const known = backgroundWriters.get(sessionSubagents) ?? new Map<string, Writer>();
+          known.set(snapshot.id, writer);
+          backgroundWriters.set(sessionSubagents, known);
+        }
         return toolText(
           `Started background subagent ${snapshot.id} "${description}". Its result is delivered to you when it finishes. ` +
             `Use task_wait to wait for it, task_check to peek, task_cancel to stop it.`,
@@ -219,8 +326,9 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
 
       update({ description, status: "running" });
       const start = (childSignal: AbortSignal, clock: ToolClock) =>
-        runChild({ prompt, ...as, signal: childSignal, onProgress: (progress) => update(progress), holdClock: () => clock.hold() });
+        runChild({ prompt, ...as, ...bound(), signal: childSignal, onProgress: (progress) => update(progress), holdClock: () => clock.hold() });
       let run: ChildRun;
+      if (writer) foregroundWriters.add(writer);
       try {
         // A foreground call is aborted once it runs too long (a background one returned above, untimed); waiting for the user does not count.
         run = await runWithToolTimeout(TASK_TOOL, timeoutMs, signal, start, { background: canStart });
@@ -236,6 +344,8 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
         const message = error instanceof Error ? error.message : String(error);
         update({ status: "failed", error: message });
         throw new Error(message);
+      } finally {
+        if (writer) foregroundWriters.delete(writer);
       }
       // A child that finished as the abort arrived did not complete its work for the user.
       if (signal.aborted) {
@@ -250,7 +360,7 @@ export function createTaskTool({ host, signal: turnEnded, runChild, timeoutMs = 
           update: (reply) => ({ ...reply, metadata: { ...reply.metadata, costUsd: (reply.metadata?.costUsd ?? 0) + run.costUsd } }),
         });
       }
-      return { content: [{ type: "text", text: run.text || NO_TEXT }], details: { taskId: toolCallId } };
+      return { content: [{ type: "text", text: withOutsideWarning(run.text || NO_TEXT, run.outsideSurfaces, editSurfaces, false) }], details: { taskId: toolCallId } };
     },
   };
 }

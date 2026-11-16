@@ -48,7 +48,7 @@ None holds by default; when one fires, start the subagent with `Task` and `agent
 4. **Context backstop**: long session and the next unit needs several steps → hand it to a fresh `brigadev-worker`.
 5. **Incident**: wrong cwd, accidental mutation, failed recovery → stop and diagnose before resuming.
 
-Writers have no enforced edit surfaces yet: list the exact files and directories they may touch in the task prompt, and check `git diff --stat` after they return. Anything outside the list is a defect to report or revert with the user's approval.
+Writers' edit surfaces: always list the exact files and directories they may touch in the task prompt. On pi also pass them as `editSurfaces` in `Task` (narrow repo-relative paths or globs): the runtime then denies a writer's `edit`/`write` outside them and writes `bash` makes by literal path, flags files `bash` changed outside them, rejects a launch that overlaps a running writer, and lists what changed outside in the `Task` result. On Claude nothing enforces them: check `git diff --stat` after the writer returns. Anything outside the list is a defect to report or revert with the user's approval.
 
 ## Skills and commands
 
