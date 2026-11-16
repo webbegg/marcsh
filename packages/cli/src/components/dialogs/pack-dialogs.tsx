@@ -58,6 +58,9 @@ export function previewLines(preview: PackPreview): string[] {
     header,
     "Agents:",
     ...preview.agents.map((agent) => ` • ${agent.name} (${[agent.permission, agent.model, agent.tools].filter(Boolean).join(", ")})`),
+    ...(preview.subagents
+      ? ["Subagents:", ...preview.subagents.map((sub) => ` • ${sub.name} (${[sub.permission, sub.model, sub.tools].filter(Boolean).join(", ")})`)]
+      : []),
     ...list("Skills", preview.skills),
     ...list("Commands", preview.commands),
     ...(preview.hooks

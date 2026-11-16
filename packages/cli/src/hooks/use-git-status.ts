@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { readGitStatus, type GitStatus } from "../lib/git-status";
+import type { BranchState } from "../lib/git-branch";
+import { readGitBranchState, readGitStatus, type GitStatus } from "../lib/git-status";
 import { getStorage } from "../lib/storage";
 
 /** Reads the git state of a folder; `trusted` says whether it may count the changed files (see `readGitStatus`). */
@@ -42,7 +43,8 @@ const safely = (isTrusted: (cwd: string) => boolean, cwd: string) => {
 /** The longest wait between two polls after reads that found nothing (or an `intervalMs` above it). */
 export const MAX_GIT_BACKOFF_MS = 60_000;
 
-const same = (a: GitStatus | null, b: GitStatus | null) => a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed);
+const same = (a: GitStatus | null, b: GitStatus | null) =>
+  a === b || (a !== null && b !== null && a.branch === b.branch && a.changed === b.changed && a.worktree === b.worktree);
 
 /**
  * The git state of `cwd`, read on mount, every `intervalMs` and whenever `trigger` changes; null until known, outside a repo
@@ -131,3 +133,94 @@ export function useGitStatus(cwd: string | undefined, { read = defaultRead, isTr
 
   return status;
 }
+
+/** Reads where a folder's checkout stands for the approval policy (see `branchState`); a sync answer is taken too (tests). */
+export type BranchReader = (cwd: string) => Promise<BranchState> | BranchState;
+
+type BranchOptions = {
+  /** Default: `readGitBranchState`, the status line's hardened async git reads. */
+  read?: BranchReader;
+  /** Any value that changes when the branch may have changed (the polled git branch, a finished tool call); each change reads again. */
+  trigger?: unknown;
+  /** Whether to poll on its own every `pollMs` (when nothing else tells it the branch changed: git status off or failing). */
+  poll?: boolean;
+  pollMs?: number;
+};
+
+/** The last state read per folder, so a status line mounted again shows it at once rather than flickering. Oldest entries go first. */
+const lastBranch = new Map<string, BranchState>();
+const MAX_BRANCHES = 32;
+const remember = (cwd: string, state: BranchState) => {
+  lastBranch.delete(cwd);
+  if (lastBranch.size >= MAX_BRANCHES) lastBranch.delete(lastBranch.keys().next().value!);
+  lastBranch.set(cwd, state);
+};
+
+/**
+ * Where the checkout at `cwd` stands, read asynchronously (never in render): on mount, whenever `trigger` changes and, while `poll`
+ * is on, every `pollMs`. One read at a time (asking during one reads once more after it); a read that fails keeps the last state.
+ * Null until known and without a folder (nothing is read then).
+ */
+export function useBranchState(cwd: string | undefined, { read = readGitBranchState, trigger, poll = false, pollMs = 3000 }: BranchOptions = {}): BranchState | null {
+  const [state, setState] = useState<BranchState | null>(() => (cwd === undefined ? null : (lastBranch.get(cwd) ?? null)));
+  const readRef = useRef(read);
+  readRef.current = read;
+  const refreshRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    setState(cwd === undefined ? null : (lastBranch.get(cwd) ?? null));
+    if (cwd === undefined) return;
+    let alive = true;
+    let reading = false;
+    let again = false;
+    const refresh = () => {
+      if (!alive) return;
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      void Promise.resolve()
+        .then(() => readRef.current(cwd))
+        .then(
+          (next) => {
+            remember(cwd, next);
+            return next;
+          },
+          () => null,
+        )
+        .then((next) => {
+          reading = false;
+          if (!alive) return;
+          if (next !== null) setState((previous) => (previous !== null && sameBranch(previous, next) ? previous : next));
+          if (again) {
+            again = false;
+            refresh();
+          }
+        });
+    };
+    refreshRef.current = refresh;
+    refresh();
+    const timer = poll ? setInterval(refresh, pollMs) : undefined;
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      refreshRef.current = () => {};
+    };
+  }, [cwd, poll, pollMs]);
+
+  // The mount read above covers the first value of the trigger.
+  const firstTrigger = useRef(true);
+  useEffect(() => {
+    if (firstTrigger.current) {
+      firstTrigger.current = false;
+      return;
+    }
+    refreshRef.current();
+  }, [trigger]);
+
+  return state;
+}
+
+const sameBranch = (a: BranchState, b: BranchState) =>
+  a.kind === b.kind && (a.kind === "none" ? a.reason === (b as typeof a).reason : a.branch === (b as typeof a).branch);

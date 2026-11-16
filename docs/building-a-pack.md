@@ -28,6 +28,7 @@ It asks what the agent should do and not do, drafts the prompt with you, writes 
 my-pack/
   agents/
     reviewer.md             required: at least one agent you can select
+    refuter.md              optional: a subagent (mode: subagent)
   skills/
     tdd/SKILL.md            a skill in a folder
     quick-note.md           a skill can also be a single file
@@ -42,7 +43,7 @@ my-pack/
 
 | Path | What it is |
 | --- | --- |
-| `agents/*.md` | Agents. You need at least one that users can select. |
+| `agents/*.md` | Agents and subagents. You need at least one agent that users can select. A pack with only subagents is rejected. |
 | `skills/<name>/SKILL.md` | Skills in the Claude format, with `name` and `description` in the frontmatter. |
 | `skills/*.md` | A skill can be a single file. |
 | `commands/*.md` | Slash commands. A command in a subfolder is named by its path. |
@@ -69,13 +70,60 @@ Use the tdd skill when the change has no tests.
 
 Tips:
 
-- Say in the prompt **when to use which skill or command**. A pack's skills and commands load only while one of its agents is selected, so the agent prompt is how the model learns about them.
+- Say in the prompt **when to use which skill or command**. A pack's skills and commands load only while one of its agents is selected (or a [command that names an agent](#write-the-commands) runs a turn as one), so the agent prompt is how the model learns about them.
 - Give each agent a `name`, a `description` and a `permission`. Use `read-only` if it must never change anything.
 - Do not name an agent Build or Plan. Those names stay with the built-in agents.
 - Leave `model` out unless the role needs one. A name that only fits one engine is ignored, with a warning, on the other. See [Agents](agents.md#model-and-fallback).
 - Keep to the fields `name`, `description`, `mode`, `permission`, `model` and `tools`. Other fields are ignored with a warning when someone selects the agent.
 
 The menus show each agent's `name`. When two agents share a name, a pack agent is shown as `owner/repo/Name` so people can tell them apart.
+
+### Subagents
+
+A file in `agents/` with `mode: subagent` is a [subagent](agents.md#subagents): the model starts it to do one piece of work, and users never select it. Use subagents for roles your agents hand work to, such as reviewers that check a change in parallel.
+
+```markdown
+---
+name: Correctness refuter
+description: Tries to break the correctness claims of a change; changes nothing
+mode: subagent
+permission: read-only
+---
+You try to refute the correctness claims of the change you are given.
+```
+
+Saved as `agents/refuter-correctness.md`, the subagent is named `refuter-correctness`. The model starts it by that name.
+
+- Only your pack's agents can start its subagents. While another agent is selected, they are not available.
+- Tell your agent in its prompt when to start which subagent. On pi it starts one with `Task` and `agent: refuter-correctness`, and it can add `background: true` to run several at once. On Claude it starts one with Claude's own `Task`.
+- A subagent's tools only narrow. It never has a tool that the agent that started it lacks. Use `permission: read-only` for roles that only read.
+- On pi, a subagent gets your pack's skills whenever they are loaded for the turn, so its prompt can name them.
+- The install preview lists the subagents under `Subagents`, by the name the model uses.
+
+## Write the commands
+
+A file in `commands/` is a slash command named after the file. Give it a `description` and, when it takes arguments, an `argument-hint`. Without an `agent`, a command belongs to the engine. It works only while one of your agents is selected, and Claude and pi each expand it their own way.
+
+Add `agent` to make it an entry point into your workflow:
+
+```markdown
+---
+description: Plan an approved spec
+agent: asdd
+argument-hint: "[spec slug]"
+---
+Spec slug (empty means the most recent approved spec): $ARGUMENTS
+```
+
+- marcsh runs this command itself on both engines. Users can type `/plan`, and it is listed in the `/` menu with your pack's name and the hint, whichever agent they have selected.
+- The turn runs as the named agent, so your skills, subagents and enabled hooks are there for it. The next message goes back to the selected agent.
+- A command never lifts Plan. With Plan (or another read-only agent) selected, the turn runs as your agent but read-only, under Plan's rules, and marcsh tells the user to switch to Build to let it change files. Write the command so that a read-only run still does something useful, such as reading and planning.
+- A command never gives the turn tools the selected agent does not have: the tool groups the selected agent turns off stay off for your agent too.
+- The install preview shows the agent each command runs as, for example `spec → ASDD`.
+- `agent` names one of your pack's agents by file name without `.md` (`asdd` for `agents/asdd.md`, in any letter case) or by its `name`. It can also be `build` or `plan`. An agent of another pack, a subagent, an unknown name or an empty `agent:` gets a warning, and the turn runs as the selected agent.
+- The prompt is expanded like a [custom command](commands.md#arguments): `$ARGUMENTS` is everything after the name, and `$1` to `$9` are its words.
+- Quote an `argument-hint` that starts with `[`, as YAML needs. marcsh drops the quotes.
+- Your command never takes a name from another command. marcsh's own commands win a name clash, then the engine's (Claude's or pi's built-in, plugin and template commands, such as Claude's `/review`), then the user's own commands. A command that loses is listed and run as `/<repo>:<name>` instead (`/marcsh-rsc:review`), and is hidden, with a one-time warning, if that name is taken too. Pick names that do not collide with [marcsh's commands](commands.md#marcsh-commands) or the engines' built-in commands.
 
 ## Test it before you publish
 
@@ -201,9 +249,9 @@ In a `matcher`, write names with letters, digits, `_`, `.` and `-`, and at most 
 ### What your hook gets
 
 - `${CLAUDE_PLUGIN_ROOT}` is a copy of the pack that marcsh makes, with its `skills/`, `commands/` and `hooks/` folders. Hooks may run any file of it, so the user's consent covers all of it.
-- Each command runs with `sh -c` in the user's project folder, with `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` set.
+- Each command runs with `sh -c` in the user's project folder, with `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` set. marcsh also sets `MARCSH_APPROVAL_MODE` (`normal`, `auto`, `yolo`, or `plan` in a plan turn; `normal` while auto or yolo is paused off a feature branch) and `MARCSH_AGENT` (the ID of the turn's agent, such as `acme/flows/asdd`). On Claude they hold the values the turn started with. On pi they hold the values at the time of the call.
 - `PreToolUse`, `PostToolUse` and `PostToolUseFailure` run on Claude and pi. Every other event runs on Claude only, and pi users get a warning.
-- A hook gets JSON on its input: `session_id`, `cwd`, `hook_event_name`, `tool_name` and `tool_input`, and also `tool_response` for `PostToolUse` or `error` for `PostToolUseFailure`. On pi, tools have Claude's names (`Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `LS`, `Agent`, `mcp__server__tool`), and Read, Edit and Write get a `file_path` as well as a `path`. `Task` and `Agent` name the same tool in a matcher.
+- A hook gets JSON on its input: `session_id`, `cwd`, `hook_event_name`, `tool_name` and `tool_input`, and also `tool_response` for `PostToolUse` or `error` for `PostToolUseFailure`. On pi the payload also has `permission_mode` (`normal`, `auto`, `yolo` or `plan`) and `agent` (the turn's agent ID). On Claude, `permission_mode` is Claude's own value (`default`, `plan`…), so read `MARCSH_APPROVAL_MODE` when the hook must work on both engines. On pi, tools have Claude's names (`Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `LS`, `Agent`, `mcp__server__tool`), and Read, Edit and Write get a `file_path` as well as a `path`. `Task` and `Agent` name the same tool in a matcher.
 - Exit code 2 blocks a call, and what you print to the error output is the reason. `{"decision": "block", "reason": "…"}` and `permissionDecision: "deny"` block too. Approvals (`allow`, `ask`, `approve`) and changed input have no effect: hooks only narrow.
 - `PostToolUse` runs only for a call that worked. A call that failed runs `PostToolUseFailure`, if you declared one.
 - Default time is 60 seconds on pi. A `PreToolUse` hook that times out blocks the call there.

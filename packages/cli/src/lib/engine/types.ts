@@ -1,5 +1,5 @@
-import { approvalModeLine, type ApprovalMode } from "../approval-policy";
-import { type BranchSource, resolveBranch } from "../git-branch";
+import { modeLine, type ApprovalMode, type LineMode } from "../approval-policy";
+import type { BranchSource } from "../git-branch";
 import type { AskQuestion } from "../ask-user-question";
 import type { Attachment } from "../attachments";
 import type { BackgroundHub } from "../background/hub";
@@ -87,17 +87,29 @@ export type TurnRequest = {
    */
   currentApprovalMode?: () => ApprovalMode;
   /**
+   * Nobody answers this turn's asks (headless `marcsh run`): every ask is denied. Normal's mode line says so, for the turn and its children.
+   * Absent: someone may approve, as in the TUI.
+   */
+  noApprover?: boolean;
+  /**
    * Reads whether the session is in plan mode now. A background subagent outlives the turn that started it: while this says plan, its
    * calls are blocked like a plan turn's (only the read-only tools run). Absent: the mode the turn started in (`mode`).
    */
   currentPlanMode?: () => boolean;
   /** The selected pack agent's generated plugin view (only its skills and commands): loaded for this turn next to marcsh's own plugin. */
   packPluginPath?: string;
+  /** The ID of the agent answering this turn (`build`, `<pack>/<file>`...): what a pack's hooks are told (`agent`, MARCSH_AGENT). */
+  agentId?: string;
   /**
    * The tool groups the selected agent does not get this turn. Only ever narrows: the engine removes these tools on top of what the
    * mode already offers, and the tools that are left still ask. Absent: the mode's own tools, exactly as before.
    */
   deniedTools?: Group[];
+  /**
+   * The named subagents the model may start this turn (pi: `Task` `agent`; Claude: the SDK's `agents`). Each only narrows: its tools are
+   * the turn's minus its own denied groups, and a read-only one only reads. Absent: none, and `Task` is exactly as before.
+   */
+  subagents?: TurnSubagent[];
   resumeRef?: string;
   /**
    * What the conversation named by `resumeRef` had cost in all so far. An engine whose reported cost is a running total that a resumed
@@ -115,6 +127,23 @@ export type TurnRequest = {
   signal: AbortSignal;
 };
 
+/** A named subagent as an engine runs it (see `turnSubagents` in agents.ts). */
+export type TurnSubagent = {
+  /** How the model addresses it: its file name without `.md`. */
+  name: string;
+  description?: string;
+  /** Appended to the child's system prompt. */
+  prompt?: string;
+  /** The model it asks for; the parent's is used when absent or unusable on the engine. */
+  model?: string;
+  /** `permission: read-only`: the child only reads (plan rules), whatever the parent's mode. */
+  readOnly: boolean;
+  /** The groups its `tools` field takes away, on top of the parent's. */
+  deniedTools?: Group[];
+  /** Its pack's plugin view: pi gives the child that pack's skills when they are loaded for the turn. Absent for the user's own. */
+  pluginDir?: string;
+};
+
 export type CompactRequest = {
   cwd: string;
   model: string;
@@ -127,12 +156,18 @@ export type CompactRequest = {
 /** What the engine reports of a compaction, each when it knows it. */
 export type CompactResult = { tokensBefore?: number; tokensAfter?: number };
 
+export type { LineMode };
+
+/** The line mode of a turn that is not in plan: its approval mode, normal's headless line when nobody approves. */
+export const approvalLineMode = (approvalMode: ApprovalMode | undefined, noApprover: boolean | undefined): ApprovalMode | "headless" | undefined =>
+  noApprover && approvalMode === "normal" ? "headless" : approvalMode;
+
 /**
- * The text an engine appends to its system prompt: the agent's prompt, then the approval mode line (a blank line apart). None when both are absent.
- * The line says whether auto and yolo are active or paused on `branch`; it is read only when there is a mode to describe.
+ * The text an engine appends to its system prompt: the agent's prompt, then the mode line (`modeLine`, a blank line apart). No mode line
+ * when the caller gives no mode; none at all when both are absent. `branch` is read only for auto and yolo.
  */
-export function systemPromptWithMode(agentPrompt: string | undefined, approvalMode: ApprovalMode | undefined, branch: BranchSource): string | undefined {
-  const line = approvalMode && approvalMode !== "normal" ? approvalModeLine(approvalMode, resolveBranch(branch)) : undefined;
+export function systemPromptWithMode(agentPrompt: string | undefined, mode: LineMode | undefined, branch: BranchSource): string | undefined {
+  const line = mode ? modeLine(mode, branch) : undefined;
   return [agentPrompt, line].filter(Boolean).join("\n\n") || undefined;
 }
 

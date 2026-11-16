@@ -20,6 +20,8 @@ See [Configuration](configuration.md) for the MCP details and [Security](securit
 
 On pi, a command (`bash`) or a subagent (`Task`) that runs longer than 3 minutes is stopped. The model gets an error that says it timed out. For a command it suggests a larger `timeout`, and it suggests running the work in the background (`bg_start`, or `Task` with `background: true`) only when the session can do that, so not in Plan or in `marcsh run`. A command that sets its own `timeout` keeps it. Time a subagent spends waiting for your approval does not count.
 
+On both engines, marcsh finds the processes the agent's tools left running (leftover processes) and lists them in `/ps`. On pi the agent also has `proc_list` and `proc_stop` for them; on Claude it has no such tool. See [What marcsh may stop](security.md#what-marcsh-may-stop).
+
 ## Choose an engine
 
 Type `/engine` and pick `Claude (Agent SDK)` or `pi`. marcsh confirms with a message like `New sessions will use pi`, and remembers the choice for the next time you start it.

@@ -164,7 +164,9 @@ describe("installPack", () => {
       commands: ["ship"],
       // `{"hooks":{}}` declares nothing to run, so the folder is shown as unusable (see pack-hooks.test.ts for the enabled flow).
       hooks: { usable: false, reason: "hooks.json declares no command hooks" },
-      ignored: [".mcp.json", "subagent helper.md"],
+      // A `mode: subagent` file is a named subagent (M1): listed by its address, no longer as a part marcsh does not use.
+      subagents: [{ name: "helper", permission: "build" }],
+      ignored: [".mcp.json"],
       warnings: [],
     });
 
@@ -293,6 +295,30 @@ describe("installPack", () => {
   test("an agent file over 256 KB rejects the pack", async () => {
     makeRepo("acme/big", { "agents/a.md": "Do it.", "agents/huge.md": "x".repeat(256 * 1024 + 1) });
     await expect(installPack("acme/big", options())).rejects.toThrow(/256 KB/);
+  });
+
+  // R1-3: a pack command that names an agent runs as it, so the preview says which one, as the loader would pick it.
+  test("the preview names the agent each command runs as", async () => {
+    makeRepo("acme/named", {
+      ...goodPack,
+      "commands/spec.md": "---\nagent: reviewer\n---\nSpec",
+      "commands/byname.md": "---\nagent: REVIEWER\n---\nSpec",
+      "commands/tobuild.md": "---\nagent: build\n---\nB",
+      "commands/lost.md": "---\nagent: nobody\n---\nL",
+      "commands/blank.md": "---\nagent:\n---\nE",
+      "commands/odd.md": "---\nagent: \u001b[31mx\n---\nE",
+    });
+    let preview: PackPreview | undefined;
+    await installPack("acme/named", options((p) => ((preview = p), false)));
+    expect(preview!.commands).toEqual([
+      "blank → the selected agent (its agent: is empty)",
+      "byname → Reviewer",
+      "lost → the selected agent (no agent “nobody”)",
+      "odd → the selected agent (no agent “[31mx”)",
+      "ship",
+      "spec → Reviewer",
+      "tobuild → Build",
+    ]);
   });
 
   test("a skill or command that declares hooks rejects the pack; allowed-tools is a warning", async () => {

@@ -53,6 +53,7 @@ const { createMemoryRouter, RouterProvider } = await import("react-router");
 const { RootLayout } = await import("../layouts/root-layout");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { NORMAL_MODE_LINE } = await import("../lib/approval-policy");
 const { engines } = await import("../lib/engine");
 const { preferencesPath, setAgentId, setDefaultEngine } = await import("../lib/preferences");
 const { disablePackHooks, enablePackHooks, inspectPackHooks, installPack, packPluginDir, packsRoot } = await import("../lib/packs");
@@ -159,7 +160,7 @@ describe("a Claude turn with a pack agent (S11, S12)", () => {
       { type: "local", path: marcshPluginPath() },
       { type: "local", path: packPluginDir("acme/flows") },
     ]);
-    expect(options.systemPrompt.append).toBe("Work test-first.");
+    expect(options.systemPrompt.append).toBe(`Work test-first.\n\n${NORMAL_MODE_LINE}`);
   });
 
   test("the view holds skills and commands only: the pack's hooks, MCP servers and agents never reach the engine", async () => {

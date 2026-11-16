@@ -1,6 +1,6 @@
 import type { RunArgs } from "../cli-args";
 import { processIo } from "../cli/io";
-import { agentModelFits, findAgent, loadAgents, type Agent } from "../lib/agents";
+import { agentModelFits, findAgent, loadAgents, turnSubagents, type Agent } from "../lib/agents";
 import type { ChatMessage } from "../lib/chat-types";
 import { getEngine, getPiRuntime, unknownEngine } from "../lib/engine";
 import { listAvailablePiModels, pickTurnPiModel } from "../lib/engine/pi-models";
@@ -40,6 +40,12 @@ const plain = (text: string): string => escapeTranscriptText(Bun.stripANSI(text)
 /** The message and the standard input as one prompt: the input follows the message after a blank line. */
 function joinMessage(message: string, stdin: string | undefined): string {
   return [message.trim(), stdin?.trim() ?? ""].filter(Boolean).join("\n\n");
+}
+
+/** The named subagents a run of `agent` may start, as the turn request's `subagents` (none: no key). */
+function subagentsOf(agent: Agent) {
+  const subagents = turnSubagents(agent);
+  return subagents.length > 0 ? { subagents } : {};
 }
 
 /** The agent named by `--agent` (its id, its name, or the file name inside its id), or the selected one when none is named. */
@@ -214,10 +220,13 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
         model,
         systemPromptAppend: agent.prompt,
         // Always normal: nobody is there to approve, so every ask is denied (above), and the user's saved `approvalMode` (auto, yolo) is
-        // never read here, so an unattended run cannot edit files or commit without approval.
+        // never read here, so an unattended run cannot edit files or commit without approval. The mode line says asks are denied.
         approvalMode: "normal",
+        noApprover: true,
         ...(agent.pluginDir ? { packPluginPath: agent.pluginDir } : {}),
+        agentId: agent.id,
         ...(agent.tools && agent.tools.deny.length > 0 ? { deniedTools: agent.tools.deny } : {}),
+        ...subagentsOf(agent),
         resumeRef,
         ...(resumeRef ? { priorCostUsd } : {}),
         signal: abortController.signal,
