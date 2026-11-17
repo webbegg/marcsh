@@ -27,8 +27,8 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 const marker = () => join(cwd, "marker-written.txt");
 const extension = (name: string) => join(cwd, ".pi", "extensions", name);
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
-const CHANGED = "This project's pi files changed since you trusted them";
+const TITLE = "Trust this project's files?";
+const CHANGED = "This project's files changed since you trusted them";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-review-"));
@@ -124,7 +124,7 @@ const trustThenChange = () => {
 };
 
 describe("/trust race (verifier)", () => {
-  test("files changed while the /trust listing is open: t + Enter stores nothing new", async () => {
+  test("files changed while the /trust listing is open: t + Enter stores nothing new and shows the new list", async () => {
     trustThenChange();
     const before = JSON.stringify(getStorage().getProjectReview(cwd));
     await openPiSession();
@@ -138,7 +138,10 @@ describe("/trust race (verifier)", () => {
     await press("t");
     await press("RETURN");
     await settle(200);
-    expect(frame()).toContain("changed while you were reviewing");
+    // The new list replaces the old one (S1): the late file is listed, and it must be read and answered again.
+    expect(frame()).toContain(CHANGED);
+    expect(frame()).toContain("[added] .pi/extensions/late.ts");
+    expect(frame()).not.toContain("press Enter to trust");
     expect(JSON.stringify(getStorage().getProjectReview(cwd))).toBe(before);
     expect(existsSync(marker())).toBe(false);
   }, 30000);
