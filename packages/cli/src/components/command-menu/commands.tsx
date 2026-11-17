@@ -18,7 +18,8 @@ import { runPackCommand } from "../dialogs/pack-dialogs";
 import { openHelp } from "../dialogs/help-dialog";
 import { ProfileDialogContent } from "../dialogs/profile-dialog";
 import { availableSubagents, findAgent, loadSubagents } from "../../lib/agents";
-import { parseProfileCommand, runProfileCommand } from "../../lib/profiles-command";
+import { parseProfileCommand, runProfileCommand, type ProfileEnv } from "../../lib/profiles-command";
+import { getClaudeModel } from "../../lib/preferences";
 import { branchState } from "../../lib/git-branch";
 import { transcriptView, transcriptViewKey, type TranscriptViewKey } from "../../providers/transcript-view";
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
@@ -176,6 +177,8 @@ export const COMMANDS: Command[] = [
     action: (ctx) => {
       ctx.dialog.open({
         title: "Project Trust",
+        // Wide: the choice rows have a label, a current-state marker and a hint in three columns.
+        width: "wide",
         children: <TrustDialogContent cwd={ctx.cwd} />,
       })
     },
@@ -322,14 +325,23 @@ export const COMMANDS: Command[] = [
     argumentHint: "[use <name> | default <name> | clear]",
     action: (ctx) => {
       // `/profile` shows the routing in force; `use`, `default` and `clear` change it (see `lib/profiles-command.ts`).
-      const outcome = runProfileCommand(parseProfileCommand(ctx.args), {
+      const env: ProfileEnv = {
         engine: ctx.engine,
         setPiModel: ctx.setPiModel,
         setClaudeModel: ctx.setModel,
         subagents: () => availableSubagents(findAgent(ctx.reloadAgents(), ctx.agentId), loadSubagents()).map((sub) => ({ name: sub.address, ...(sub.model ? { model: sub.model } : {}) })),
-      });
+        // The models a starter file uses: pi's current model, and the Claude model last chosen.
+        piModel: ctx.piModel,
+        claudeModel: getClaudeModel(),
+      };
+      const outcome = runProfileCommand(parseProfileCommand(ctx.args), env);
       if ("toast" in outcome) return ctx.toast.show(outcome.toast);
-      ctx.dialog.open({ title: "Model Profile", children: <ProfileDialogContent lines={outcome.show} /> });
+      // With no profiles file the dialog offers to create a starter one; the file is made only when the user confirms.
+      ctx.dialog.open({
+        title: "Model Profile",
+        width: "wide",
+        children: <ProfileDialogContent lines={outcome.show} onCreate={outcome.create ? () => runProfileCommand({ kind: "create-starter" }, env) : undefined} />,
+      });
     },
   },
   {

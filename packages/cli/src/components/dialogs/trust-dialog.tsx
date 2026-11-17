@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useDialog } from "../../providers/dialog";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useToast } from "../../providers/toast";
@@ -8,6 +8,7 @@ import { DialogSearchList } from "../dialog-search-list";
 import { TrustPrompt } from "../trust-prompt";
 import type { TrustRequest } from "../../hooks/use-chat";
 import { stripControlChars } from "../ui-prompts";
+import { fitText } from "../../lib/fit-text";
 import {
   canonical,
   diffReview,
@@ -34,6 +35,15 @@ const CHOICES: Choice[] = [
   { id: "trusted", label: "Trust", hint: "use its pi files, commands and git status" },
   { id: "forget", label: "Forget", hint: "back to undecided" },
 ];
+
+// The choice rows are three columns: the label, a marker for the state in force, and the hint. The label column fits the longest
+// label ("Don't trust") and a gap; the marker column fits "• current" and a gap. A hint that does not fit ends with "…".
+const LABEL_COLUMN = 13;
+const MARK_COLUMN = 11;
+const CURRENT_MARK = "• current";
+// The dialog is opened wide (see the `/trust` command): its text area is the dialog's width less its padding.
+const DIALOG_WIDTH = 100;
+const DIALOG_PADDING = 8;
 
 const DECISION_TEXT = { trusted: "trusted", untrusted: "not trusted" } as const;
 const PARTS: readonly TrustPart[] = ["pi", "command", "git"];
@@ -127,6 +137,8 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
   const piUnreadable = useMemo(() => unreadablePiFiles(project.resources).length > 0, [project]);
   // With an unreadable pi file there is nothing marcsh can show to trust.
   const choices = useMemo(() => (piUnreadable ? CHOICES.filter((choice) => choice.id !== "trusted") : CHOICES), [piUnreadable]);
+  const { width: terminalWidth } = useTerminalDimensions();
+  const hintWidth = Math.max(8, Math.min(DIALOG_WIDTH, terminalWidth - 4) - DIALOG_PADDING - LABEL_COLUMN - MARK_COLUMN - 1);
   const now = nowText(current, reviewed, project);
   const effective = current === "trusted" && now !== "Now: trusted" ? null : current;
 
@@ -224,17 +236,23 @@ export const TrustDialogContent = ({ cwd, store }: Props) => {
         items={choices}
         onSelect={handleSelect}
         filterFn={(choice, query) => `${choice.label} ${choice.hint}`.toLowerCase().includes(query.toLowerCase())}
-        renderItem={(choice, isSelected) => (
-          <box flexDirection="row" gap={1} overflow="hidden">
-            <text selectable={false} flexShrink={0} fg={isSelected ? "black" : "white"}>
-              {choice.id === effective || (choice.id === "forget" && current === null) ? " • " : "   "}
-              {choice.label}
-            </text>
-            <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-              {choice.hint}
-            </text>
-          </box>
-        )}
+        renderItem={(choice, isSelected) => {
+          // The mark follows the stored state (what is in force), never the cursor: the highlight is the cursor.
+          const inForce = choice.id === effective || (choice.id === "forget" && current === null);
+          return (
+            <box flexDirection="row" overflow="hidden" paddingLeft={1}>
+              <text selectable={false} flexShrink={0} width={LABEL_COLUMN} fg={isSelected ? "black" : "white"}>
+                {choice.label}
+              </text>
+              <text selectable={false} flexShrink={0} width={MARK_COLUMN} fg={isSelected ? "black" : "green"} attributes={TextAttributes.BOLD}>
+                {inForce ? CURRENT_MARK : ""}
+              </text>
+              <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
+                {fitText(choice.hint, hintWidth)}
+              </text>
+            </box>
+          );
+        }}
         getKey={(choice) => choice.id}
         placeholder="Search"
         emptyText="No matching choices"

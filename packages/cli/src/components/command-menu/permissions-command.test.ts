@@ -1,6 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { APPROVAL_MODES } from "../../lib/approval-policy";
-import { PERMISSIONS_USAGE, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
+import { PERMISSIONS_USAGE, parsePermissionsCommand, pausedLabel, sessionModeMessage } from "./permissions-command";
+
+describe("pausedLabel", () => {
+  test("is empty for normal, for a feature branch and when no branch is known yet", () => {
+    expect(pausedLabel("normal", { kind: "default", branch: "main" })).toBe("");
+    expect(pausedLabel("auto", { kind: "feature", branch: "feat/x" })).toBe("");
+    expect(pausedLabel("yolo", undefined)).toBe("");
+  });
+
+  test("names the default branch, or the reason when there is no branch", () => {
+    expect(pausedLabel("auto", { kind: "default", branch: "main" })).toBe("(paused on main)");
+    expect(pausedLabel("yolo", { kind: "none", reason: "detached HEAD" })).toBe("(paused: detached HEAD)");
+  });
+
+  test("escapes control characters of the branch name", () => {
+    expect(pausedLabel("auto", { kind: "default", branch: "ma\u001b[31min\u202e" })).toBe("(paused on ma\\u001b[31min\\u202e)");
+  });
+});
 
 describe("sessionModeMessage", () => {
   const feature = { kind: "feature", branch: "feat/x" } as const;

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeProfiles, getSessionProfile, loadProfiles, parseProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
+import { activeProfiles, createStarterProfiles, getSessionProfile, loadProfiles, parseProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
 
 let dir: string;
 let path: string;
@@ -205,5 +205,97 @@ describe("the profiles in force", () => {
     expect(activeProfiles(file)[0]!.name).toBe("deep");
     setSessionProfile(undefined);
     expect(getSessionProfile()).toBeUndefined();
+  });
+});
+
+describe("createStarterProfiles (S17)", () => {
+  const models = { engine: "pi", piModel: "openai/gpt-5", claudeModel: "sonnet" };
+
+  test("creates the file, and the profile reader accepts it with one default profile", () => {
+    const result = createStarterProfiles(models, path);
+    expect(result).toEqual({ ok: true, path });
+    const loaded = loadProfiles(path);
+    expect(loaded.exists).toBe(true);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.file.default).toBe("default");
+    expect(Object.keys(loaded.file.profiles)).toEqual(["default"]);
+    expect(readFileSync(path, "utf8").endsWith("\n")).toBe(true);
+  });
+
+  test("the profile uses the current models: the engine's own is the primary, the other engine's is a fallback that its engine skips", () => {
+    createStarterProfiles(models, path);
+    const onPi = loadProfiles(path).file.profiles.default!.primary!;
+    expect(onPi.model).toBe("openai/gpt-5");
+    expect(onPi.fallback?.map((step) => step.model)).toEqual(["sonnet"]);
+
+    const other = join(dir, "claude.json");
+    createStarterProfiles({ ...models, engine: "claude" }, other);
+    const onClaude = loadProfiles(other).file.profiles.default!.primary!;
+    expect(onClaude.model).toBe("sonnet");
+    expect(onClaude.fallback?.map((step) => step.model)).toEqual(["openai/gpt-5"]);
+  });
+
+  test("an empty pi model falls back to pi's default model", () => {
+    createStarterProfiles({ ...models, piModel: "" }, path);
+    expect(loadProfiles(path).file.profiles.default!.primary!.model).toBe("anthropic/claude-opus-5-5");
+  });
+
+  test("the file explains itself in a top-level $comment, which the reader ignores, and /profile default keeps it", () => {
+    createStarterProfiles(models, path);
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    expect(typeof raw.$comment).toBe("string");
+    expect(raw.$comment).toContain("primary");
+    expect(raw.$comment).toContain("/profile use");
+    expect(loadProfiles(path).problems).toEqual([]);
+    writeDefaultProfile("default", path);
+    expect(JSON.parse(readFileSync(path, "utf8")).$comment).toBe(raw.$comment);
+  });
+
+  test("creates the parent folder when it is missing", () => {
+    const nested = join(dir, "a", "b", "profiles.json");
+    expect(createStarterProfiles(models, nested)).toEqual({ ok: true, path: nested });
+    expect(loadProfiles(nested).problems).toEqual([]);
+  });
+
+  test("never overwrites: an existing file, even an empty or invalid one, stays as it is", () => {
+    for (const content of ["", "not json", JSON.stringify({ version: 1, profiles: { mine: {} } })]) {
+      writeFileSync(path, content);
+      const result = createStarterProfiles(models, path);
+      expect(result.ok).toBe(false);
+      expect(result).toMatchObject({ ok: false, reason: "exists" });
+      expect((result as { message: string }).message).toContain(path);
+      expect((result as { message: string }).message).toContain("left as it is");
+      expect(readFileSync(path, "utf8")).toBe(content);
+    }
+  });
+
+  test("a dangling symlink at the path is not followed and not replaced", () => {
+    const target = join(dir, "elsewhere.json");
+    symlinkSync(target, path);
+    expect(createStarterProfiles(models, path)).toMatchObject({ ok: false, reason: "exists" });
+    expect(() => readFileSync(target)).toThrow();
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a folder that cannot be written says permission denied, and where to point MARCSH_PROFILES_PATH", () => {
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    chmodSync(locked, 0o500);
+    try {
+      const result = createStarterProfiles(models, join(locked, "profiles.json"));
+      expect(result).toMatchObject({ ok: false, reason: "denied" });
+      expect((result as { message: string }).message).toContain("permission denied");
+      expect((result as { message: string }).message).toContain("MARCSH_PROFILES_PATH");
+      expect(readdirSync(locked)).toEqual([]);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  test("a path that is a folder, or under a file, reports the failure without throwing", () => {
+    mkdirSync(path);
+    expect(createStarterProfiles(models, path)).toMatchObject({ ok: false });
+    const file = join(dir, "plain");
+    writeFileSync(file, "x");
+    expect(createStarterProfiles(models, join(file, "profiles.json"))).toMatchObject({ ok: false, reason: "failed" });
   });
 });

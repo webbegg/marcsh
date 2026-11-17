@@ -1,7 +1,7 @@
 import { agentModelFits } from "./agents";
 import { primaryModel, routingReport } from "./model-routing";
-import { activeProfiles, getSessionProfile, isProfileName, loadProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
-import { SUPPORTED_CHAT_MODELS } from "./models";
+import { activeProfiles, createStarterProfiles, getSessionProfile, isProfileName, loadProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
+import { DEFAULT_CHAT_MODEL_ID, SUPPORTED_CHAT_MODELS } from "./models";
 
 export const PROFILE_USAGE = "Usage: /profile [use <name> | default <name> | clear]";
 
@@ -14,6 +14,8 @@ export type ProfileCommand =
   | { kind: "default"; name: string }
   /** Drops the session's profile: the default one (if any) applies again. */
   | { kind: "clear" }
+  /** Creates a starter profiles file. Never typed: only the `/profile` dialog's confirm row runs it. */
+  | { kind: "create-starter" }
   | { kind: "usage"; message: string };
 
 const usage = (why: string): ProfileCommand => ({ kind: "usage", message: `${why} ${PROFILE_USAGE}` });
@@ -36,7 +38,10 @@ export function parseProfileCommand(args: string): ProfileCommand {
 }
 
 /** What the command did for the user to see: a message to toast, or the lines of the routing to show in a dialog. */
-export type ProfileOutcome = { toast: { variant: "success" | "info" | "error"; message: string } } | { show: string[] };
+export type ProfileOutcome =
+  | { toast: { variant: "success" | "info" | "error"; message: string } }
+  /** `create`: there is no profiles file, so the dialog offers to create a starter one. */
+  | { show: string[]; create?: true };
 
 /** What running the command needs from the app. */
 export type ProfileEnv = {
@@ -49,6 +54,9 @@ export type ProfileEnv = {
   subagents: () => ReadonlyArray<{ name: string; model?: string }>;
   /** The profiles file; default: `profilesPath()`. */
   path?: string;
+  /** The models a starter file uses: pi's model ("provider/id") and the Claude alias. */
+  piModel?: string;
+  claudeModel?: string;
 };
 
 const names = (profiles: Record<string, unknown>) => {
@@ -70,7 +78,15 @@ export function runProfileCommand(command: ProfileCommand, env: ProfileEnv): Pro
     const lines = routingReport({ active: activeProfiles(file), subagents: env.subagents(), engine, problems: loaded.problems });
     if (!loaded.exists) lines.unshift(`There is no profiles file yet (${path}). Create it to route models: see the configuration guide.`);
     else if (Object.keys(file.profiles).length > 0) lines.push(`Profiles in the file: ${names(file.profiles)}`);
-    return { show: lines };
+    return loaded.exists ? { show: lines } : { show: lines, create: true };
+  }
+
+  if (command.kind === "create-starter") {
+    const created = createStarterProfiles({ engine: env.engine, piModel: env.piModel ?? "", claudeModel: env.claudeModel ?? DEFAULT_CHAT_MODEL_ID }, path);
+    if (!created.ok) return error(created.message);
+    const shown = runProfileCommand({ kind: "show" }, env);
+    const lines = "show" in shown ? shown.show : [];
+    return { show: [`Created ${path}: a starter file with one profile, "default". It changes nothing yet; edit it to route models (see the configuration guide).`, ...lines] };
   }
 
   if (command.kind === "clear") {
