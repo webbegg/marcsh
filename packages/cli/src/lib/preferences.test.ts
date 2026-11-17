@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   getAgentId,
+  getClaudeModel,
   getDefaultApprovalMode,
   getDefaultEngine,
   getFavoriteModels,
@@ -15,6 +16,7 @@ import {
   readPreferences,
   recordRecentModel,
   setAgentId,
+  setClaudeModel,
   setDefaultApprovalMode,
   setDefaultEngine,
   setFavoriteModels,
@@ -304,5 +306,27 @@ describe("paste preference", () => {
     expect(getPasteMode(path)).toBe("full");
     writeRaw(JSON.stringify({ paste: "huge" }));
     expect(getPasteMode(path)).toBe("compact");
+  });
+});
+
+describe("Claude model preference", () => {
+  test("is opus by default and when the file is missing", () => {
+    expect(getClaudeModel(path)).toBe("opus");
+  });
+
+  test("keeps the choice and leaves the other settings alone", () => {
+    updatePreferences({ piModel: "anthropic/claude-opus-5-5" }, path);
+    setClaudeModel("haiku", path);
+    expect(getClaudeModel(path)).toBe("haiku");
+    expect(getPiModel(path)).toBe("anthropic/claude-opus-5-5");
+  });
+
+  test("an unknown or malformed value is opus", () => {
+    writeRaw(JSON.stringify({ claudeModel: "gpt-9" }));
+    expect(getClaudeModel(path)).toBe("opus");
+    writeRaw(JSON.stringify({ claudeModel: 4 }));
+    expect(getClaudeModel(path)).toBe("opus");
+    writeRaw("not json");
+    expect(getClaudeModel(path)).toBe("opus");
   });
 });

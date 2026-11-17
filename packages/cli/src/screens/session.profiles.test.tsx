@@ -90,6 +90,8 @@ afterEach(async () => {
   setSessionProfile(undefined);
   rmSync(profilesFile, { force: true });
   rmSync(agentsDir, { recursive: true, force: true });
+  // The Claude model a test picks is saved now: the next test starts on the default again.
+  rmSync(ENV.MARCSH_PREFERENCES_PATH, { force: true });
   if (screen && !(screen.renderer as any).isDestroyed) await act(async () => screen!.renderer.destroy());
   screen = null;
 });

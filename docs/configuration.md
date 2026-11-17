@@ -28,6 +28,7 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
   "themeName": "Nightfox",
   "defaultEngine": "pi",
   "piModel": "anthropic/claude-opus-5-5",
+  "claudeModel": "sonnet",
   "agent": "build",
   "approvalMode": "normal",
   "favoriteModels": { "claude": ["sonnet"], "pi": ["anthropic/claude-opus-5-5"] },
@@ -42,6 +43,7 @@ marcsh never reads or writes pi's usual `~/.pi/agent` folder.
 | `themeName` | The color theme, by name. | `/theme` |
 | `defaultEngine` | The engine new sessions start on: `claude` or `pi`. Default: `pi`. | `/engine` |
 | `piModel` | The model pi uses, as `provider/model-id`. | `/models` on pi |
+| `claudeModel` | The model Claude uses: `opus`, `sonnet` or `haiku`. Default: `opus`. | `/models` and `F2` on Claude |
 | `agent` | The ID of the selected agent. | `Tab` or `/agents` |
 | `approvalMode` | The permission mode new sessions start in: `normal`, `auto` or `yolo`. Default: `normal`. | `/permissions default <mode>`, or "Use … for new sessions" in `/permissions` |
 | `favoriteModels` | The models you marked as favorites, for each engine (`claude` and `pi`), in the order you marked them. | `Ctrl+F` in `/models` |
@@ -53,7 +55,7 @@ A value marcsh does not understand is ignored, and the default is used. Use the 
 
 The `system` notification is shown by `osascript` and reads `<session title>: done` (or `failed`, when the turn ended with an error). It is not sent when you interrupt a turn with `Esc`. A `favoriteModels` or `recentModels` entry for a model that is no longer offered is kept in the file and not shown.
 
-The Claude model (`opus`, `sonnet`, `haiku`) is not saved. Each launch starts on `opus`.
+Both engines start on the model you chose last. A session you open again goes on with the model its last turn used, for this run only; the saved choice does not change.
 
 A permission mode you choose with `/permissions` lasts for the app session. Only the default is saved. See [Security](security.md#permission-modes).
 

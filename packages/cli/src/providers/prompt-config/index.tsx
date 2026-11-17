@@ -2,16 +2,18 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import type { ReactNode } from "react";
 import type { ModeType } from "../../lib/modes";
 import { findAgent, loadAgents, nextAgent, type Agent } from "../../lib/agents";
-import { DEFAULT_CHAT_MODEL_ID, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
+import { isChatModelId, lastUsedModel, PI_DEFAULT_MODEL, type SupportedChatModelId } from "../../lib/models";
 import { getPiRuntime, type EngineId } from "../../lib/engine";
 import { DEFAULT_APPROVAL_MODE, type ApprovalMode } from "../../lib/approval-policy";
 import { listAvailablePiModels, pickPiModel, pickTurnPiModel } from "../../lib/engine/pi-models";
 import {
   getAgentId,
+  getClaudeModel,
   getDefaultApprovalMode,
   getDefaultEngine,
   getPiModel,
   setAgentId,
+  setClaudeModel as persistClaudeModel,
   setDefaultApprovalMode as persistDefaultApprovalMode,
   setDefaultEngine as persistDefaultEngine,
   setPiModel as persistPiModel,
@@ -37,8 +39,16 @@ type PromptConfigContextValue = {
   cycleAgent: () => Agent;
   /** Reads the agent files again (one may have been added or removed) and resolves the new list. */
   reloadAgents: () => Agent[];
+  /** The Claude model Claude turns use; starts as the one the user last chose (kept in the preferences). */
   model: SupportedChatModelId;
+  /** Picks the Claude model for the following turns and for new Claude sessions (kept in the preferences). */
   setModel: (model: SupportedChatModelId) => void;
+  /**
+   * Makes an opened (resumed) session start on the model it used last, for this run only: the saved choices stay as they are. A
+   * model that is not usable on the session's engine (not a Claude alias, not a pi ref, no model named) leaves the current one;
+   * a pi model that has no credentials any more is replaced by the saved pick at the next check.
+   */
+  adoptSessionModel: (engine: string, messages: readonly { metadata?: { model?: string } }[]) => void;
   /** The engine new sessions start on; an open session keeps the one it was created with. */
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
@@ -71,6 +81,9 @@ function withinLimit<T>(work: Promise<T>, ms: number): Promise<T> {
     work.then(resolve, reject).finally(() => clearTimeout(timer));
   });
 }
+
+/** A pi model ref: "provider/id". */
+const PI_REF = /^[^/\s]+\/\S+$/;
 
 const PromptConfigContext = createContext<PromptConfigContextValue | null>(null);
 
@@ -116,7 +129,12 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     return loaded;
   }, []);
 
-  const [model, setModel] = useState<SupportedChatModelId>(DEFAULT_CHAT_MODEL_ID);
+  const [model, setModelState] = useState<SupportedChatModelId>(() => getClaudeModel());
+
+  const setModel = useCallback((next: SupportedChatModelId) => {
+    setModelState(next);
+    persistClaudeModel(next);
+  }, []);
 
   const [defaultEngine, setDefaultEngineState] = useState<EngineId>(() => getDefaultEngine());
 
@@ -147,8 +165,12 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
     setPiModelStatus(status);
   }, []);
 
+  // The pi model a resumed session used: tried first at each check, until the user picks another.
+  const sessionPiModel = useRef<string | undefined>(undefined);
+
   const setPiModel = useCallback((next: string) => {
     preferredPiModel.current = next;
+    sessionPiModel.current = undefined;
     applyPiModel(next);
     persistPiModel(next);
   }, [applyPiModel]);
@@ -163,14 +185,27 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
         (async () => listAvailablePiModels(await getPiRuntime()))(),
         piModelCheck.timeoutMs,
       );
-      const next = pickPiModel(preferredPiModel.current, available);
+      const session = sessionPiModel.current;
+      const wanted = session && available.some((option) => option.ref === session) ? session : preferredPiModel.current;
+      const next = pickPiModel(wanted, available);
       if (check === latestCheck.current) applyPiModel(next, available.length > 0 ? "ready" : "none");
-      return pickTurnPiModel(turnModel, preferredPiModel.current, available);
+      return pickTurnPiModel(turnModel, wanted, available);
     } catch {
       // No runtime to ask, or it took too long: the line names no model (the built-in default is only a guess), nothing is
       // shown as a toast, and a turn still goes out with what is in use so it reports what is missing.
       if (check === latestCheck.current) setPiModelStatus("unavailable");
       return piModelInUse.current;
+    }
+  }, [applyPiModel]);
+
+  const adoptSessionModel = useCallback((engine: string, messages: readonly { metadata?: { model?: string } }[]) => {
+    const used = lastUsedModel(messages);
+    if (engine === "pi") {
+      if (!used || !PI_REF.test(used)) return;
+      sessionPiModel.current = used;
+      applyPiModel(used);
+    } else if (engine === "claude" && isChatModelId(used)) {
+      setModelState(used);
     }
   }, [applyPiModel]);
 
@@ -190,6 +225,7 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
         reloadAgents,
         model, 
         setModel,
+        adoptSessionModel,
         defaultEngine,
         setDefaultEngine,
         approvalMode,
