@@ -22,14 +22,7 @@ Options for the interface:
   -s, --session <id>      Open the session with this id
       --engine <engine>   The engine new sessions use on this launch: claude or pi
 
-Options for run:
-  -c, --continue          Continue the most recent session of this folder
-  -s, --session <id>      Continue the session with this id
-  -m, --model <model>     The model to use
-      --agent <name>      The agent to use (its id or name)
-      --engine <engine>   The engine of a new session: claude or pi
-      --format <format>   text (the final reply, default) or json (one JSON object per line)
-  Text on standard input is added to the message. Exit codes: 0 done, 1 the turn failed, 2 wrong usage, 130 interrupted.
+Run options are in marcsh run --help.
 
 Other options:
   --version  Print the version and exit
@@ -38,9 +31,29 @@ Other options:
 
 export const COMMAND_NAMES = ["session", "models", "mcp", "stats", "upgrade"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
+/** The commands with their own `--help`: those above, and `run`, which has its own parser. */
+export type HelpTopic = CommandName | "run";
+
+/** What a usage mistake prints (exit 2): the mistake and where the help is, not the whole help (S19). */
+export const usageErrorText = (message: string) => `marcsh: ${message}\nsee marcsh --help`;
 
 /** What `marcsh <command> --help` prints. */
-export const COMMAND_USAGE: Record<CommandName, string> = {
+export const COMMAND_USAGE: Record<HelpTopic, string> = {
+  run: `Usage: marcsh run [message...] [options]
+
+Runs one turn without the interface and prints the reply. Text on standard input is added to the message.
+Nobody is there to answer an approval request, so every approval request is denied: the tool does not run, and the turn
+goes on without it. Reads, and tools you chose to always allow, still run. run always uses the normal permission mode.
+
+  -c, --continue          Continue the most recent session of this folder
+  -s, --session <id>      Continue the session with this id
+  -m, --model <model>     The model to use
+      --agent <name>      The agent to use (its id or name)
+      --engine <engine>   The engine of a new session: claude or pi
+      --format <format>   text (the final reply, default) or json (one JSON object per line)
+
+Exit codes: 0 done, 1 the turn failed, 2 wrong usage, 130 interrupted.
+`,
   session: `Usage: marcsh session list [--json]
        marcsh session delete <id>
        marcsh session export <id> [--format md|json] [-o file] [--force]
@@ -132,7 +145,7 @@ export type CliArgs =
   | StatsArgs
   | UpgradeArgs
   | { kind: "version" }
-  | { kind: "help"; command?: CommandName }
+  | { kind: "help"; command?: HelpTopic }
   | { kind: "error"; message: string };
 
 type Flag = { long: string; short?: string; value: boolean };
@@ -187,7 +200,7 @@ type Scanned = {
  * Reads the words and options of `argv` from `start`. The first `--version` (unless the command takes it), `--help` or unknown
  * option decides and is returned as the result; `--` makes everything after it a word.
  */
-function scan(argv: readonly string[], start: number, flags: readonly Flag[], command?: CommandName): Scanned | CliArgs {
+function scan(argv: readonly string[], start: number, flags: readonly Flag[], command?: HelpTopic): Scanned | CliArgs {
   const scanned: Scanned = { words: [], beforeDash: -1, dashed: false, values: new Map(), present: new Set() };
   const { words, values, present } = scanned;
 
@@ -327,7 +340,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   if (isCommand(argv[0])) return parseCommand(argv[0], argv);
 
   const running = argv[0] === "run";
-  const scanned = scan(argv, running ? 1 : 0, running ? RUN_FLAGS : TUI_FLAGS);
+  const scanned = scan(argv, running ? 1 : 0, running ? RUN_FLAGS : TUI_FLAGS, running ? "run" : undefined);
   if (!isScanned(scanned)) return scanned;
   const { words, values } = scanned;
   const continuing = scanned.present.has("continue");

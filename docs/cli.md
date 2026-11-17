@@ -1,6 +1,6 @@
 # Command line
 
-marcsh starts the interface, runs one turn without it, or does one job and exits. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`. `marcsh <command> --help` prints the help of one command.
+marcsh starts the interface, runs one turn without it, or does one job and exits. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`. `marcsh <command> --help` prints the help of one command, `marcsh run --help` included.
 
 ```
 marcsh [dir] [options]
@@ -12,7 +12,7 @@ marcsh stats [--days N] [--json]
 marcsh upgrade [--version vX]
 ```
 
-A wrong option or value prints the error with the usage and exits with code `2`. `run`, `session`, `models`, `mcp`, `stats` and `upgrade` are commands only as the first word; to start the interface in a folder with one of these names, write `marcsh ./models`. `--` ends the options, so what follows is plain words.
+A wrong option or value prints the error and `see marcsh --help` on standard error, and exits with code `2`. `run`, `session`, `models`, `mcp`, `stats` and `upgrade` are commands only as the first word; to start the interface in a folder with one of these names, write `marcsh ./models`. `--` ends the options, so what follows is plain words.
 
 ## Start the interface
 
@@ -28,7 +28,7 @@ A wrong option or value prints the error with the usage and exits with code `2`.
 
 ## Run one turn: `marcsh run`
 
-`marcsh run [message...]` sends the message, waits for the turn to end, and prints the reply. The words after `run` are the message. They are joined with spaces, so quote anything the shell would change.
+`marcsh run [message...]` sends the message, waits for the turn to end, and prints the reply. `marcsh run --help` lists its options and says that approval requests are denied (see [below](#permissions-nobody-to-approve)). The words after `run` are the message. They are joined with spaces, so quote anything the shell would change.
 
 ```
 marcsh run explain the failing test

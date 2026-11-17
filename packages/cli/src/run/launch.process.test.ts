@@ -54,12 +54,13 @@ describe("launch mistakes", () => {
     expect(run.stderr).toContain('marcsh: no session with id "nope"');
   });
 
-  test("a bad option value prints the usage and exits 2, for the interface and for run", () => {
+  test("a bad option value prints the error and a pointer to the help and exits 2, for the interface and for run", () => {
     for (const args of [["--engine", "gpt"], ["run", "--engine", "gpt", "hi"], ["run", "--format", "xml", "hi"]]) {
       const run = marcsh(...args);
 
       expect(run.code).toBe(2);
-      expect(run.stderr).toContain("Usage: marcsh");
+      expect(run.stderr).toEndWith("\nsee marcsh --help\n");
+      expect(run.stderr).not.toContain("Usage:");
     }
   });
 
@@ -67,8 +68,16 @@ describe("launch mistakes", () => {
     const run = marcsh("--help");
 
     expect(run.code).toBe(0);
-    for (const word of ["marcsh run", "[dir]", "--continue", "--session", "--engine", "--format", "--model", "--agent"]) {
+    for (const word of ["marcsh run", "[dir]", "--continue", "--session", "--engine", "marcsh run --help"]) {
       expect(run.stdout).toContain(word);
     }
+  });
+
+  test("run --help lists run's flags and says approval requests are denied (S19)", () => {
+    const run = marcsh("run", "--help");
+
+    expect(run.code).toBe(0);
+    expect(run.stdout).toStartWith("Usage: marcsh run");
+    for (const word of ["--format", "--model", "--agent", "denied"]) expect(run.stdout).toContain(word);
   });
 });

@@ -87,12 +87,14 @@ describe("session", () => {
     expect(exported.stdout.endsWith("ok\n")).toBe(true);
   });
 
-  test("a mistake is exit 2 with the usage", () => {
+  test("a mistake is exit 2 with the error and a pointer to the help", () => {
     for (const args of [["session"], ["session", "delete"], ["session", "export", "x", "--format", "xml"], ["session", "list", "--force"]]) {
       const run = marcsh(args);
       expect(run.code).toBe(2);
       expect(run.stdout).toBe("");
-      expect(run.stderr).toContain("Usage: marcsh");
+      expect(run.stderr).toStartWith("marcsh: ");
+      expect(run.stderr).toEndWith("\nsee marcsh --help\n");
+      expect(run.stderr).not.toContain("Usage:");
     }
   });
 });
@@ -161,7 +163,7 @@ describe("upgrade", () => {
 
 describe("help", () => {
   test("each command has its own --help, and --help lists the commands", () => {
-    for (const command of ["session", "models", "mcp", "stats", "upgrade"]) {
+    for (const command of ["run", "session", "models", "mcp", "stats", "upgrade"]) {
       const run = marcsh([command, "--help"]);
       expect(run.code).toBe(0);
       expect(run.stdout).toStartWith(`Usage: marcsh ${command}`);

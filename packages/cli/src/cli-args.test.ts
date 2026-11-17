@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ENGINE_IDS } from "./lib/engine";
-import { COMMAND_USAGE, LAUNCH_ENGINE_IDS, parseCliArgs, USAGE, type CliArgs, type RunArgs, type TuiArgs } from "./cli-args";
+import { COMMAND_USAGE, LAUNCH_ENGINE_IDS, parseCliArgs, USAGE, usageErrorText, type CliArgs, type RunArgs, type TuiArgs } from "./cli-args";
 
 const tui = (rest: Partial<TuiArgs> = {}): TuiArgs => ({ kind: "tui", continue: false, ...rest });
 const run = (rest: Partial<RunArgs> = {}): RunArgs => ({ kind: "run", message: "", continue: false, format: "text", ...rest });
@@ -27,14 +27,27 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--help", "--bogus"])).toEqual({ kind: "help" });
     expect(parseCliArgs(["--version", "--help"])).toEqual({ kind: "version" });
     expect(parseCliArgs(["--bogus", "--version"])).toEqual({ kind: "error", message: 'unknown option "--bogus"' });
-    expect(parseCliArgs(["run", "--help"])).toEqual({ kind: "help" });
+    expect(parseCliArgs(["run", "--help"])).toEqual({ kind: "help", command: "run" });
+    expect(parseCliArgs(["run", "hi", "--help"])).toEqual({ kind: "help", command: "run" });
   });
 
-  test("the usage lists --version, --help, the commands and the flags", () => {
+  test("the usage lists --version, --help, the commands and the interface's flags, and points to run's own help", () => {
     expect(USAGE).toContain("Usage: marcsh");
-    for (const word of ["--version", "--help", "run", "[dir]", "--continue", "--session", "--model", "--agent", "--engine", "--format"]) {
+    for (const word of ["--version", "--help", "run", "[dir]", "--continue", "--session", "--engine", "marcsh run --help"]) {
       expect(USAGE).toContain(word);
     }
+  });
+
+  test("run's help lists its flags and says that approval requests are denied (S19)", () => {
+    expect(COMMAND_USAGE.run).toStartWith("Usage: marcsh run");
+    for (const word of ["--continue", "--session", "--model", "--agent", "--engine", "--format", "standard input", "130"]) {
+      expect(COMMAND_USAGE.run).toContain(word);
+    }
+    expect(COMMAND_USAGE.run).toMatch(/approval request.*denied/is);
+  });
+
+  test("a usage error is the message and a pointer to the help, not the whole help (S19)", () => {
+    expect(usageErrorText('unknown option "--bogus"')).toBe('marcsh: unknown option "--bogus"\nsee marcsh --help');
   });
 
   test("the engines the parser accepts are the registered engines", () => {

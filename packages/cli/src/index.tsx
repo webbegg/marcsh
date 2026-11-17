@@ -1,5 +1,5 @@
 import cliPackage from "../package.json";
-import { COMMAND_USAGE, parseCliArgs, USAGE } from "./cli-args";
+import { COMMAND_USAGE, parseCliArgs, USAGE, usageErrorText } from "./cli-args";
 
 // `--version` and `--help` only print, and `run` and the other commands have no screen. The app below is imported after this check:
 // importing it opens the storage and the renderer, which these must not do. Each command loads only its own modules.
@@ -13,7 +13,7 @@ if (args.kind === "help") {
   process.exit(0);
 }
 if (args.kind === "error") {
-  console.error(`marcsh: ${args.message}\n\n${USAGE.trimEnd()}`);
+  console.error(usageErrorText(args.message));
   process.exit(2);
 }
 // Before anything is started: every process marcsh starts inherits this run's MARCSH_SESSION, which is how its leftover processes are
