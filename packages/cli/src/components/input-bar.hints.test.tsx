@@ -55,7 +55,7 @@ async function open({ width = 110, disabled = false, replyRunning = false, messa
       ],
     },
   ]);
-  screen = await testRender(<RouterProvider router={router} />, { width, height: 30, kittyKeyboard: !legacyKeys });
+  screen = await testRender(<RouterProvider router={router} />, { width, height: 30, kittyKeyboard: !legacyKeys, exitOnCtrlC: false });
   await settle(150);
 }
 
@@ -143,5 +143,62 @@ describe("the placeholder while the input is off (S7)", () => {
   test("is the normal one while a session is still loading (no messages yet)", async () => {
     await open({ disabled: true });
     expect(frame()).toContain("Ask anything");
+  });
+});
+
+describe("Ctrl+J with the kitty keyboard protocol (S1)", () => {
+  // With the protocol on, Ctrl+J arrives as ctrl+`j`, not as the legacy line feed.
+  test("adds a new line and sends nothing", async () => {
+    primeTmuxKeys("none");
+    await open();
+    await act(() => screen!.mockInput.typeText("first"));
+    await act(async () => screen!.mockInput.pressKey("j", { ctrl: true }));
+    await act(() => screen!.mockInput.typeText("second"));
+    await settle(60);
+    expect(sent).toEqual([]);
+    const lines = screen!.captureCharFrame().split("\n");
+    const first = lines.findIndex((l) => l.includes("first"));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(lines[first + 1]).toContain("second");
+  });
+});
+
+describe("the armed quit shows in the hint line (S5)", () => {
+  const armed = () => frame().split("ctrl+c again to quit").length - 1;
+
+  test("the first Ctrl+C on an empty input says it in the hint line, once, and not as a toast", async () => {
+    primeTmuxKeys("none");
+    await open();
+    await act(async () => screen!.mockInput.pressCtrlC());
+    await settle(60);
+    expect(armed()).toBe(1);
+    // It is in the status row under the input, after the model and the engine. A toast is a bordered box of its own: its text follows a border.
+    const rows = screen!.captureCharFrame().split("\n");
+    const hintRow = rows.find((row) => row.includes("ctrl+c again to quit"))!;
+    expect(hintRow).toContain("Build ›");
+    expect(hintRow).not.toMatch(/┃\s+ctrl\+c again to quit/);
+  });
+
+  test("it takes the place of the new-line and turn hints while armed, and they come back", async () => {
+    primeTmuxKeys("tmux-basic");
+    await open({ active: true });
+    expect(frame()).toContain("enter steers");
+    await act(async () => screen!.mockInput.pressCtrlC());
+    await settle(60);
+    expect(armed()).toBe(1);
+    expect(frame()).not.toContain("ctrl+j new line");
+    expect(frame()).not.toContain("enter steers");
+    await settle(1700);
+    expect(armed()).toBe(0);
+    expect(frame()).toContain("enter steers");
+  });
+
+  test("a Ctrl+C that clears the text arms nothing", async () => {
+    primeTmuxKeys("none");
+    await open();
+    await act(() => screen!.mockInput.typeText("draft"));
+    await act(async () => screen!.mockInput.pressCtrlC());
+    await settle(60);
+    expect(armed()).toBe(0);
   });
 });

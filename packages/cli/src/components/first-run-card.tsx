@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 
 /** What Enter says on the home screen while no model is available (pi with no provider signed in). */
-export const NO_MODEL_MESSAGE = "No model yet: run /login to sign in to a pi provider, or /engine to use Claude.";
+export const NO_MODEL_MESSAGE = "No model yet: /login (pi) or /engine (Claude)";
 
 /**
  * A quiet card for the home screen when no model is available: the two ways forward. The caller shows it only while it holds

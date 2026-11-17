@@ -3,6 +3,7 @@ import React, {
   useContext, 
   useState, 
   useCallback, 
+  useEffect,
   useRef
 } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
@@ -17,6 +18,13 @@ type KeyboardLayerContextValue = {
   pop: (id: string) => void;
   isTopLayer: (id: string) => boolean;
   setResponder: (id: string, responder: Responder | null) => void;
+  /**
+   * Whether a first Ctrl+C is waiting for its second one. While a prompt is on screen (see `registerPrompt`) the prompt says it in
+   * its hint line, next to where the user looks; otherwise a toast does.
+   */
+  quitArmed: boolean;
+  /** A prompt with a hint line is on screen: call it when it mounts and run the function it returns when it unmounts. */
+  registerPrompt: () => () => void;
 };
 
 const KeyboardLayerContext = createContext<KeyboardLayerContextValue | null>(null);
@@ -56,6 +64,23 @@ export function KeyboardLayerProvider({
   const toastRef = useRef(toast);
   toastRef.current = toast;
   const confirm = useRef(createQuitConfirm({ windowMs: confirmWindowMs, now }));
+  const [quitArmed, setQuitArmed] = useState(false);
+  const armedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prompts = useRef(0);
+
+  const disarm = useCallback(() => {
+    if (armedTimer.current) clearTimeout(armedTimer.current);
+    armedTimer.current = null;
+    setQuitArmed(false);
+  }, []);
+  useEffect(() => disarm, [disarm]);
+
+  const registerPrompt = useCallback(() => {
+    prompts.current++;
+    return () => {
+      prompts.current--;
+    };
+  }, []);
 
   const push = useCallback((id: string, responder?: Responder) => {
     if (responder) {
@@ -105,21 +130,29 @@ export function KeyboardLayerProvider({
       if (responder && responder()) {
         // Handled (text cleared, a menu closed): not a first press.
         confirm.current.reset();
+        disarm();
         return;
       }
     };
 
     // No responder handled it: the first press asks for a second one, which quits (stopping running turns first).
     if (confirm.current.press()) {
+      disarm();
       void quit(renderer);
       return;
     }
-    toastRef.current?.show({ message: QUIT_CONFIRM_MESSAGE, duration: confirmWindowMs });
+    if (prompts.current > 0) {
+      disarm();
+      setQuitArmed(true);
+      armedTimer.current = setTimeout(disarm, confirmWindowMs);
+    } else {
+      toastRef.current?.show({ message: QUIT_CONFIRM_MESSAGE, duration: confirmWindowMs });
+    }
   });
 
   return (
     <KeyboardLayerContext.Provider 
-      value={{ push, pop, isTopLayer, setResponder }}
+      value={{ push, pop, isTopLayer, setResponder, quitArmed, registerPrompt }}
     >
       {children}
     </KeyboardLayerContext.Provider>

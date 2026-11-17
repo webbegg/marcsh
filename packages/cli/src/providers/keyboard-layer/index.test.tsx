@@ -135,3 +135,47 @@ describe("Ctrl+C in the keyboard layer (S5)", () => {
     expect(quits).toEqual([]);
   });
 });
+
+describe("where the armed quit is shown (S5)", () => {
+  /** Stands in for a prompt on screen: it says what the layer tells it. */
+  function Prompt() {
+    const layers = useKeyboardLayer();
+    useEffect(() => layers.registerPrompt(), []);
+    return <text>{layers.quitArmed ? "PROMPT armed" : "PROMPT idle"}</text>;
+  }
+
+  async function mountWithPrompt() {
+    screen = await testRender(
+      <ThemeProvider>
+        <ToastProvider>
+          <KeyboardLayerProvider quit={() => {}} confirmWindowMs={300}>
+            <Prompt />
+          </KeyboardLayerProvider>
+        </ToastProvider>
+      </ThemeProvider>,
+      { width: 80, height: 12, exitOnCtrlC: false },
+    );
+    await settle();
+  }
+
+  test("with a prompt on screen the layer tells the prompt and shows no toast", async () => {
+    await mountWithPrompt();
+    expect(frame()).toContain("PROMPT idle");
+    await ctrlC();
+    expect(frame()).toContain("PROMPT armed");
+    expect(frame()).not.toContain("ctrl+c again to quit");
+  });
+
+  test("the prompt is told again once the window has passed", async () => {
+    await mountWithPrompt();
+    await ctrlC();
+    await settle(400);
+    expect(frame()).toContain("PROMPT idle");
+  });
+
+  test("with no prompt on screen the toast stays", async () => {
+    await mount();
+    await ctrlC();
+    expect(frame()).toContain("ctrl+c again to quit");
+  });
+});

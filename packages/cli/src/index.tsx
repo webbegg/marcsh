@@ -70,6 +70,7 @@ const { warmUpEngineCommands } = await import("./lib/engine");
 const { getDefaultEngine } = await import("./lib/preferences");
 const { getStorage } = await import("./lib/storage");
 const { installQuitSignals, quitEnv, resumeNotice, sessionIdFromPath } = await import("./lib/quit");
+const { installExitNotice } = await import("./lib/resume-notice");
 const { createAppClipboard } = await import("./lib/clipboard");
 const { ClipboardProvider } = await import("./providers/clipboard");
 const { prunePendingImages } = await import("./lib/clipboard-images");
@@ -112,11 +113,13 @@ createRoot(renderer).render(<App />);
 // SIGINT, SIGTERM and SIGHUP (a closed terminal) quit the same way as Ctrl+C: running turns are stopped first (exit codes 130, 143, 129).
 installQuitSignals(renderer);
 
-// Once the renderer is gone and the running turn has saved, a quit from an open session says how to come back to it (on stderr, like
-// the other messages marcsh prints outside the screen). The open session is the router's current route.
-quitEnv.afterQuit = () => {
+// A quit from an open session says how to come back to it, on stderr, plain, on the normal screen. It is written when the process
+// exits, after the renderer's own exit listener has left the alternate screen (anything printed before is wiped, and console.* is
+// captured and shown in red). The open session is the router's current route.
+const sayAtExit = installExitNotice();
+quitEnv.afterQuit = ({ settled }) => {
   const id = sessionIdFromPath(router.state.location.pathname);
-  if (id && getStorage().getSession(id)) console.error(resumeNotice(id));
+  if (id && getStorage().getSession(id)) sayAtExit(resumeNotice(id, settled));
 };
 
 // Fills the `/` menu's command list of the default engine without waiting for a chat turn; never delays or breaks the

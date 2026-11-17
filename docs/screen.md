@@ -14,7 +14,7 @@ This page describes what you see in marcsh and what each part does: the two scre
 | --- | --- |
 | `Enter` | Sends your message. In a menu, it picks the highlighted item. |
 | `Shift+Enter` | Adds a new line. |
-| `Ctrl+J` | Adds a new line too. It works in every terminal, including inside tmux. See [New lines in tmux](#new-lines-in-tmux). |
+| `Ctrl+J` | Adds a new line too. It works in every terminal, including inside tmux, with or without the kitty keyboard protocol. See [New lines in tmux](#new-lines-in-tmux). |
 | `/` | Opens the command menu. Keep typing to filter it. |
 | `@` | Opens the file picker. |
 | `Ctrl+V` | Pastes what the clipboard holds. See [Pasting](#pasting). |
@@ -86,7 +86,7 @@ A background subagent's tool calls still ask for approval in the normal approval
 ## Stopping and quitting
 
 - `Esc` stops a running reply. It also declines an approval prompt or a question that is waiting. Two cases differ. In a question's free-text field, `Esc` only closes the field. On the project-trust question, `Esc` means "not now": the turn goes on without the project's files.
-- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it shows "ctrl+c again to quit", and a second `Ctrl+C` within about 1.5 seconds quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish, then prints the session's ID and `marcsh -c` to open it again. When the input is off, the same two presses quit, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
+- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it shows "ctrl+c again to quit" in the dim hint line under the input (in a toast when no input is on screen), and a second `Ctrl+C` within about 1.5 seconds quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish, then prints the session's ID and `marcsh -c` to open it again, in plain text on the screen you started from. If the reply did not finish stopping in time, the line says `(the last reply may not be saved)` instead of "saved". When the input is off, the same two presses quit, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
 - `/exit` also quits.
 
 ## The status line

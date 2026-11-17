@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { createQuit, installQuitSignals, resumeNotice, sessionIdFromPath, type QuitEnv } from "./quit";
 
 // Timers are fake: the test fires the bound by hand, so nothing waits and nothing real is killed.
-function setup(afterQuit?: () => void) {
+function setup(afterQuit?: (result: { settled: boolean }) => void) {
   const exits: number[] = [];
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
   const env: QuitEnv = {
@@ -238,6 +238,46 @@ describe("installQuitSignals (S20)", () => {
 describe("the resume line (S5)", () => {
   test("the notice names the session and `marcsh -c`", () => {
     expect(resumeNotice("abc123")).toBe("marcsh: session abc123 saved · marcsh -c to resume");
+    expect(resumeNotice("abc123", true)).toBe("marcsh: session abc123 saved · marcsh -c to resume");
+  });
+
+  test("when the turns did not settle, the notice does not say saved", () => {
+    expect(resumeNotice("abc123", false)).toBe("marcsh: session abc123 · marcsh -c to resume (the last reply may not be saved)");
+  });
+
+  test("afterQuit is told the turns settled when there were none, and when they all finished", async () => {
+    const results: boolean[] = [];
+    const none = setup(({ settled }) => void results.push(settled));
+    await none.quit.quitApp(fakeRenderer());
+
+    const some = setup(({ settled }) => void results.push(settled));
+    const turn = fakeTurn();
+    some.quit.registerTurn(turn);
+    const quitting = some.quit.quitApp(fakeRenderer());
+    turn.finish();
+    await quitting;
+    expect(results).toEqual([true, true]);
+  });
+
+  test("afterQuit is told the turns did not settle when the grace timeout gave up", async () => {
+    const results: boolean[] = [];
+    const { quit, fireTimers } = setup(({ settled }) => void results.push(settled));
+    quit.registerTurn(fakeTurn());
+    const quitting = quit.quitApp(fakeRenderer());
+    await tick();
+    fireTimers();
+    await quitting;
+    expect(results).toEqual([false]);
+  });
+
+  test("afterQuit is told the turns did not settle when a second quit request cut the wait short", async () => {
+    const results: boolean[] = [];
+    const { quit } = setup(({ settled }) => void results.push(settled));
+    quit.registerTurn(fakeTurn());
+    const renderer = fakeRenderer();
+    void quit.quitApp(renderer);
+    await quit.quitApp(renderer);
+    expect(results).toEqual([false]);
   });
 
   test("the session id comes from a session route only", () => {

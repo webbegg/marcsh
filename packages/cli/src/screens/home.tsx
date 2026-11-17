@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRenderer } from "@opentui/react";
 import { useNavigate } from "react-router";
 import { Header } from "../components/header";
@@ -27,16 +27,28 @@ export function Home() {
   useEffect(() => {
     if (!noModel) setBlocked(false);
   }, [noModel]);
+  // The message is about the text that was just refused: it goes once the user changes the input. Putting that text back is not a change.
+  const blockedRef = useRef(false);
+  const puttingBack = useRef(false);
+  const handleTextChange = useCallback(() => {
+    if (puttingBack.current || !blockedRef.current) return;
+    blockedRef.current = false;
+    setBlocked(false);
+  }, []);
 
   const handleSubmit = useCallback(
     (text: string) => {
       // No model: no session is opened and nothing is sent. The input bar has already emptied the input, so the text goes back into it.
       // (marcsh's own commands, like /login and /engine, never get here: the bar runs them itself.)
       if (noModel) {
+        puttingBack.current = true;
         giveBackText(renderer, text);
+        setTimeout(() => (puttingBack.current = false), 0);
+        blockedRef.current = true;
         setBlocked(true);
         return;
       }
+      blockedRef.current = false;
       setBlocked(false);
       // One of the user's commands runs as its expanded prompt, as the agent and model it names (a pack's agent stays read-only from Plan:
       // its mode is plan, which the session keeps).
@@ -78,7 +90,7 @@ export function Home() {
       <Header />
       <box width="100%" maxWidth={78} paddingX={2} flexDirection="column" gap={1}>
         {noModel ? <FirstRunCard /> : null}
-        <InputBar onSubmit={handleSubmit} />
+        <InputBar onSubmit={handleSubmit} onTextChange={handleTextChange} />
         {noModel && blocked ? <text>{NO_MODEL_MESSAGE}</text> : null}
         <box flexDirection="row" gap={1} flexShrink={0} marginLeft="auto">
           <text>tab</text>

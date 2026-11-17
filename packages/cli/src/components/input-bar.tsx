@@ -23,6 +23,7 @@ import { useRunningTerminals } from "../lib/background/use-running-terminals";
 import { runningBackgroundText, useRunningSubagents } from "../lib/background/use-running-subagents";
 import { useLeftoverCount } from "../lib/background/use-leftovers";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { QUIT_CONFIRM_MESSAGE } from "../providers/keyboard-layer/quit-confirm";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
@@ -295,6 +296,8 @@ function FileMentionMenu({
 type Props = {
   /** `attachments`: the images and PDFs pasted since the last send (only on a screen that can send them, see `canAttach`). */
   onSubmit: (text: string, attachments?: MessageAttachment[]) => void;
+  /** Called each time the text in the input changes (typed, deleted, pasted, or put there by the screen). */
+  onTextChange?: (text: string) => void;
   disabled?: boolean;
   /** Directory that `@` mentions resolve against. */
   cwd?: string;
@@ -372,6 +375,8 @@ export const TEXTAREA_KEY_BINDINGS: KeyBinding[] = [
   { name: "enter", action: "submit" },
   { name: "return", shift: true, action: "newline" },
   { name: "enter", shift: true, action: "newline" },
+  // OpenTUI binds only the legacy `linefeed` (Ctrl+J without the kitty keyboard protocol); with it, Ctrl+J arrives as ctrl+`j`.
+  { name: "j", ctrl: true, action: "newline" },
 ];
 
 // OpenTUI 0.9 builds a keyboard selection from a mouse cell selection with both ends inclusive, so Shift+Right took one character
@@ -547,7 +552,7 @@ type HistoryWalk = {
 
 const idleWalk = (): HistoryWalk => ({ entries: [], index: -1, draft: "", shown: null });
 
-export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages, replyRunning = false }: Props) {
+export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages, replyRunning = false }: Props) {
   const {
     agent,
     mode,
@@ -572,6 +577,8 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
   const mentionScrollRef = useRef<ScrollBoxRenderable>(null);
   // What text the engine did not take put at the front of the input (see `mergeGivenBack`); forgotten once the input is empty.
   const givenBackRef = useRef("");
+  const onTextChangeRef = useRef(onTextChange);
+  onTextChangeRef.current = onTextChange;
   const historyWalkRef = useRef<HistoryWalk>(idleWalk());
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
@@ -593,7 +600,9 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     if (warnings.length > 0 && agentIdRef.current === selected.id) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
   }, [engineId, toast]);
   const { colors } = useTheme();
-  const { isTopLayer, push, pop, setResponder } = useKeyboardLayer();
+  const { isTopLayer, push, pop, setResponder, quitArmed, registerPrompt } = useKeyboardLayer();
+  // While this bar is on screen, an armed quit (first Ctrl+C) is said in its hint line, not in a toast.
+  useEffect(() => registerPrompt(), [registerPrompt]);
   const turnInput = useContext(TurnInputContext);
   const newLineKey = useTmuxNewLineKey();
   // Leftover processes are counted when the line appears, every 30 s at most, and when a turn ends (see `use-leftovers.ts`).
@@ -836,6 +845,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
     const text = textarea.plainText;
 
     setDraft(renderer, text.length > 0);
+    onTextChangeRef.current?.(text);
     if (text.length === 0) givenBackRef.current = "";
     // The text of a history walk is not typing: the menus stay closed, so Up and Down keep walking. Any other change ends the walk.
     const walk = historyWalkRef.current;
@@ -1449,7 +1459,7 @@ export function InputBar({ onSubmit, disabled = false, cwd = process.cwd(), engi
             onContentChange={handleTextareaContentChange}
             placeholder={disabled && replyRunning ? REPLY_RUNNING_PLACEHOLDER : PLACEHOLDER}
           />
-          <StatusBar engine={engineId} messages={messages} cwd={cwd} background={backgroundText} onNotice={showGitNotice} hint={leaderPending ? leaderHint(keybinds) : promptHint(turnInput, disabled, newLineKey)} />
+          <StatusBar engine={engineId} messages={messages} cwd={cwd} background={backgroundText} onNotice={showGitNotice} hint={quitArmed ? [QUIT_CONFIRM_MESSAGE] : leaderPending ? leaderHint(keybinds) : promptHint(turnInput, disabled, newLineKey)} />
         </box>
       </box>
     </box>

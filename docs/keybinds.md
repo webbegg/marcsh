@@ -78,7 +78,7 @@ The keys you give for an action replace its defaults. An empty list, `[]`, unbin
 
 The input keys (`Enter`, `Shift+Enter`, `Alt+Enter`, `Tab`, `Esc`, `Ctrl+C`, `Up` and `Down` for history) are fixed in this version and cannot be changed.
 
-`Ctrl+C` first clears the prompt or closes the open menu or dialog. When there is nothing to clear or close, it shows "ctrl+c again to quit", and a second `Ctrl+C` within about 1.5 seconds quits. A press after that window asks again. `/exit` quits at once. When you quit from an open session, marcsh prints `marcsh: session <id> saved · marcsh -c to resume` after the screen closes.
+`Ctrl+C` first clears the prompt or closes the open menu or dialog. When there is nothing to clear or close, it shows "ctrl+c again to quit" in the hint line under the prompt, and a second `Ctrl+C` within about 1.5 seconds quits. A press after that window asks again. `/exit` quits at once. When you quit from an open session, marcsh prints `marcsh: session <id> saved · marcsh -c to resume` after the screen closes. If a stopped reply did not finish saving in time, the line reads `marcsh: session <id> · marcsh -c to resume (the last reply may not be saved)`.
 
 If two actions in the file use the same key, the first in the file's order wins (`palette`, `leader` and `paste` come before the commands), and one warning names the loser. A key you set beats a default of another action: setting `"models": ["<leader>n"]` takes `n` from `/new`, and `"models": ["ctrl+v"]` takes `ctrl+v` from `paste`.
 
