@@ -26,10 +26,10 @@ function setup(subagents?: TurnSubagent[]) {
 const properties = (tool: ReturnType<typeof createTaskTool>) => (tool.parameters as unknown as { properties: Record<string, { type: string }> }).properties;
 
 describe("the Task tool with named subagents", () => {
-  test("without subagents it is exactly as before: no `agent` parameter, the same description", () => {
+  test("without subagents it is exactly as before: no `agent` parameter (only the optional `editSurfaces`), the same description", () => {
     const plain = setup().tool;
     const empty = setup([]).tool;
-    expect(Object.keys(properties(plain))).toEqual(["description", "prompt"]);
+    expect(Object.keys(properties(plain))).toEqual(["description", "prompt", "editSurfaces"]);
     expect(empty.description).toBe(plain.description);
     expect(empty.parameters).toEqual(plain.parameters);
   });

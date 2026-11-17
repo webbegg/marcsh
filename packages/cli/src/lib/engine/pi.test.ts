@@ -444,7 +444,7 @@ describe("pi engine permissions (S8)", () => {
 
     const { reply } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
 
-    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read", "todo"]);
     expect(asks).toEqual([]);
     expect(existsSync(made())).toBe(false);
     expect(toolParts(reply)[0]?.state).toBe("error");
@@ -460,7 +460,7 @@ describe("pi engine permissions (S8)", () => {
 
     await runTurn(engine, model, { mode: Mode.BUILD });
 
-    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "write"]);
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "todo", "write"]);
   });
 
   test("a model's ls call in build mode lists the directory without an approval prompt", async () => {
@@ -493,7 +493,7 @@ describe("pi engine permissions (S8)", () => {
 
     await runTurn(engine, model, { mode: Mode.BUILD });
 
-    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "read"]);
+    expect(offered?.sort()).toEqual(["AskUserQuestion", "Task", "bash", "read", "todo"]);
   });
 
   test("aborting the turn while an approval is pending leaves the call unexecuted", async () => {
@@ -578,8 +578,8 @@ describe("pi engine plan and build turns on one session (S8)", () => {
     }
   }
 
-  const PLAN = ["AskUserQuestion", "Task", "find", "grep", "ls", "read"];
-  const BUILD = ["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "write"];
+  const PLAN = ["AskUserQuestion", "Task", "find", "grep", "ls", "read", "todo"];
+  const BUILD = ["AskUserQuestion", "Task", "bash", "edit", "find", "grep", "ls", "read", "todo", "write"];
 
   test("plan, build, plan, build: each turn offers its mode's tools", async () => {
     const { offered, steps } = recording(5);
@@ -613,7 +613,7 @@ export default function (pi) {
 
     await alternate([Mode.BUILD, Mode.PLAN, Mode.BUILD], steps);
 
-    expect(offered).toEqual([["AskUserQuestion", "Task", "bash", "ext_tool", "read"], PLAN, ["AskUserQuestion", "Task", "bash", "ext_tool", "read"]]);
+    expect(offered).toEqual([["AskUserQuestion", "Task", "bash", "ext_tool", "read", "todo"], PLAN, ["AskUserQuestion", "Task", "bash", "ext_tool", "read", "todo"]]);
   });
 });
 
@@ -1484,7 +1484,7 @@ describe("pi engine subagents (S13)", () => {
 
     await runTurn(engine, model);
 
-    expect(parentTools).toEqual(["AskUserQuestion", "Task", "bash", "edit", "ext_tool", "find", "grep", "ls", "read", "write"]);
+    expect(parentTools).toEqual(["AskUserQuestion", "Task", "bash", "edit", "ext_tool", "find", "grep", "ls", "read", "todo", "write"]);
     expect(kid.seen[0]?.tools).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
   });
 
@@ -1644,7 +1644,7 @@ describe("pi engine subagents (S13)", () => {
       const { reply, errors } = await runTurn(engine, model, { mode: Mode.PLAN }, host);
 
       expect(errors).toEqual([]);
-      expect(parentTools).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read"]);
+      expect(parentTools).toEqual(["AskUserQuestion", "Task", "find", "grep", "ls", "read", "todo"]);
       expect(kid.seen[0]?.tools).toEqual(["find", "grep", "ls", "read"]);
       expect(asks).toEqual([]);
       expect(seen[0]).toEqual(["surveyed"]);

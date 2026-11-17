@@ -178,7 +178,7 @@ Save it as `~/.marcsh/agents/refuter-security.md`.
 - **Its prompt** is added to the subagent's system prompt. The subagent does not see your conversation, only the task it gets.
 - **Its tools only narrow.** The subagent starts with the tools of the agent that started it. Its `tools` field can take more away, but it never gives a tool back. If the selected agent has `bash: false`, a subagent with `tools: Read, Bash` still cannot run commands.
 - **`permission: read-only`** makes the subagent read-only, as in Plan, even when the agent that starts it can build. In Plan, every subagent is read-only.
-- **Its model.** The subagent uses its `model` when the engine can use it. Otherwise it uses the model of the turn that starts it, without a warning. See [Model](#model-and-fallback).
+- **Its model.** The subagent uses the model a [profile](configuration.md#model-profiles) routes it to, else its own `model` when the engine can use it. Otherwise it uses the model of the turn that starts it, without a warning. See [Model](#model-and-fallback).
 - **Approvals and hooks** apply to its tool calls exactly as they do to the agent's.
 
 How the model starts one:
@@ -186,11 +186,25 @@ How the model starts one:
 - **pi.** `Task` gets an `agent` parameter. Its description lists the subagents the model can start, with their descriptions (at most 20 are listed). A name that is not on the list is an error that names the valid ones. `Task` without `agent` works as before. On pi, a pack's subagent also gets that pack's skills, but only while they are loaded for the turn. `background: true` works with `agent` too.
 - **Claude.** marcsh passes the same subagents to Claude, and Claude's `Task` starts one by its name. A read-only subagent gets only the read tools. A subagent whose name is one of Claude's own types (`general-purpose`, `Explore`, `Plan`, `statusline-setup`, `output-style-setup`, `claude-code-guide`) is not passed, so Claude's own type keeps that name.
 
+### Limit where a subagent writes
+
+On pi, `Task` takes an optional `editSurfaces`: a list of narrow paths or globs, relative to the project folder, that the subagent may write. The model passes it when it hands a piece of work to a subagent that edits files, for example `["src/auth/**", "tests/auth.test.ts"]`.
+
+- **Valid entries.** A file, a folder (it covers everything under it) or a glob (`*` stays in one folder, `**` crosses folders). `.`, `./`, `*`, `**`, `**/**`, `**/**/*` and every other spelling of the whole project, absolute paths, `~` paths, paths with `..`, and empty entries are rejected with an error that names the entry, and no subagent starts. So is an empty list. A read-only subagent takes none. An inner `./` or a doubled `/` is dropped (`src/./a.ts` is `src/a.ts`), so each path has one spelling.
+- **Outside the list, denied.** The subagent's `edit` and `write` outside the list are denied without asking you, and the reason names the list. So are the paths outside the project folder. The path is judged as the file pi will write: a `file://` URL is decoded first (without its `#…` or `?…` part), as are `~` and a leading `@`, and symlinks are followed. A path that cannot be resolved with certainty (a dangling symlink, a `file://` URL pi would reject) is denied. Inside the list its calls ask for approval as they always do: the list only narrows, it never approves.
+- **`bash`.** A command that writes a file by its literal name outside the list is denied the same way. That covers `>`, `>>`, `&>`, `tee`, `sed -i`, `cp`, `mv`, `install` and `ln` destinations, `touch`, `mkdir`, `truncate`, `rm`, and the output of `curl` and `wget`. This is best effort: variables, globs, substitutions, scripts run by an interpreter (`python3 -`, `node -e`) and a `cd` inside `( )` are not followed. Writes outside the project folder, such as the system temp folder, are not judged.
+- **After the fact.** In a git repository, marcsh compares the working tree before and after each `bash` call the subagent makes. A file it changed outside the list is reported in that call's result, which is marked as an error, and the `Task` result ends with a warning that lists the files changed outside the list during the run. The list includes changes a commit made clean again (the tree is also compared with the commit `HEAD` named when the run started) and every path flagged in any call, even if it was reverted or committed later. The warning is added however the subagent ends: it finished, failed, hit the 3-minute limit, or was interrupted. A subagent is restarted on another model only before it has run any tool, so a restart never follows an attempt that wrote files. Nothing is reverted. This is best effort: files git ignores are not covered, a change that a `git stash` or `git reset` undid within the same call is not seen, and a project that is not in a git repository has no comparison. For a background subagent the list may include edits you or another subagent made meanwhile, and a subagent you cancel returns no result to carry it. Check `git diff --stat` yourself after a writer returns; the warning does not replace it.
+- **Writers that run together need disjoint lists.** A `Task` whose list overlaps the list of a subagent that is still running (foreground or background) is rejected with an error that names both entries, and it starts nothing. The check is conservative: `src/*.ts` and `src/*.js` count as overlapping. A `Task` without `editSurfaces` is not bound, and it is not held back.
+
+On Claude, `Task` has no such parameter, so this does not apply there (see [Engine differences](#engine-differences)).
+
 ## Engine differences
 
 Agents work on both engines. A few details differ:
 
 - **Web tools.** Claude has web tools, so `web: false` takes them away. pi has none, so there is nothing to remove. If you write `web: false` by name, marcsh warns that it changes nothing on pi. It does not warn when `web` is removed by a list or by `"*"`.
+- **Task list.** On pi, the agent has a `todo` tool: it sets, updates, lists and clears a list of tasks (`pending`, `in_progress`, `done`, `blocked`, `dropped`; `blocked` and `dropped` need a note; at most 100 items, an id of at most 40 characters, a text and a note of at most 500 each, each shown on one line). It changes no files, so it runs without asking, also in Plan, and a subagent does not get it. The list is kept in the conversation's tool results, so it comes back when you resume; if compaction drops those results, the agent can ask for the list again. On Claude the agent uses Claude's own `TodoWrite`; no tool group in an agent's `tools` field takes it away.
+- **Edit surfaces.** On pi, `Task` takes `editSurfaces` and marcsh enforces it (see [Limit where a subagent writes](#limit-where-a-subagent-writes)). Claude's own `Task` has no such parameter, so on Claude nothing limits where a subagent writes: an agent that delegates writing there puts the paths in the prompt it gives the subagent and checks the result with `git diff --stat`. On pi it checks both the `Task` result's warning and `git diff --stat`.
 - **Models.** Each engine takes its own kind of model name. See [Model](#model-and-fallback).
 - **Pack hooks.** Only some hook events run on pi. See [Pack hooks](pack-hooks.md).
 - **Subagent time limit.** On pi, a subagent started with `Task` is stopped after 3 minutes. Time spent waiting for you to answer one of its approvals doesn't count. The model gets an error that says so. In a session that can run background subagents (not in Plan), it suggests `background: true` for longer work.
@@ -211,6 +225,12 @@ See [Engines and models](engines-and-models.md) for the engines themselves.
 If the name does not fit the engine you are using, marcsh ignores it, uses the session model, and warns. For example, `gpt-4o` is not a Claude model, and `sonnet` is not a pi model.
 
 On pi there is one more case. If the name has the right shape but you have no login for that provider, marcsh uses the session model without a warning. This way an agent from someone else does not stop working just because you use another provider. Use `/login` to add a provider. See [Engines and models](engines-and-models.md).
+
+### Profiles and fallback
+
+A subagent's `model` is the last word only when no profile routes it. With a [model profile](configuration.md#model-profiles) in force (`/profile use`, or `default` in `profiles.json`), each time a subagent starts marcsh picks its model in this order: the route of the profile you chose, the route of the default profile, the `model` in the agent's file, the model of the turn. A profile's route can also set a thinking level (pi only) and a `fallback` chain: on pi, when the subagent's model fails with a usage limit, a sign-in error, a rate limit or a provider error, the subagent starts again from its prompt on the next model of the chain, but only if it had not run a tool yet (one that did is not restarted, so its steps never run twice: the `Task` fails with the error and says so), and a model that just failed is skipped by the next launches for 30 minutes (a usage limit or a sign-in error) or 2 minutes (the others). Details, and how the main turn falls back, are in [Configuration](configuration.md#fallback-chains). Only subagents are routed by a profile: an agent's own `model` still decides the model of its turn when you select it.
+
+See [`/profile`](commands.md#profile).
 
 ## Warnings
 

@@ -174,12 +174,13 @@ export function claudeQueryOptions({
   branch,
   deniedTools,
   subagents,
+  routing,
   resumeRef,
   abortController,
   canUseTool,
   plugins,
   hookEnv,
-}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "noApprover" | "deniedTools" | "subagents" | "resumeRef"> & {
+}: Pick<TurnRequest, "cwd" | "mode" | "model" | "systemPromptAppend" | "approvalMode" | "noApprover" | "deniedTools" | "subagents" | "routing" | "resumeRef"> & {
   /** Where the project is, for the mode line. Default: read from `cwd` when there is a line to write. */
   branch?: BranchSource;
   abortController: AbortController;
@@ -198,9 +199,13 @@ export function claudeQueryOptions({
     subagents && subagents.length > 0
       ? claudeAgents(subagents, { ...(deniedTools ? { deniedTools } : {}), mode, approvalMode, ...(noApprover ? { noApprover } : {}), branch: branchOnce })
       : {};
+  // The primary route's first fallback that is a Claude model (and not the turn's own) is the SDK's fallbackModel: it takes over when the
+  // model is overloaded or unavailable, and the model is tried again at the start of each turn. Thinking levels are pi's: marcsh has none here.
+  const fallbackModel = routing?.fallback?.find((step) => step.model !== model && agentModelFits(step.model, "claude"))?.model;
   return {
     cwd,
     model,
+    ...(fallbackModel ? { fallbackModel } : {}),
     permissionMode: toPermissionMode(mode),
     resume: resumeRef,
     abortController,
@@ -257,7 +262,7 @@ export function applyClaudeMessage(reply: ChatMessage, message: SDKMessage, prio
 }
 
 function startTurn(
-  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, noApprover, packPluginPath, agentId, deniedTools, subagents, resumeRef, priorCostUsd, signal }: TurnRequest,
+  { prompt, attachments, cwd, mode, model, systemPromptAppend, approvalMode, currentApprovalMode, noApprover, packPluginPath, agentId, deniedTools, subagents, routing, resumeRef, priorCostUsd, signal }: TurnRequest,
   host: TurnHost,
 ): EngineTurn {
   const abortController = new AbortController();
@@ -287,7 +292,7 @@ function startTurn(
     try {
       chat = query({
         prompt: claudePrompt(prompt, attachments, cwd),
-        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, ...(noApprover ? { noApprover } : {}), deniedTools, subagents, resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
+        options: claudeQueryOptions({ cwd, mode, model, systemPromptAppend, approvalMode, ...(noApprover ? { noApprover } : {}), deniedTools, subagents, ...(routing ? { routing } : {}), resumeRef, abortController, canUseTool, plugins, ...(hookEnv ? { hookEnv } : {}) }),
       });
 
       for await (const message of chat) {

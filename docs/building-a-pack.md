@@ -120,6 +120,7 @@ Spec slug (empty means the most recent approved spec): $ARGUMENTS
 - A command never lifts Plan. With Plan (or another read-only agent) selected, the turn runs as your agent but read-only, under Plan's rules, and marcsh tells the user to switch to Build to let it change files. Write the command so that a read-only run still does something useful, such as reading and planning.
 - A command never gives the turn tools the selected agent does not have: the tool groups the selected agent turns off stay off for your agent too.
 - The install preview shows the agent each command runs as, for example `spec → ASDD`.
+- Add a [`questions` list](commands.md#questions) and the command asks them before it sends: one dialog per question, then a review with Start, Edit answers and Cancel. This works with or without `agent` (without it, the command runs as the selected agent and marcsh runs it itself). The prompt uses `{{id}}` for each answer, and what the user types after the command name is offered as the first text answer. The preview shows `start → the selected agent (asks questions)`. Questions that cannot work (a `{{id}}` that names no question, a bad `kind`) do not reject the pack: the preview shows a `Check:` line and the command shows an error and sends nothing.
 - `agent` names one of your pack's agents by file name without `.md` (`asdd` for `agents/asdd.md`, in any letter case) or by its `name`. It can also be `build` or `plan`. An agent of another pack, a subagent, an unknown name or an empty `agent:` gets a warning, and the turn runs as the selected agent.
 - The prompt is expanded like a [custom command](commands.md#arguments): `$ARGUMENTS` is everything after the name, and `$1` to `$9` are its words.
 - Quote an `argument-hint` that starts with `[`, as YAML needs. marcsh drops the quotes.
@@ -195,7 +196,10 @@ When a pack breaks one of these rules, the install stops with a message that sta
 - A line that is only `...` inside the frontmatter of a skill or command.
 - Frontmatter in a skill or command that marcsh cannot read without doubt: an opening or closing `---` line with other text on it, no closing `---`, or YAML that does not parse. The message is `Pack rejected: the frontmatter of x cannot be read unambiguously (…)`. Quote a `description` that contains `: `.
 
-Not rejected, but shown as a `Check:` line in the preview: `allowed-tools` in a skill or command. It pre-approves tools. Remove it unless the skill needs it.
+Not rejected, but shown as a `Check:` line in the preview:
+
+- `allowed-tools` in a skill or command. It pre-approves tools. Remove it unless the skill needs it.
+- A command whose `questions` marcsh cannot use, for example `commands/start.md: the prompt uses {{ghost}}, which names no question; it will not run`.
 
 ## Hooks
 

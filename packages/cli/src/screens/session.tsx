@@ -5,6 +5,8 @@ import { z } from "zod";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { Mode, type ModeType } from "../lib/modes";
 import { agentModelFits, builtinAgentId, findAgent, turnSubagents, type Agent } from "../lib/agents";
+import { resolveRoute } from "../lib/model-routing";
+import { activeProfiles, loadProfiles, profilesWarning } from "../lib/profiles";
 import { SessionShell } from "../components/session-shell";
 import { TurnInputContext } from "../components/input-bar";
 import { 
@@ -17,6 +19,8 @@ import { QuestionPrompt } from "../components/question-prompt";
 import { TrustPrompt } from "../components/trust-prompt";
 import { ConfirmPrompt, EditorPrompt, InputPrompt, SelectPrompt, stripControlChars } from "../components/ui-prompts";
 import { useToast } from "../providers/toast";
+import { useDialog } from "../providers/dialog";
+import { openCommandQuestions } from "../components/dialogs/command-questions";
 import { useChat } from "../hooks/use-chat";
 import { useSessionCommands } from "../hooks/use-session-commands";
 import { usePromptConfig } from "../providers/prompt-config";
@@ -24,7 +28,7 @@ import type { ChatMessage as ChatMessageData, MessageAttachment } from "../lib/c
 import { getStorage, type StoredSession } from "../lib/storage";
 import { getEngine, getPiRuntime, unknownEngine, warmUpEngineCommands } from "../lib/engine";
 import { listAvailablePiModels } from "../lib/engine/pi-models";
-import type { NoticeLevel } from "../lib/engine/types";
+import type { NoticeLevel, TurnRouting } from "../lib/engine/types";
 import { modelForEngine, SUPPORTED_CHAT_MODELS } from "../lib/models";
 import { nextRecent } from "../lib/model-picks";
 import { notifyTurnDone } from "../lib/notify";
@@ -102,6 +106,27 @@ function NoticeLine({ text }: { text: string }) {
 
 type Notice = { id: number; /** How many messages there were when it was said. */ at: number; text: string };
 
+/** The problems of the profiles file last warned about: a turn warns again only when they change. */
+let warnedProfiles: string | undefined;
+
+/**
+ * What the model profiles say for a turn on `engine`: the profiles in force (the session's, then the default's), what the main turn's
+ * `primary` route adds (its fallback chain, and its thinking level while the turn runs on the route's own model), and the file's warning,
+ * once. The file is read at each turn, so an edit applies from the next message.
+ */
+function turnProfiles(engine: string): { active: ReturnType<typeof activeProfiles>; routing?: TurnRouting; warning?: string } {
+  const loaded = loadProfiles();
+  const text = profilesWarning(loaded);
+  const warning = text !== warnedProfiles ? text : undefined;
+  warnedProfiles = text;
+  const active = activeProfiles(loaded.file);
+  const primary = resolveRoute({ active, engine: { id: engine, fits: (model) => agentModelFits(model, engine) } });
+  const routing: TurnRouting | undefined = primary.model
+    ? { model: primary.model, ...(primary.thinking ? { thinking: primary.thinking } : {}), ...(primary.fallback.length > 0 ? { fallback: primary.fallback } : {}) }
+    : undefined;
+  return { active, ...(routing ? { routing } : {}), ...(warning ? { warning } : {}) };
+}
+
 function SessionChat({ 
   session,
   initialPrompt,
@@ -122,6 +147,7 @@ function SessionChat({
     [session.engine],
   );
   const toast = useToast();
+  const dialog = useDialog();
   // Where this project's files are snapshotted around each turn; none (and a reason) without git.
   const snapshots = useMemo(() => openSnapshots(session.cwd), [session.cwd]);
   // Where this session's background work delivers its results (pi only); disposed, with everything it runs, when the session is left.
@@ -207,13 +233,24 @@ function SessionChat({
   // `background`: the turn delivers this batch of background results. Resolves with whether a turn started.
   const send = useCallback(
     (userText: string, turnAgent: Agent, claudeModel: string, modelOverride?: string, attachments?: MessageAttachment[], background?: BackgroundBatch): Promise<boolean> => {
+      const profiles = turnProfiles(session.engine);
+      if (profiles.warning) toast.show({ variant: "info", message: `Warning: ${stripControlChars(profiles.warning)}` });
       const turn = {
         userText,
         mode: turnAgent.mode,
-        // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack.
-        turnAgent: { id: turnAgent.id, name: turnAgent.name, prompt: turnAgent.prompt, pluginDir: turnAgent.pluginDir, tools: turnAgent.tools, subagents: turnSubagents(turnAgent) },
+        // The named subagents are read at each turn, like the pack view: the user's own and those of the turn agent's pack, each with the model
+        // the active profile routes it to (else its own file's).
+        turnAgent: {
+          id: turnAgent.id,
+          name: turnAgent.name,
+          prompt: turnAgent.prompt,
+          pluginDir: turnAgent.pluginDir,
+          tools: turnAgent.tools,
+          subagents: turnSubagents(turnAgent, undefined, { active: profiles.active, engine: session.engine }),
+        },
         ...(attachments?.length ? { attachments } : {}),
         ...(background ? { background } : {}),
+        ...(profiles.routing ? { routing: profiles.routing } : {}),
       };
       const agentModel = modelOverride ?? (turnAgent.model && agentModelFits(turnAgent.model, session.engine) ? turnAgent.model : undefined);
       if (session.engine !== "pi") {
@@ -232,7 +269,7 @@ function SessionChat({
       });
       return started;
     },
-    [session.engine, startTurn, refreshPiModel, setChoosing],
+    [session.engine, startTurn, refreshPiModel, setChoosing, toast],
   );
 
   // A background result that finishes while the session is idle starts a turn of its own, as the agent and model selected at that
@@ -279,11 +316,18 @@ function SessionChat({
         engineNames: engineCommandNames(session.engine),
       });
       if (!turn) return send(text, agent, model, undefined, attachments);
+      // A command whose questions are invalid sends nothing: the raw template is never what the model gets.
+      if (turn.error !== undefined) return void toast.show({ variant: "error", message: turn.error });
       const said = [turn.warning, turn.notice].filter(Boolean).join(" ");
       if (said) toast.show({ variant: "info", message: said });
-      send(turn.text, turn.agent ?? agent, model, turn.model, attachments);
+      const turnAgent = turn.agent ?? agent;
+      // A command with questions asks them first; only Start sends the composed request, as this turn (its agent and model, Plan kept).
+      if (turn.form) {
+        return void openCommandQuestions(dialog, { form: turn.form, cwd: session.cwd, onStart: (request) => void send(request, turnAgent, model, turn.model, attachments) });
+      }
+      send(turn.text, turnAgent, model, turn.model, attachments);
     },
-    [session.cwd, session.engine, agents, agent, model, send, toast],
+    [session.cwd, session.engine, agents, agent, model, send, toast, dialog],
   );
 
   // A pi session's input takes keys whenever no prompt is open: while it starts (the model check, before the turn can take steers), while the

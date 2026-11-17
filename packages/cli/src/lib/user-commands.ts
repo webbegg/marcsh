@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentModelFits, type Agent } from "./agents";
 import { Mode } from "./modes";
+import { readQuestions, type CommandQuestion, type QuestionForm } from "./command-questions";
 import { agentFileSlug, readFrontmatter } from "./agent-file";
 import { COMMAND_NAME as NAME, PROJECT_COMMANDS_DIR, commandFiles, type CommandFile } from "./command-files";
 import { trustedProjectCommands } from "./engine/pi-trust";
@@ -30,6 +31,10 @@ export type UserCommand = {
   pack?: string;
   /** A pack command's name as the engine lists its copy in the pack's view on Claude (`<plugin name>:<name>`): marcsh runs it under that name too. */
   engineName?: string;
+  /** The questions the command asks before it sends (its frontmatter `questions`); absent when it asks none. */
+  questions?: CommandQuestion[];
+  /** Why the command's `questions` cannot be used: it loads, but running it only says so. */
+  invalid?: string;
 };
 
 /** Where the user's own commands live: global, next to the agents. */
@@ -39,7 +44,15 @@ export function userCommandsDir() {
 
 const firstLine = (text: string) => text.split("\n").find((line) => line.trim() !== "")?.trim().slice(0, 80) ?? "";
 
-/** The commands in `dir`. A pack's (`pack` given) are only those that name an agent: the rest are the engine's, as before. */
+/** A pack's question texts as they may reach the terminal. */
+const printableQuestion = (question: CommandQuestion): CommandQuestion => ({
+  ...question,
+  label: printable(question.label),
+  ...(question.default !== undefined ? { default: printable(question.default) } : {}),
+  ...(question.options ? { options: question.options.map(printable) } : {}),
+});
+
+/** The commands in `dir`. A pack's (`pack` given) are only those that name an agent or have `questions`: the rest are the engine's, as before. */
 function readCommandDir(dir: string, source: UserCommand["source"], pack?: string): UserCommand[] {
   // A project or a pack is third-party content: a link in it must not pull in a file from elsewhere.
   const files = commandFiles(dir, source === "personal").map((file) => ({ ...file, read: () => readFileSync(file.path, "utf8") }));
@@ -51,7 +64,9 @@ function parseCommands(files: (CommandFile & { read: () => string })[], source: 
   const commands: UserCommand[] = [];
   for (const { name, read } of files) {
     try {
-      const { fields, body } = readFrontmatter(read());
+      // Read once: the frontmatter and the `questions` block come from the same bytes.
+      const text = read();
+      const { fields, body } = readFrontmatter(text);
       const template = body.trim();
       if (template === "") continue;
       // A pack's texts are shown in the menu and the warnings: no escape sequence may get through.
@@ -61,7 +76,11 @@ function parseCommands(files: (CommandFile & { read: () => string })[], source: 
       };
       // A pack command with an empty `agent:` stays marcsh's (it warns when run) rather than going back to the engine's copy unnoticed.
       const agent = field("agent") ?? (pack && fields.has("agent") ? "" : undefined);
-      if (pack && agent === undefined) continue;
+      // A command with `questions` (valid or not) is marcsh's whatever it names: the engine's copy would send the raw template.
+      const asked = fields.has("questions") ? readQuestions(text, template) : null;
+      const invalid = asked && "error" in asked ? (pack ? printable(asked.error) : asked.error) : undefined;
+      const questions = asked && "questions" in asked && asked.questions.length > 0 ? (pack ? asked.questions.map(printableQuestion) : asked.questions) : undefined;
+      if (pack && agent === undefined && !questions && invalid === undefined) continue;
       const argumentHint = field("argument-hint");
       commands.push({
         name,
@@ -70,6 +89,8 @@ function parseCommands(files: (CommandFile & { read: () => string })[], source: 
         agent,
         model: field("model"),
         ...(argumentHint ? { argumentHint } : {}),
+        ...(questions ? { questions } : {}),
+        ...(invalid !== undefined ? { invalid } : {}),
         source,
         ...(pack ? { pack, engineName: `${packPluginName(pack)}:${name}` } : {}),
       });
@@ -213,8 +234,12 @@ export function parseInvocation(text: string): { name: string; args: string } | 
 
 /** What to send for a typed user command, and what it asks of the turn. */
 export type CommandTurn = {
-  /** The expanded prompt: what the chat shows and the engine receives. */
+  /** The expanded prompt: what the chat shows and the engine receives. Empty when the command asks (`form`) or cannot run (`error`): nothing is sent yet. */
   text: string;
+  /** Set when the command has questions: ask them (`components/dialogs/command-questions.tsx`) and send what they compose on Start, as this turn. `args` is what was typed after the name. */
+  form?: QuestionForm & { args: string };
+  /** Set when the command cannot run (its `questions` are invalid): show it as an error and send nothing. */
+  error?: string;
   /** The agent the command names, for this turn only. */
   agent?: Agent;
   /** The model the command names, when the engine can use it, for this turn only. */
@@ -274,8 +299,11 @@ export function userCommandTurn(input: string, { engine, agents, selected, ...lo
     commands.find((candidate) => candidate.name === invocation.name || candidate.engineName === invocation.name) ??
     hidden.find((candidate) => candidate.engineName === invocation.name);
   if (!command) return null;
+  if (command.invalid !== undefined) return { text: "", error: `/${command.name}: ${command.invalid}; nothing was sent.` };
 
-  const turn: CommandTurn = { text: expandCommand(command.template, invocation.args) };
+  const turn: CommandTurn = command.questions
+    ? { text: "", form: { name: command.name, template: command.template, questions: command.questions, args: invocation.args } }
+    : { text: expandCommand(command.template, invocation.args) };
   const warnings: string[] = [];
   if (command.agent === "") warnings.push(`/${command.name}: ${command.pack} names no agent (its agent: is empty); the selected agent is used.`);
   else if (command.agent) {

@@ -83,6 +83,25 @@ Select the AI model.
 
 See [Engines and models](engines-and-models.md).
 
+### /profile
+
+Show or change which models the main turn and the subagents use, by a profile from `profiles.json`.
+
+```
+/profile
+/profile use <name>
+/profile default <name>
+/profile clear
+```
+
+- `/profile` opens "Model Profile". It lists the profiles in force (the one you chose with `use`, then the default one), the route of the main turn (`primary`) and of each subagent the selected agent can start, and for each model where it comes from: `session profile fast, route review-*`, `default profile cheap, route *`, `agent file`, or `the turn's model`. Routes that do not fit the engine are listed as skipped, and the parts of the file that are invalid are listed as ignored.
+- `/profile use <name>` chooses the profile for this run of marcsh and switches the model to the profile's `primary` route (on pi `provider/id`; on Claude one of `opus`, `sonnet` or `haiku`). You can change the model afterwards with `/models` or `F2`; that choice stays until the next `/profile use`. A profile with no `primary` route that fits the engine leaves the model as it is. The choice is not saved.
+- `/profile default <name>` writes `"default": "<name>"` in `profiles.json`, keeping the rest of the file. It applies to every session that has not chosen another profile. It does not change the model of the session you are in.
+- `/profile clear` drops the profile you chose; the default one, if any, applies again.
+- An unknown name, or a file that is missing or not valid JSON, is an error toast, and nothing changes.
+
+The file, its format and the fallback chains are in [Configuration](configuration.md#model-profiles).
+
 ### /login
 
 Sign in to a pi provider with a subscription or an API key.
@@ -357,7 +376,7 @@ The `/` menu lists the commands and skills of the engine you are on. The list is
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
 
-Your [custom commands](#custom-commands) and the [pack commands that name an agent](#pack-commands) are the exception: marcsh expands them itself before sending.
+Your [custom commands](#custom-commands) and the [pack commands that name an agent or ask questions](#pack-commands) are the exception: marcsh expands them itself before sending.
 
 ## Custom commands
 
@@ -402,6 +421,7 @@ Pay special attention to: src/app.ts error handling
   - `agent`: the agent to run the turn as, by ID (`user/reviewer`, `plan`) or by name. An unknown agent is reported and the selected agent is used.
   - `model`: the model for the turn. If the engine cannot use it (a pi model such as `openai/gpt-5` on Claude, or the reverse), it is reported and the session model is used.
   - `argument-hint`: what the `/` menu shows after the name, such as `<file>` or `"[spec slug]"`. Quotes around it are dropped.
+  - `questions`: a list of questions marcsh asks before it sends the prompt. See [Questions](#questions).
 - `agent` and `model` apply to that turn only. The next message runs as the selected agent on the session model.
 
 ### Arguments
@@ -414,6 +434,58 @@ Pay special attention to: src/app.ts error handling
 - Arguments are used only where the file names them. A file with no placeholder sends the prompt as written.
 - Text inside your arguments is never expanded again, so an argument that contains `$1` stays as typed.
 - `$0`, `$10` and a lone `$` are plain text (`$10` is `$1` followed by `0`).
+
+### Questions
+
+A command with a `questions` list asks them before it sends anything. Each question has its own dialog, then you see the request marcsh composed and choose **Start**, **Edit answers** or **Cancel**. Only **Start** sends, as one message, as the agent and model the command names (the selected ones when it names none). `Esc` at any step, and **Cancel**, send nothing.
+
+```markdown
+---
+description: Add an endpoint
+argument-hint: "[route]"
+questions:
+  - id: route
+    label: "Which route?"
+    kind: text          # text | long | choice
+    required: true
+  - id: auth
+    label: "Authentication"
+    kind: choice
+    options: ["Public", "Signed in"]
+    default: "Signed in"
+  - id: base
+    label: "Base branch"
+    kind: text
+    default: "{{defaultBranch}}"
+  - id: notes
+    label: "Anything else?"
+    kind: long
+---
+Add an endpoint, test first.
+
+- Route: {{route}}
+- Authentication: {{auth}}
+- Base branch: {{base}}
+- Notes: {{notes}}
+```
+
+Each question has an `id` (lowercase letters, digits and `-`, unique in the file), a `label`, a `kind`, and optionally `required`, `options` and `default`:
+
+| Kind | Dialog |
+|---|---|
+| `text` | one line |
+| `long` | a multi-line editor (`Enter` submits, `Shift+Enter` adds a line) |
+| `choice` | a list of its `options` (at least two); a `default` must be one of them and is listed first |
+
+- `{{id}}` in the prompt is replaced by the answer, exactly as given. An answer that contains `{{...}}`, `$ARGUMENTS` or `$1` is not expanded again.
+- A multi-line answer becomes a block quote on its own lines (`> line`; a blank line of the answer is a bare `>`), and the text after it goes on the line below. `\r\n` in an answer counts as a plain line break.
+- A prompt line is left out only when all of its answers were skipped. A skipped answer on a line with others renders as empty.
+- A required answer cannot be empty: marcsh asks again once, then cancels. An optional text question can be left empty. When you choose **Edit answers**, an optional text answer is cleared by entering `-` (the title says so), and an optional choice offers a last row, `(no answer)`. A cleared answer stays cleared, also when the question has a default: its line is left out, the default does not come back. (Only an answer never given falls back to the default.)
+- A `default` is offered, not asked blind: leave a text field empty to accept it. It can use facts that marcsh reads locally, never from the network: `{{currentBranch}}`, `{{defaultBranch}}` (the branch `origin/HEAD` points at, else the only one of `main` and `master`) and `{{testScript}}` (the `test` script of the project's `package.json`). A default that uses a fact marcsh cannot find is dropped.
+
+**Typed arguments.** What you type after the command name is offered as the answer to the first `text` or `long` question, and it also preselects the first `choice` question when it matches one of the options (in any letter case). You still see each question and can change the answer. `$ARGUMENTS` and `$1` to `$9` in the prompt work as for any command, in the same pass as `{{id}}`, so nothing is expanded twice.
+
+**Invalid questions.** A `questions` list marcsh cannot use (a bad `kind`, a `choice` with fewer than two options, a duplicate `id`, a `default` that uses an unknown fact, or a `{{id}}` in the prompt that names no question) does not stop the file from loading, but running the command shows an error and sends nothing, for example `/start: the prompt uses {{ghost}}, which names no question; nothing was sent.` An empty `questions:` list asks nothing.
 
 ### Where they show and which one wins
 
@@ -432,7 +504,7 @@ Messages typed while a turn is running (steers and `/queue`) are sent as typed a
 
 ## Pack commands
 
-An installed [pack](packs.md) can ship commands in its `commands/` folder. Most of them belong to the engine and work only while one of the pack's agents is selected. A pack command whose frontmatter names an `agent` works differently: marcsh runs it itself, from any agent.
+An installed [pack](packs.md) can ship commands in its `commands/` folder. Most of them belong to the engine and work only while one of the pack's agents is selected. A pack command whose frontmatter names an `agent`, or has a `questions` list, works differently: marcsh runs it itself, from any agent.
 
 ```markdown
 ---
@@ -463,7 +535,8 @@ Where they show and which one wins:
 - If `/<repo>:<name>` is taken as well, the pack command is hidden. marcsh says so once, in a warning when the `/` menu opens. Claude's own copy of it (`/<owner>-<repo>:<name>`) is not listed either; typing that name still runs marcsh's command, as its agent, never the raw file.
 - marcsh knows the engine's commands from the list the engine last reported (after a turn, or when marcsh starts). Until it has one, a pack command keeps its name.
 - On Claude, the pack's view also has its own copy of the command, named `<owner>-<repo>:<name>`. That copy is not listed again, and typing its name runs marcsh's version.
-- A pack command without `agent` works as before: the engine runs it, and only while one of the pack's agents is selected.
+- A pack command with [`questions`](#questions) is marcsh's too, with or without `agent`: it asks them first and runs as the selected agent when it names none. The raw prompt, with its `{{id}}` placeholders, is never sent. The install preview lists it as `start → the selected agent (asks questions)`.
+- A pack command without `agent` and without `questions` works as before: the engine runs it, and only while one of the pack's agents is selected.
 
 ## Bundled commands and skills
 

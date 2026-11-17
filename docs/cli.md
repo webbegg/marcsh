@@ -39,6 +39,8 @@ marcsh run -c "now fix it"
 
 When standard input is not a terminal, its text is added to the message after a blank line. It can also be the whole message. If marcsh has no message at all, it prints `marcsh: no message: pass it as arguments or on standard input` and exits with `2`. A pipe that never closes makes `run` wait.
 
+A message that is one of your [custom commands](commands.md#custom-commands) or a pack's commands (`marcsh run "/quick-change rename the flag"`) runs as it does in the interface: marcsh expands it, and a command that names an agent or a model runs the turn with them. A command with [questions](commands.md#questions) cannot ask them here, so the text after its name is the answer to its first question, and the other questions take their defaults or stay unanswered. If a required question is still unanswered, or the command's questions are invalid, marcsh prints why and exits with `2`, and nothing is sent or saved.
+
 The session is saved like an interface session: it has a title (the first 100 characters of the message), the project folder you ran it in and an engine, and you can open it later with `/sessions`, `marcsh -c` or `marcsh -s <id>`.
 
 | Option | What it does |
