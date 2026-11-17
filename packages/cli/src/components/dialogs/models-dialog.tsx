@@ -7,6 +7,7 @@ import { DialogSearchList } from "../dialog-search-list";
 import type { SupportedChatModelId } from "../../lib/models";
 import type { EngineId } from "../../lib/engine";
 import { orderModels, toggleFavorite, type ModelSection } from "../../lib/model-picks";
+import { fitText } from "../../lib/fit-text";
 import { getFavoriteModels, getRecentModels, recordRecentModel, setFavoriteModels } from "../../lib/preferences";
 
 export type ModelRow<T> = { item: T; section: ModelSection };
@@ -78,14 +79,14 @@ export const ModelsDialogContent = ({
       items={picks.rows}
       onSelect={handleSelect}
       filterFn={({ item: modelId }, query) => modelId.toLowerCase().includes(query.toLowerCase())}
-      renderItem={(row, isSelected) => {
+      renderItem={(row, isSelected, width) => {
         picks.track(row, isSelected);
         return (
           <box flexDirection="row" gap={1} overflow="hidden">
             <box flexDirection="row">
               <FavoriteMark favorite={picks.isFavorite(row.item)} selected={isSelected} />
               <text selectable={false} fg={isSelected ? "black" : "white"}>
-                {row.item}
+                {fitText(row.item, width - 2 - (row.section === "recent" ? 7 : 0))}
               </text>
             </box>
             <RecentMark section={row.section} selected={isSelected} />

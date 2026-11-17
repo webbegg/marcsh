@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useDialog } from "../../providers/dialog";
 import { useToast } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
+import { fitText } from "../../lib/fit-text";
 import { ENGINE_IDS, ENGINE_LABELS, type EngineId } from "../../lib/engine";
 
 type EngineDialogContentProps = {
@@ -32,10 +33,10 @@ export const EngineDialogContent = ({
       filterFn={(engine, query) =>
         `${engine} ${ENGINE_LABELS[engine]}`.toLowerCase().includes(query.toLowerCase())
       }
-      renderItem={(engine, isSelected) => (
+      renderItem={(engine, isSelected, width) => (
         <text selectable={false} fg={isSelected ? "black" : "white"}>
           {engine === currentEngine ? " • " : "   "}
-          {ENGINE_LABELS[engine]}
+          {fitText(ENGINE_LABELS[engine], width - 3)}
         </text>
       )}
       getKey={(engine) => engine}

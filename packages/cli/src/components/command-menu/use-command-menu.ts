@@ -16,7 +16,7 @@ import { COMMAND_NAMES } from "./commands";
 export function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
   const known = loadEngineCommands(engine);
   const { commands, hidden } = loadCommandSet({ cwd, builtinNames: COMMAND_NAMES, engineNames: known.map((command) => command.name) });
-  return getMenuCommands(known, commands, inSession, hidden);
+  return getMenuCommands(known, commands, inSession, hidden, engine);
 }
 
 /** The engine's commands as marcsh knows them: the list its last turn or warm-up cached, plus the bundled plugin's. */
@@ -40,9 +40,12 @@ type UseCommandMenuReturn = {
   /** The commands matching the query, marcsh's own first. */
   commands: Command[];
   selectedIndex: number;
+  /** The user moved the highlight (arrows, mouse) since the text last changed: Enter then runs the highlighted row (see `typedCommand`). */
+  navigated: boolean;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   handleContentChange: (text: string) => void;
   resolveCommand: (index: number) => Command | undefined;
+  /** Moves the highlight on purpose (the mouse): it counts as navigating. */
   setSelectedIndex: (index: number) => void;
 };
 
@@ -52,7 +55,8 @@ type UseCommandMenuReturn = {
  */
 export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSession = false): UseCommandMenuReturn {
   const [textValue, setTextValue] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndexState] = useState(0);
+  const [navigated, setNavigated] = useState(false);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const { push, pop, isTopLayer } = useKeyboardLayer();
@@ -72,7 +76,8 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
 
   const handleContentChange = (text: string) => {
     setTextValue(text);
-    setSelectedIndex(0);
+    setSelectedIndexState(0);
+    setNavigated(false);
 
     // Jump back to the top of the list when the user types a new character
     const scrollbox = scrollRef.current;
@@ -90,6 +95,12 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     } else {
       close();
     }
+  };
+
+  // The mouse moving over a row highlights it: a row the user chose, as the arrows do.
+  const setSelectedIndex = (index: number) => {
+    setSelectedIndexState(index);
+    setNavigated(true);
   };
 
   // Resolve a command at a specific index (returns the command, caller handles execution)
@@ -110,7 +121,8 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
       close();
     } else if (key.name === "up") {
       key.preventDefault();
-      setSelectedIndex((i: number) => {
+      setNavigated(true);
+      setSelectedIndexState((i: number) => {
         const newIndex = Math.max(0, i - 1);
         // Keep the highlighted item visible when arrowing past the edge
         const sb = scrollRef.current;
@@ -121,7 +133,8 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
       });
     } else if (key.name === "down") {
       key.preventDefault();
-      setSelectedIndex((i: number) => {
+      setNavigated(true);
+      setSelectedIndexState((i: number) => {
         if (filteredCommands.length === 0) {
           return 0;
         }
@@ -145,6 +158,7 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     commandQuery,
     commands: filteredCommands,
     selectedIndex,
+    navigated,
     scrollRef,
     handleContentChange,
     resolveCommand,

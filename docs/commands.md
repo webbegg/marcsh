@@ -7,7 +7,8 @@ Type `/` in the prompt to run a command. This page lists every marcsh command, h
 ### Run a command
 
 - Type `/` at the start of the prompt. The menu opens as soon as the text starts with `/` and has no space yet.
-- Press `Up` and `Down` to move the highlight. Press `Enter` or click a row to run it. `Enter` runs the highlighted row, not the exact text you typed: `/mod` and `Enter` runs `/models`.
+- Press `Up` and `Down` to move the highlight. Click a row to run it.
+- `Enter` runs the command you typed: an exact name, or a start that only one command has (`/mod` runs `/models`). A start that several commands share (`/s`) runs nothing. If you moved the highlight with `Up`/`Down` or the mouse, `Enter` runs that row.
 - Press `Esc` to close the menu. Your text stays.
 
 Picking a command that is not one of marcsh's own (for example one from the engine) puts `/name ` in the prompt. Add what it needs and press `Enter`.
@@ -23,10 +24,12 @@ Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to
 ### How the menu filters
 
 - Keep typing to filter. The letters you type must appear in the command name in that order, so `/mo` finds `/models` and `/ss` finds `/sessions`. Case does not matter. Better matches come first.
-- With nothing after the `/`, marcsh's own commands come first, then the engine's commands sorted by name.
+- With nothing after the `/`, the menu is grouped under dim headers: marcsh's own commands, then `packs & custom`, then the engine's commands, each group sorted by name. With a query the list is one list, best match first.
+- `/login` and `/logout` manage pi's logins, so they are listed only on pi. On Claude they still run when you type the full name.
 - The menu shows at most 10 rows and scrolls.
 - The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.
-- When nothing matches, the menu says "No matching commands". `Enter` then sends your text as typed.
+- When nothing matches, the menu says "No matching commands".
+- When the text is not a command, `Enter` shows a toast (`/x is not a known command · enter again to send it to Claude`) and keeps the text. Press `Enter` again to send it to the engine. Text with a `/` inside the name, like a path, is sent at once.
 
 ## marcsh commands
 
@@ -98,6 +101,7 @@ Show or change which models the main turn and the subagents use, by a profile fr
 - `/profile use <name>` chooses the profile for this run of marcsh and switches the model to the profile's `primary` route (on pi `provider/id`; on Claude one of `opus`, `sonnet` or `haiku`). You can change the model afterwards with `/models` or `F2`; that choice stays until the next `/profile use`. A profile with no `primary` route that fits the engine leaves the model as it is. The choice is not saved.
 - `/profile default <name>` writes `"default": "<name>"` in `profiles.json`, keeping the rest of the file. It applies to every session that has not chosen another profile. It does not change the model of the session you are in.
 - `/profile clear` drops the profile you chose; the default one, if any, applies again.
+- With no `profiles.json` yet, the dialog offers "Create a starter profiles file". `Enter` writes one at `MARCSH_PROFILES_PATH` or `~/.marcsh/profiles.json`, with one `default` profile built from the current models. It never overwrites a file. See [Configuration](configuration.md#the-starter-file).
 - An unknown name, or a file that is missing or not valid JSON, is an error toast, and nothing changes.
 
 The file, its format and the fallback chains are in [Configuration](configuration.md#model-profiles).
@@ -115,7 +119,7 @@ Sign in to a pi provider with a subscription or an API key.
 - A subscription sign-in reminds you to check your plan's terms. See [Engines and models](engines-and-models.md#pi-login).
 - `Esc` cancels the login and shows "Login to NAME cancelled".
 - On success you see "Logged in to NAME" or "Saved API key for NAME".
-- `/login` works from a Claude session too. It manages the logins that pi uses.
+- `/login` works from a Claude session too, typed in full. It manages the logins that pi uses, so the `/` menu lists it only on pi.
 
 ### /logout
 
@@ -136,7 +140,7 @@ Trust or distrust this project: its pi files, its commands (`.marcsh/commands`) 
 /trust
 ```
 
-- Opens "Project Trust" with three choices: "Don't trust", "Trust" and "Forget".
+- Opens "Project Trust" with three choices: "Don't trust", "Trust" and "Forget". `• current` marks the decision in force, wherever the highlight is.
 - "Trust" lists what you trust first. A project with nothing to review says what trusting turns on and asks for `t`, then `Enter`.
 - Project commands and the git count follow a change at once; pi follows it from the next turn.
 - The list has three parts (pi files, project commands, git settings), and each part stops applying on its own when something in it is added, changed or removed: a changed command turns off the project's commands, a new or changed git filter driver or attributes file the git count, a changed pi file pi's trust. Run `/trust` again to review the project.
@@ -168,8 +172,8 @@ Choose how much runs without asking.
 /permissions default <normal|auto|yolo>
 ```
 
-- `/permissions` opens "Permissions" with three rows. The current mode has a bullet.
-  - `normal`: asks before edits and commands, as before.
+- `/permissions` opens "Permissions" with three rows. The current mode has a bullet. When the folder is not on a feature branch, `auto` and `yolo` say `(paused on main)`, or `(paused: <reason>)` outside a repository.
+  - `normal`: asks before edits and commands.
   - `auto`: on a feature branch: edits and ordinary commands run; commits and remote actions ask.
   - `yolo`: on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask.
 - Choose one to set the mode of the current app session. marcsh shows "Approval mode: auto for this session". Every session starts in `normal` unless you saved a default.
@@ -635,10 +639,11 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 
 | Keys | What they do |
 | --- | --- |
-| `Enter` | Send the message. In a menu, choose the highlighted row. During a pi turn, steer the turn. |
+| `Enter` | Send the message. In the `/` menu, run the command you typed, or the row you moved to. In other menus, choose the highlighted row. During a pi turn, steer the turn. |
+| `?` | On an empty prompt, open the help: the keys and the commands. With text, it types `?`. |
 | `Shift+Enter` | Add a new line. |
 | `Alt+Enter` (`Option+Enter` on a Mac) | During a pi turn, queue the message. Same as `/queue`. |
-| `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. |
+| `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. When the mode changes between Build and Plan, a toast says what the new mode does. |
 | `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, the first press shows "ctrl+c again to quit" and a second press within about 1.5 seconds quits: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |

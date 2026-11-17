@@ -72,11 +72,13 @@ describe("menuRowLimit", () => {
 });
 
 describe("the / menu height", () => {
-  test("a large terminal shows 10 rows", async () => {
+  test("a large terminal shows 10 rows, the `marcsh` group header (S16) and 9 commands", async () => {
     const screen = await openMenu("session", { width: 100, height: 40 });
     try {
       const rows = commandRows(screen);
-      expect(rows).toHaveLength(10);
+      // The header row counts toward the 10 (`menuRowLimit` counts rows), so one command less than before the groups.
+      expect(rows).toHaveLength(9);
+      expect(screen.captureCharFrame().split("\n").filter((line) => line.trim().startsWith("marcsh"))).toHaveLength(1);
       expect(rows[0]).toContain("/new");
     } finally {
       await act(async () => screen.renderer.destroy());

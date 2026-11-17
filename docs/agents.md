@@ -20,6 +20,8 @@ Build is the default. Plan can read your project but cannot write files or run c
 
 The status line shows the selected agent on the left, before the model and the engine.
 
+When a switch changes the mode (Build to Plan, or back), a toast says what the new mode does: `Plan: reads and plans; changes nothing` or `Build: edits files and runs commands, asking first`. It starts with the name of the agent you selected, so a read-only agent of your own says `Reviewer: reads and plans; changes nothing`. A switch that keeps the mode shows no such toast. If the agent also has warnings, they are in the same toast, after the mode line and ` · `.
+
 The order is Build, Plan, your personal agents (sorted by file name), then agents from installed [packs](packs.md).
 
 Good to know:
@@ -234,7 +236,7 @@ See [`/profile`](commands.md#profile).
 
 ## Warnings
 
-When you select an agent, marcsh checks what the current engine can apply. If something is ignored, a toast starts with `Warning:`. Several warnings are joined with `; `. The agent still works.
+When you select an agent, marcsh checks what the current engine can apply. If something is ignored, a toast starts with `Warning:`. Several warnings are joined with `; `. The agent still works. When the switch also changes the mode, the toast starts with the mode line and the warnings follow after ` · `: there is one toast, not two.
 
 In the table, `Name` is the agent's name.
 

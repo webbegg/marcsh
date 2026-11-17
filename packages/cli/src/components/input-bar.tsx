@@ -12,9 +12,11 @@ import { useNavigate } from "react-router";
 import { EmptyBorder } from "./border";
 import { StatusBar } from "./status-bar";
 import { CommandMenu } from "./command-menu";
-import type { Command } from "./command-menu/types";
+import type { Command, CommandContext } from "./command-menu/types";
 import { COMMANDS, COMMAND_NAMES } from "./command-menu/commands";
 import { loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
+import { typedCommand } from "./command-menu/typed-command";
+import { openHelp } from "./dialogs/help-dialog";
 import { takePackCommandNotices } from "../lib/user-commands";
 import { CommandPalette } from "./command-palette";
 import { SessionCommandsContext } from "./command-menu/session-commands";
@@ -29,7 +31,7 @@ import { useToast } from "../providers/toast";
 import { useTheme } from "../providers/theme";
 import { usePromptConfig } from "../providers/prompt-config";
 import { useClipboard } from "../providers/clipboard";
-import { Mode } from "../lib/modes";
+import { Mode, type ModeType } from "../lib/modes";
 import { agentWarnings, type Agent } from "../lib/agents";
 import type { EngineId } from "../lib/engine";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
@@ -367,6 +369,15 @@ function useTmuxNewLineKey(): boolean {
   return keys === "tmux-basic";
 }
 
+/** What each mode does, in the toast that says so when a switch changes the mode (the agent's name goes before it). */
+const MODE_SENTENCES: Record<ModeType, string> = {
+  [Mode.BUILD]: "edits files and runs commands, asking first",
+  [Mode.PLAN]: "reads and plans; changes nothing",
+};
+
+/** How the engine is named in the toast of an unknown command. */
+const engineWord = (engineId: string) => (engineId === "pi" ? "pi" : "Claude");
+
 const PLACEHOLDER = `Ask anything... "Fix a bug in the database"`;
 const REPLY_RUNNING_PLACEHOLDER = "reply running · esc to stop";
 
@@ -591,14 +602,29 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
   const session = useContext(SessionCommandsContext);
   const runningTerminals = useRunningTerminals(useBackgroundHub());
   const runningSubagents = useRunningSubagents(useBackgroundHub());
-  // The warnings take a moment to work out: one that arrives after the user moved to another agent is about an agent no longer in use.
   const agentIdRef = useRef(agent.id);
   agentIdRef.current = agent.id;
-  // An agent the engine cannot fully apply still works: what it ignores is said once, when it is selected.
-  const warnAboutAgent = useCallback(async (selected: Agent) => {
+  // The agent in use, kept apart from the render: Tab can fire twice before one, and a switch is judged against the one before it.
+  const currentAgentRef = useRef(agent);
+  currentAgentRef.current = agent;
+  // What a switch of agent says, in one toast: what the new mode does when the mode changed, and what the engine cannot apply of the
+  // agent (it still works: what it ignores is said once, when it is selected). The warnings take a moment to work out: a toast that
+  // arrives after the user moved to another agent is about an agent no longer in use.
+  const announceAgent = useCallback(async (previous: Agent, selected: Agent) => {
     const warnings = await agentWarnings(selected, engineId);
-    if (warnings.length > 0 && agentIdRef.current === selected.id) toast.show({ variant: "info", message: `Warning: ${warnings.join("; ")}` });
+    const lines = [
+      ...(previous.mode !== selected.mode ? [`${selected.name}: ${MODE_SENTENCES[selected.mode]}`] : []),
+      ...(warnings.length > 0 ? [`Warning: ${warnings.join("; ")}`] : []),
+    ];
+    if (lines.length > 0 && currentAgentRef.current.id === selected.id) toast.show({ variant: "info", message: lines.join(" · ") });
   }, [engineId, toast]);
+  // Selects an agent (Tab, `/agents`) and says what changed.
+  const switchAgent = useCallback((select: () => Agent) => {
+    const previous = currentAgentRef.current;
+    const selected = select();
+    currentAgentRef.current = selected;
+    void announceAgent(previous, selected);
+  }, [announceAgent]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder, quitArmed, registerPrompt } = useKeyboardLayer();
   // While this bar is on screen, an armed quit (first Ctrl+C) is said in its hint line, not in a toast.
@@ -780,10 +806,15 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     [setDefaultEngine, cwd],
   );
 
+  // The text an unknown `/command` was last said to be one for: Enter on it again sends it (see `onSubmitRef`).
+  const unknownAskedRef = useRef<string | null>(null);
+
   const {
     showCommandMenu,
+    commandQuery,
     commands,
     selectedIndex,
+    navigated,
     scrollRef,
     handleContentChange,
     resolveCommand,
@@ -846,6 +877,7 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
 
     setDraft(renderer, text.length > 0);
     onTextChangeRef.current?.(text);
+    unknownAskedRef.current = null;
     if (text.length === 0) givenBackRef.current = "";
     // The text of a history walk is not typing: the menus stay closed, so Up and Down keep walking. Any other change ends the walk.
     const walk = historyWalkRef.current;
@@ -996,6 +1028,31 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     syncMentionMenu(textarea.plainText, cursorIndex(textarea));
   }, [syncMentionMenu]);
 
+  // What a command's action works with: `args` is what was typed after its name. Commands and the `?` key (help) build it the same way.
+  const commandContext = useCallback((args: string): CommandContext => ({
+    args,
+    exit: () => void quitApp(renderer),
+    dialog,
+    toast,
+    engine: engineId,
+    cwd,
+    defaultEngine,
+    setDefaultEngine: switchDefaultEngine,
+    piModel,
+    setPiModel,
+    refreshPiModel,
+    navigate,
+    agentId: agent.id,
+    reloadAgents,
+    selectAgent: (id) => switchAgent(() => selectAgent(id)),
+    setModel,
+    session,
+    approvalMode,
+    setApprovalMode,
+    defaultApprovalMode,
+    setDefaultApprovalMode,
+  }), [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, switchAgent, setModel, session, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode]);
+
   // `keepText`: the command was not typed (the palette, the leader), so the prompt holds the user's own text and is left alone.
   const handleCommand = useCallback((
     command: Command | undefined,
@@ -1008,33 +1065,11 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     if (!keepText) textarea.setText("");
 
     if (command.action) {
-      command.action({
-        args,
-        exit: () => void quitApp(renderer),
-        dialog,
-        toast,
-        engine: engineId,
-        cwd,
-        defaultEngine,
-        setDefaultEngine: switchDefaultEngine,
-        piModel,
-        setPiModel,
-        refreshPiModel,
-        navigate,
-        agentId: agent.id,
-        reloadAgents,
-        selectAgent: (id) => void warnAboutAgent(selectAgent(id)),
-        setModel,
-        session,
-        approvalMode,
-        setApprovalMode,
-        defaultApprovalMode,
-        setDefaultApprovalMode,
-      });
+      command.action(commandContext(args));
     } else {
       textarea.insertText(command.value + " ");
     }
-  }, [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, warnAboutAgent, setModel, session, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode]);
+  }, [commandContext]);
 
   // The palette and the leader run a command the way a typed `/command` does. One that needs text after its name (`/rename`, a
   // custom or engine command) puts `/name ` in the prompt for the user to finish, which needs the prompt to be empty.
@@ -1058,6 +1093,7 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     }
     dialog.open({
       title: "Command Palette",
+      width: "wide",
       children: (
         <CommandPalette
           commands={loadMenuCommands(engineId, cwd, session !== null)}
@@ -1235,12 +1271,29 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     if (disabled || typeOnly) return;
 
     if (showCommandMenu) {
-      const command = resolveCommand(selectedIndex);
-      if (command) {
-        handleCommand(command);
+      // What was typed decides, not the fuzzy ranking: an exact name, the start of one name, or a row the user moved to.
+      const typed = textareaRef.current?.plainText.trim() ?? "";
+      const outcome = typedCommand(typed.startsWith("/") ? typed.slice(1) : "", commands, navigated, selectedIndex);
+      if ("run" in outcome) {
+        handleCommand(resolveCommand(commands.indexOf(outcome.run)));
         return;
       }
-      // No command matches (e.g. `/probe:hello` not in the list): submit the text as typed
+      if ("unknown" in outcome) {
+        const name = typed.split(/\s/, 1)[0]!;
+        // A command of marcsh's own that the menu does not list (`/login` on Claude) still runs when typed in full, below.
+        const unlisted = COMMAND_NAMES.includes(name.slice(1));
+        if (!unlisted && unknownAskedRef.current !== typed) {
+          unknownAskedRef.current = typed;
+          toast.show({
+            variant: "info",
+            message: name === "/" ? "Type a command's name, or pick one with ↑ ↓" : `${name} is not a known command · enter again to send it to ${engineWord(engineId)}`,
+          });
+          // `/` alone has nothing to send: the asking ends there.
+          if (name === "/") unknownAskedRef.current = null;
+          return;
+        }
+      }
+      // The text is not a command (a path), or was said not to be one and is sent anyway: it goes as typed.
     } else if (showMentionMenu) {
       const candidate = mentionCandidates[mentionSelectedIndex];
       if (candidate) {
@@ -1299,11 +1352,18 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
       }
     }
     // Keys typed here mean the user is composing; Enter sends, and Esc and Tab are not typing.
+    // `?` on an empty prompt opens help; with text in it, `?` is a character. Only here, on the base layer: a dialog or a prompt over
+    // the bar has the key.
+    if (key.sequence === "?" && !key.ctrl && !key.meta && !key.option && !typeOnly && attachmentsRef.current.length === 0 && textareaRef.current?.plainText.length === 0) {
+      key.preventDefault();
+      openHelp(commandContext(""));
+      return;
+    }
     const sends = (key.name === "return" || key.name === "enter") && !key.shift;
     if (!sends && key.name !== "escape" && key.name !== "tab") noteKeyActivity(renderer);
     if (key.name === "tab") {
       key.preventDefault();
-      if (!typeOnly) void warnAboutAgent(cycleAgent());
+      if (!typeOnly) switchAgent(cycleAgent);
     } else if (!typeOnly && (key.name === "up" || key.name === "down") && !key.shift && !key.ctrl && !key.meta && !key.option && !key.super && !key.hyper) {
       // Only here, on the base layer: while a menu is open, Up and Down belong to the menu.
       if (walkHistory(key.name)) key.preventDefault();
@@ -1423,6 +1483,7 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
             >
               <CommandMenu
                 commands={commands}
+                query={commandQuery}
                 selectedIndex={selectedIndex}
                 scrollRef={scrollRef}
                 onSelect={setSelectedIndex}

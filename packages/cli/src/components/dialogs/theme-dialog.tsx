@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useDialog } from "../../providers/dialog";
 import { useTheme } from "../../providers/theme";
 import { DialogSearchList } from "../dialog-search-list";
+import { fitText } from "../../lib/fit-text";
 import { THEMES } from "../../theme";
 import type { Theme } from "../../theme";
 
@@ -42,12 +43,12 @@ export const ThemeDialogContent = () => {
       onSelect={handleSelect}
       onHighlight={handleHighlight}
       filterFn={(t, query) => t.name.toLowerCase().includes(query.toLowerCase())}
-      renderItem={(theme, isSelected) => (
+      renderItem={(theme, isSelected, width) => (
         <text selectable={false} fg={isSelected ? "black" : "white"}>
           {theme.name === originalThemeRef.current.name
             ? "\u0020\u2022\u0020"
             : "\u0020\u0020\u0020"}
-          {theme.name}
+          {fitText(theme.name, width - 3)}
         </text>
       )}
       getKey={(t) => t.name}

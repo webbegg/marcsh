@@ -147,12 +147,21 @@ afterEach(async () => {
 });
 
 describe("/login (S12)", () => {
-  test("is in the / menu and lists pi's subscription and API-key providers with a filter", async () => {
-    await openSession("claude");
+  test("is in pi's / menu", async () => {
+    await openSession("pi");
 
     await type("/log");
     expect(frame()).toContain("Log in to a pi provider");
     expect(frame()).toContain("Remove a pi provider login");
+  });
+
+  test("is left out of Claude's / menu but still runs when typed in full, listing pi's providers with a filter", async () => {
+    await openSession("claude");
+
+    await type("/log");
+    expect(frame()).not.toContain("Log in to a pi provider");
+    expect(frame()).not.toContain("Remove a pi provider login");
+    await type("in");
     await press("RETURN");
     await settle(120);
 
