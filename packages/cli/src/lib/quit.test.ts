@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { createQuit, installQuitSignals, type QuitEnv } from "./quit";
+import { createQuit, installQuitSignals, resumeNotice, sessionIdFromPath, type QuitEnv } from "./quit";
 
 // Timers are fake: the test fires the bound by hand, so nothing waits and nothing real is killed.
-function setup() {
+function setup(afterQuit?: () => void) {
   const exits: number[] = [];
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
   const env: QuitEnv = {
@@ -17,6 +17,7 @@ function setup() {
       (handle as { cleared: boolean }).cleared = true;
     },
     graceMs: 5000,
+    afterQuit,
   };
   const quit = createQuit(env);
   const fireTimers = () => timers.filter((t) => !t.cleared).forEach((t) => t.fn());
@@ -231,5 +232,49 @@ describe("installQuitSignals (S20)", () => {
     expect(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => proc.listenerCount(s))).toEqual([1, 1, 1]);
     remove();
     expect(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => proc.listenerCount(s))).toEqual([0, 0, 0]);
+  });
+});
+
+describe("the resume line (S5)", () => {
+  test("the notice names the session and `marcsh -c`", () => {
+    expect(resumeNotice("abc123")).toBe("marcsh: session abc123 saved · marcsh -c to resume");
+  });
+
+  test("the session id comes from a session route only", () => {
+    expect(sessionIdFromPath("/sessions/abc123")).toBe("abc123");
+    expect(sessionIdFromPath("/sessions/a%20b")).toBe("a b");
+    expect(sessionIdFromPath("/")).toBeNull();
+    expect(sessionIdFromPath("/sessions/new")).toBeNull();
+    expect(sessionIdFromPath("/sessions/abc/extra")).toBeNull();
+  });
+
+  test("afterQuit runs after the renderer is gone and before exit, once", async () => {
+    const log: string[] = [];
+    const { quit, exits } = setup(() => void log.push(`after (exits ${exits.length})`));
+    await quit.quitApp(fakeRenderer(log));
+    expect(log).toEqual(["destroy", "after (exits 0)"]);
+    expect(exits).toEqual([0]);
+  });
+
+  test("afterQuit waits for the running turn to settle (its last save), never before", async () => {
+    const log: string[] = [];
+    const { quit } = setup(() => void log.push("after"));
+    const turn = fakeTurn();
+    turn.done = turn.done.then(() => void log.push("saved"));
+    quit.registerTurn(turn);
+    const quitting = quit.quitApp(fakeRenderer(log));
+    await tick();
+    expect(log).toEqual(["destroy"]);
+    turn.finish();
+    await quitting;
+    expect(log).toEqual(["destroy", "saved", "after"]);
+  });
+
+  test("a throwing afterQuit does not stop the exit", async () => {
+    const { quit, exits } = setup(() => {
+      throw new Error("boom");
+    });
+    await quit.quitApp(fakeRenderer());
+    expect(exits).toEqual([0]);
   });
 });

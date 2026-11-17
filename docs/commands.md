@@ -344,7 +344,7 @@ Quit marcsh.
 /exit
 ```
 
-- Stops any running turn first, then quits. `Ctrl+C` quits the same way when nothing else is open.
+- Stops any running turn first, then quits. `Ctrl+C` pressed twice quits the same way when nothing else is open.
 
 ## While a turn is running
 
@@ -606,7 +606,7 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Alt+Enter` (`Option+Enter` on a Mac) | During a pi turn, queue the message. Same as `/queue`. |
 | `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. |
 | `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
-| `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, quit: marcsh stops any running reply first and waits a few seconds for it to finish. |
+| `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, the first press shows "ctrl+c again to quit" and a second press within about 1.5 seconds quits: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |
 | `Ctrl+V` | Paste what the clipboard holds: an image is attached, text is pasted. See [Pasting](screen.md#pasting). |
 | `Ctrl+X`, then a key | Run a command (`Ctrl+X` `n` is `/new`). The status line shows the leader is waiting; it ends after 2 seconds. See [Keybinds](keybinds.md). |

@@ -68,7 +68,8 @@ const { NewSession } = await import("./screens/new-session");
 const { Session } = await import("./screens/session");
 const { warmUpEngineCommands } = await import("./lib/engine");
 const { getDefaultEngine } = await import("./lib/preferences");
-const { installQuitSignals } = await import("./lib/quit");
+const { getStorage } = await import("./lib/storage");
+const { installQuitSignals, quitEnv, resumeNotice, sessionIdFromPath } = await import("./lib/quit");
 const { createAppClipboard } = await import("./lib/clipboard");
 const { ClipboardProvider } = await import("./providers/clipboard");
 const { prunePendingImages } = await import("./lib/clipboard-images");
@@ -110,6 +111,13 @@ createRoot(renderer).render(<App />);
 
 // SIGINT, SIGTERM and SIGHUP (a closed terminal) quit the same way as Ctrl+C: running turns are stopped first (exit codes 130, 143, 129).
 installQuitSignals(renderer);
+
+// Once the renderer is gone and the running turn has saved, a quit from an open session says how to come back to it (on stderr, like
+// the other messages marcsh prints outside the screen). The open session is the router's current route.
+quitEnv.afterQuit = () => {
+  const id = sessionIdFromPath(router.state.location.pathname);
+  if (id && getStorage().getSession(id)) console.error(resumeNotice(id));
+};
 
 // Fills the `/` menu's command list of the default engine without waiting for a chat turn; never delays or breaks the
 // first render. Only that engine: a Claude-only run never loads pi (pi is warmed when a pi session opens or becomes the default).

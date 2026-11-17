@@ -18,7 +18,25 @@ export type QuitEnv = {
   clearTimeout: (handle: unknown) => void;
   /** The longest quit waits for the running turns in total (pi's own shutdown is bounded to 3 s). */
   graceMs: number;
+  /** Runs once, just before `exit`: the renderer is gone and every running turn has settled (or its bound has passed). */
+  afterQuit?: () => void;
 };
+
+/** The line printed after quitting from an open session. */
+export function resumeNotice(sessionId: string): string {
+  return `marcsh: session ${sessionId} saved · marcsh -c to resume`;
+}
+
+/** The id of the session a router path shows, or null on any other screen (`/sessions/new` is not a session). */
+export function sessionIdFromPath(pathname: string): string | null {
+  const match = /^\/sessions\/([^/]+)$/.exec(pathname);
+  if (!match || match[1] === "new") return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+}
 
 export function createQuit(env: QuitEnv) {
   const turns = new Set<QuitTurn>();
@@ -30,6 +48,9 @@ export function createQuit(env: QuitEnv) {
   const finish = (code: number, startedIn = generation) => {
     if (exited || startedIn !== generation) return;
     exited = true;
+    try {
+      env.afterQuit?.();
+    } catch {}
     env.exit(code);
   };
 

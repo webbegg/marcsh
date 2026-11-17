@@ -86,7 +86,7 @@ A background subagent's tool calls still ask for approval in the normal approval
 ## Stopping and quitting
 
 - `Esc` stops a running reply. It also declines an approval prompt or a question that is waiting. Two cases differ. In a question's free-text field, `Esc` only closes the field. On the project-trust question, `Esc` means "not now": the turn goes on without the project's files.
-- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish. When the input is off, `Ctrl+C` quits at once, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
+- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it shows "ctrl+c again to quit", and a second `Ctrl+C` within about 1.5 seconds quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish, then prints the session's ID and `marcsh -c` to open it again. When the input is off, the same two presses quit, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
 - `/exit` also quits.
 
 ## The status line

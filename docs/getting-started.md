@@ -53,7 +53,7 @@ After you press `y`, the tool runs and the agent goes on. The reply shows what i
 
 ## 5. Quit
 
-Press `Ctrl+C` on an empty input, or type `/exit`. marcsh saves every session, so you can come back to it later. See [Sessions](sessions.md).
+Press `Ctrl+C` twice on an empty input, or type `/exit`. marcsh saves every session, so you can come back to it later: it prints the session's ID, and `marcsh -c` opens it again. See [Sessions](sessions.md).
 
 ## Next
 
