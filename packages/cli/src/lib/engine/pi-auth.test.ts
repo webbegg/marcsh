@@ -357,6 +357,13 @@ describe("redactSecrets", () => {
     const text = "Request to https://auth.example.test/oauth/token/some/long/path/segments/here failed with status 400";
     expect(redactSecrets(text, [])).toBe(text);
   });
+
+  test("a long token with no dots is masked in linear time, and a JWT after a word still is", () => {
+    const started = performance.now();
+    expect(redactSecrets("a".repeat(200_000))).toBe("•••");
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(redactSecrets("token=xyzeyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIx.sig ok")).toBe("token=••• ok");
+  });
 });
 
 describe("friendlyPiError", () => {

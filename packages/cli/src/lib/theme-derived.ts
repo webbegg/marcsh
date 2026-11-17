@@ -42,11 +42,20 @@ export function blend(fg: string, bg: string, share: number): string {
   return `#${channel(0)}${channel(1)}${channel(2)}`.toUpperCase();
 }
 
-/** The colours of a diff, from the theme's own: tinted backgrounds for added and removed lines. */
+/** `blend`, or `bg` when a colour is not `#RRGGBB`: the approval prompt draws diffs, so a theme colour must never crash it. */
+function tint(fg: string, bg: string, share: number): string {
+  try {
+    return blend(fg, bg, share);
+  } catch {
+    return bg;
+  }
+}
+
+/** The colours of a diff, from the theme's own: tinted backgrounds for added and removed lines (plain when a colour cannot be blended). */
 export function deriveDiffColors(colors: ThemeColors): DiffColors {
   return {
-    addedBg: blend(colors.success, colors.background, 0.2),
-    removedBg: blend(colors.error, colors.background, 0.2),
+    addedBg: tint(colors.success, colors.background, 0.2),
+    removedBg: tint(colors.error, colors.background, 0.2),
     addedSign: colors.success,
     removedSign: colors.error,
     lineNumber: colors.dimSeparator,

@@ -79,6 +79,18 @@ describe("the reply being written is streamed markdown (S8)", () => {
     expect(frame()).toContain("so **bo");
   });
 
+  test("a reply stopped with Esc is drawn as written", async () => {
+    const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd", engine: "claude" });
+    await open(session.id, { message: "go", mode: "BUILD", model: "haiku" });
+    await settle(300);
+    expect(frame()).not.toContain("**bo");
+
+    await act(async () => screen!.mockInput.pressEscape());
+    await settle(300);
+    expect(frame()).toContain("interrupted");
+    expect(frame()).toContain("so **bo");
+  });
+
   test("a reply that was saved is complete when the session is opened", async () => {
     const session = getStorage().createSession({ title: "t", cwd: "/tmp/marcsh-cwd", engine: "claude" });
     await open(session.id, { message: "go", mode: "BUILD", model: "haiku" });

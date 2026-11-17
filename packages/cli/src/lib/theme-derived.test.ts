@@ -24,6 +24,14 @@ describe("blend", () => {
 });
 
 describe("the diff colours", () => {
+  test("a colour that is not #RRGGBB leaves its background plain instead of throwing", () => {
+    const colors = { ...THEMES[0]!.colors, success: "green" };
+    const diff = deriveDiffColors(colors);
+    expect(diff.addedBg).toBe(colors.background);
+    expect(diff.addedSign).toBe("green");
+    expect(diff.removedBg).not.toBe(colors.background);
+  });
+
   test("come from the success, error, background and separator colours", () => {
     const { colors } = THEMES[0]!;
     const diff = deriveDiffColors(colors);

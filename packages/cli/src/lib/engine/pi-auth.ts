@@ -109,7 +109,9 @@ export function redactSecrets(text: string, secrets: Iterable<string> = []): str
   return redacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${MASK}`)
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, MASK)
-    .replace(/[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]*/g, MASK)
+    // Starting only where a run of token characters starts keeps this linear: from every position inside a long run
+    // with no dot the match would scan to the run's end and back again.
+    .replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]*/g, MASK)
     .replace(/[A-Za-z0-9_-]{32,}/g, MASK);
 }
 

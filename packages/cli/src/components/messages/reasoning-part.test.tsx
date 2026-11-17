@@ -52,7 +52,6 @@ describe("an empty thinking block", () => {
 describe("a collapsed thinking block", () => {
   test("is one line with its duration and the first words", async () => {
     const frame = await render({ text: "Let me look at the failing test first.\nThen the fix.", durationMs: 2300 });
-    console.log(`--- collapsed thinking ---\n${frame}\n---`);
     expect(frame.split("\n")).toHaveLength(1);
     expect(frame).toContain("Thinking · 2.3s");
     expect(frame).toContain("Let me look at the failing test first.");
