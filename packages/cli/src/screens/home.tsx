@@ -6,6 +6,7 @@ import { InputBar } from "../components/input-bar";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
 import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { openCommandQuestions } from "../components/dialogs/command-questions";
+import { PaletteHint } from "../components/dialogs/help-dialog";
 import { usePromptConfig } from "../providers/prompt-config";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";
@@ -92,9 +93,12 @@ export function Home() {
         {noModel ? <FirstRunCard /> : null}
         <InputBar onSubmit={handleSubmit} onTextChange={handleTextChange} />
         {noModel && blocked ? <text>{NO_MODEL_MESSAGE}</text> : null}
-        <box flexDirection="row" gap={1} flexShrink={0} marginLeft="auto">
-          <text>tab</text>
-          <text attributes={TextAttributes.DIM}>agents</text>
+        <box flexDirection="row" gap={2} flexShrink={0} marginLeft="auto">
+          <PaletteHint />
+          <box flexDirection="row" gap={1} flexShrink={0}>
+            <text>tab</text>
+            <text attributes={TextAttributes.DIM}>agents</text>
+          </box>
         </box>
       </box>
     </box>
