@@ -130,14 +130,17 @@ Remove a pi provider login.
 
 ### /trust
 
-Trust or distrust this project's pi files.
+Trust or distrust this project: its pi files, its commands (`.marcsh/commands`) and its git settings, which the git changed-file count needs. Works for any project, on either engine.
 
 ```
 /trust
 ```
 
 - Opens "Project Trust" with three choices: "Don't trust", "Trust" and "Forget".
-- A change applies from the next turn.
+- "Trust" lists what you trust first. A project with nothing to review says what trusting turns on and asks for `t`, then `Enter`.
+- Project commands and the git count follow a change at once; pi follows it from the next turn.
+- The list has three parts (pi files, project commands, git settings), and each part stops applying on its own when something in it is added, changed or removed: a changed command turns off the project's commands, a new or changed git filter driver or attributes file the git count, a changed pi file pi's trust. Run `/trust` again to review the project.
+- "Forget" goes back to undecided.
 
 See [Security](security.md#change-a-decision-trust) for what each choice does, the review list and the keys, and for what trusting a project allows.
 
@@ -493,7 +496,9 @@ Each question has an `id` (lowercase letters, digits and `-`, unique in the file
 
 ### Project commands and trust
 
-A project's commands are text from that project, so they are loaded only when you have trusted the project (see [`/trust`](#trust) and [Security](security.md#change-a-decision-trust)). In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed.
+A project's commands are text from that project, so they are part of what you review when you trust the project, and they are loaded only while that part of the trust holds (see [`/trust`](#trust) and [Security](security.md#what-a-trust-covers)). The review shows each command with the agent and model it sets (`project command /deploy (agent: build, model: opus)`), since a trusted command can switch both for its turn. marcsh reads each command once, checks it against the review and uses those same bytes. In a project you have not trusted, or have not decided about, only your personal commands load, and a typed `/name` that matches only a project command is sent as typed. Opening the `/` menu then says once `This project has its own commands (.marcsh/commands): run /trust to use them.` A project you chose not to trust says nothing.
+
+Adding, changing or removing a project command makes that part stale: no project command is used until you review the project again with `/trust`, and the `/` menu says once `This project's commands changed since you trusted them: run /trust to use them.` The project's pi files and its git count are not affected. A command marcsh cannot read keeps all of the project's commands off. A project trusted before marcsh reviewed commands says `marcsh now also reviews project commands and git settings: run /trust to use them.`
 
 Messages typed while a turn is running (steers and `/queue`) are sent as typed and do not expand custom commands.
 

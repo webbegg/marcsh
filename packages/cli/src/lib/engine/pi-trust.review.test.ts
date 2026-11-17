@@ -142,7 +142,8 @@ describe("the review record (S1)", () => {
 
     for (const secret of ["SECRET-EXTENSION-BODY", "SECRET-COMMAND", "SECRET-ARG", "SECRET-ENV-VALUE", "TOKEN"]) expect(json.includes(secret)).toBe(false);
     for (const entry of record()) {
-      expect(Object.keys(entry).sort()).toEqual(["content", "path", "shown"]);
+      expect(Object.keys(entry).sort()).toEqual(["content", "kind", "path", "shown"]);
+      expect(entry.kind).toBe("pi");
       expect(entry.shown).toMatch(/^[0-9a-f]{64}$/);
       expect(entry.content).toMatch(/^[0-9a-f]{64}$/);
     }

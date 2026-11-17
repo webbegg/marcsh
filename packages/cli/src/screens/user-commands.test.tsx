@@ -31,6 +31,7 @@ const { Home } = await import("./home");
 const { NewSession } = await import("./new-session");
 const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
+const { reviewProject } = await import("../lib/engine/pi-trust");
 const { NORMAL_MODE_LINE, PLAN_MODE_LINE } = await import("../lib/approval-policy");
 const { engines } = await import("../lib/engine");
 const { DEFAULT_CHAT_MODEL_ID } = await import("../lib/models");
@@ -66,6 +67,8 @@ const write = (dir: string, file: string, text: string) => {
 };
 const personalFile = (file: string, text: string) => write(process.env.MARCSH_COMMANDS_DIR!, file, text);
 const projectFile = (file: string, text: string) => write(join(project, ".marcsh", "commands"), file, text);
+/** Trusts the project as it is now: the decision and the review of what it holds (its commands included). */
+const trustProject = () => getStorage().setProjectTrust(project, "trusted", reviewProject(project).record);
 
 const routes = [
   {
@@ -139,7 +142,7 @@ describe("custom commands in the / menu (S7)", () => {
     await act(async () => screen!.mockInput.pressKey("ESCAPE" as never));
     await settle(60);
 
-    getStorage().setProjectTrust(project, "trusted");
+    trustProject();
     await act(async () => screen!.mockInput.pressBackspace());
     await settle(60);
     await type("p");
@@ -162,9 +165,9 @@ describe("custom commands in the / menu (S7)", () => {
   });
 
   test("/permissions is a marcsh command: a personal or project command of that name neither shows nor runs", async () => {
-    getStorage().setProjectTrust(project, "trusted");
     personalFile("permissions.md", "---\ndescription: Shadow of permissions\n---\nPersonal $ARGUMENTS");
     projectFile("permissions.md", "---\ndescription: Project shadow of permissions\n---\nProject $ARGUMENTS");
+    trustProject();
     await openSession();
 
     await type("/permis");
@@ -183,6 +186,33 @@ describe("custom commands in the / menu (S7)", () => {
     expect(frame()).toContain("· auto");
     expect(frame()).not.toContain("Personal");
     expect(frame()).not.toContain("Project auto");
+  });
+});
+
+describe("project commands that are not trusted, on Claude (S2)", () => {
+  test("opening the / menu says once that the project has its own commands and that /trust uses them", async () => {
+    projectFile("deploy.md", "---\ndescription: Ship it\n---\nDeploy");
+    await openSession();
+
+    await type("/");
+    await settle(60);
+
+    // The toast wraps inside its border.
+    const text = frame().replace(/[┃\s]+/g, " ");
+    expect(text).toContain("This project has its own commands (.marcsh/ commands): run /trust to use them.");
+    expect(text).not.toContain("Ship it");
+  });
+
+  test("a trusted project whose command changed uses none of its commands until it is reviewed again", async () => {
+    projectFile("deploy.md", "Deploy $ARGUMENTS");
+    trustProject();
+    projectFile("deploy.md", "Deploy somewhere else $ARGUMENTS");
+    await openSession();
+
+    await type("/deploy now");
+    await enter();
+
+    expect(calls[0]!.prompt).toBe("/deploy now");
   });
 });
 
@@ -229,7 +259,7 @@ describe("running a custom command (S7)", () => {
     expect(calls[0]!.prompt).toBe("/deploy now");
 
     await act(async () => screen!.renderer.destroy());
-    getStorage().setProjectTrust(project, "trusted");
+    trustProject();
     calls = [];
     await openSession();
     await type("/deploy now");

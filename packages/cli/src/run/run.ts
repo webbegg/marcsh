@@ -5,6 +5,7 @@ import type { ChatMessage } from "../lib/chat-types";
 import { getEngine, getPiRuntime, unknownEngine } from "../lib/engine";
 import { listAvailablePiModels, pickTurnPiModel } from "../lib/engine/pi-models";
 import type { EngineEvent, PermissionDecision, TurnHost } from "../lib/engine/types";
+import { headlessPiNote } from "../lib/engine/pi-trust";
 import { DEFAULT_CHAT_MODEL_ID, modelForEngine, PI_DEFAULT_MODEL } from "../lib/models";
 import { getAgentId, getDefaultEngine, getPiModel } from "../lib/preferences";
 import { registerTurn as registerQuitTurn } from "../lib/quit";
@@ -252,7 +253,12 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
     confirm: decline(false),
     input: decline(undefined),
     editor: decline(undefined),
-    askProjectTrust: decline("skip" as const),
+    // Nobody can trust the project here. A trust whose pi files changed since (or that predates reviews) says why pi skips them.
+    askProjectTrust: async (ask) => {
+      const why = ask.changes ? headlessPiNote(ask.changes.known ? "stale" : "unreviewed") : null;
+      if (why) note(why);
+      return "skip" as const;
+    },
     notify: (message) => note(message),
   };
 

@@ -2,12 +2,19 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { basename, dirname, join } from "node:path";
 import type { McpArgs } from "../cli-args";
 import { defaultPiAgentDir } from "../lib/engine/pi";
-import { isProjectTrusted } from "../lib/engine/pi-trust";
+import { headlessPiNote, isProjectTrusted, partTrust, type ProjectTrustRecords } from "../lib/engine/pi-trust";
 import { printable } from "../lib/safe-text";
 import { getStorage } from "../lib/storage";
 import { EXIT, processIo, type Io } from "./io";
 
-export type McpDeps = { io?: Io; cwd?: string; isTrusted?: (cwd: string) => boolean };
+export type McpDeps = {
+  io?: Io;
+  cwd?: string;
+  /** Where trust decisions are kept; default: marcsh's SQLite. */
+  records?: () => ProjectTrustRecords;
+  /** Whether pi loads the project's files (its pi part of the trust holds); default from `records`. */
+  isTrusted?: (cwd: string) => boolean;
+};
 
 type Servers = Record<string, unknown>;
 type McpFile = { path: string; text?: string; config: Record<string, unknown> & { mcpServers?: Servers } };
@@ -76,7 +83,7 @@ function describeServer(name: string, entry: unknown): string {
 
 /** `marcsh mcp list|add`: resolves with the exit code. */
 export async function mcpCommand(args: McpArgs, deps: McpDeps = {}): Promise<number> {
-  const { io = processIo, cwd = process.cwd(), isTrusted = (path) => isProjectTrusted(path, getStorage) } = deps;
+  const { io = processIo, cwd = process.cwd(), records = getStorage, isTrusted = (path) => isProjectTrusted(path, records) } = deps;
   const fail = (message: string) => {
     io.stderr(`marcsh: ${message}\n`);
     return EXIT.failed;
@@ -122,7 +129,11 @@ export async function mcpCommand(args: McpArgs, deps: McpDeps = {}): Promise<num
   const projectPath = join(cwd, ".pi", "mcp.json");
   if (existsSync(projectPath)) {
     io.stdout("\n");
-    show(projectPath, isTrusted(cwd) ? "project, trusted" : "project, not trusted: pi does not load it");
+    const trusted = isTrusted(cwd);
+    show(projectPath, trusted ? "project, trusted" : "project, not trusted: pi does not load it");
+    // A trust that stopped covering the pi files says why: nobody can be asked here.
+    const why = trusted ? null : headlessPiNote(partTrust(cwd, records, "pi"));
+    if (why) io.stderr(`marcsh: ${why}\n`);
   }
   return code;
 }

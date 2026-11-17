@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { BranchState } from "../lib/git-branch";
 import { readGitBranchState, readGitStatus, type GitStatus } from "../lib/git-status";
+import { hasPart, partTrust } from "../lib/engine/pi-trust";
 import { getStorage } from "../lib/storage";
+import { trustNotice } from "../lib/trust-notices";
 
 /** Reads the git state of a folder; `trusted` says whether it may count the changed files (see `readGitStatus`). */
 export type GitReader = (cwd: string, options: { trusted: boolean }) => Promise<GitStatus | null>;
@@ -14,6 +16,10 @@ type Options = {
   /** Any value that changes when the files may have changed (e.g. after a tool call); each change reads again. */
   trigger?: unknown;
   intervalMs?: number;
+  /** Told why the changed files are not counted when there is something to say (see `gitTrustNotice`), each text once per project per run. */
+  onNotice?: (message: string) => void;
+  /** What to tell `onNotice` for a folder whose files are not counted; default `gitTrustNotice`. */
+  notice?: (cwd: string) => string | null;
 };
 
 /** git's answer, or none while `MARCSH_GIT_STATUS=off` (the test preload sets it, so screens tested without a reader never spawn git). */
@@ -21,15 +27,20 @@ const defaultRead: GitReader = (cwd, { trusted }) =>
   process.env.MARCSH_GIT_STATUS?.trim().toLowerCase() === "off" ? Promise.resolve(null) : readGitStatus(cwd, { trusted });
 
 /**
- * marcsh's own decision for the project at `cwd` (the pi trust question, `/trust`), the one project commands follow too: only a
- * stored "trusted" counts; undecided, untrusted or a store that cannot be read does not.
+ * marcsh's own trust for the project at `cwd` (the pi trust question, `/trust`), its git part (`partTrust`): a stored "trusted" whose
+ * review of the repo's git settings (the filter drivers its own config names, which `git status` may run, and `.gitattributes`,
+ * `info/attributes`) still equals them. Undecided, untrusted, stale, a trust from before marcsh reviewed git settings, or a store that cannot
+ * be read does not count. Cheap enough for every poll: the review is cached.
  */
 export function trustedForGit(cwd: string): boolean {
-  try {
-    return getStorage().getProjectTrust(cwd) === "trusted";
-  } catch {
-    return false;
-  }
+  return partTrust(cwd, getStorage, "git") === "holds";
+}
+
+/** Why a trusted repo's changed files are not counted (its git settings changed, or were never reviewed), once per project per run. */
+export function gitTrustNotice(cwd: string): string | null {
+  const state = partTrust(cwd, getStorage, "git");
+  if (state !== "stale" && state !== "unreviewed") return null;
+  return hasPart(cwd, "git") ? trustNotice(cwd, "git", state) : null;
 }
 
 const safely = (isTrusted: (cwd: string) => boolean, cwd: string) => {
@@ -37,6 +48,14 @@ const safely = (isTrusted: (cwd: string) => boolean, cwd: string) => {
     return isTrusted(cwd) === true;
   } catch {
     return false;
+  }
+};
+
+const noticeOf = (notice: (cwd: string) => string | null, cwd: string) => {
+  try {
+    return notice(cwd);
+  } catch {
+    return null;
   }
 };
 
@@ -51,14 +70,20 @@ const same = (a: GitStatus | null, b: GitStatus | null) =>
  * and without a folder. One read runs at a time: asking during a read runs one more read after it, however often it was asked.
  * A read that finds nothing (git timed out or failed, or no repo) doubles the wait before the next poll, up to
  * `MAX_GIT_BACKOFF_MS`, and a poll that came during it is dropped; a trigger still reads, and a good read resets the wait.
- * The changed files are counted only while `isTrusted` says the project is trusted; otherwise the branch comes alone.
+ * The changed files are counted only while `isTrusted` says the project is trusted; otherwise the branch comes alone, and
+ * `onNotice` is told why when there is something to say.
  */
-export function useGitStatus(cwd: string | undefined, { read = defaultRead, isTrusted = trustedForGit, trigger, intervalMs = 3000 }: Options = {}): GitStatus | null {
+export function useGitStatus(
+  cwd: string | undefined,
+  { read = defaultRead, isTrusted = trustedForGit, trigger, intervalMs = 3000, onNotice, notice = gitTrustNotice }: Options = {},
+): GitStatus | null {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const readRef = useRef(read);
   readRef.current = read;
   const trustRef = useRef(isTrusted);
   trustRef.current = isTrusted;
+  const noticeRef = useRef({ onNotice, notice });
+  noticeRef.current = { onNotice, notice };
   const refreshRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -85,8 +110,14 @@ export function useGitStatus(cwd: string | undefined, { read = defaultRead, isTr
         return;
       }
       reading = true;
+      const trusted = safely(trustRef.current, cwd);
+      const tell = noticeRef.current;
+      if (!trusted && tell.onNotice) {
+        const message = noticeOf(tell.notice, cwd);
+        if (message) tell.onNotice(message);
+      }
       void readRef
-        .current(cwd, { trusted: safely(trustRef.current, cwd) })
+        .current(cwd, { trusted })
         .catch(() => null)
         .then((next) => {
           reading = false;

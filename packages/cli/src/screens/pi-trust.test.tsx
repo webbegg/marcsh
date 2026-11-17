@@ -26,7 +26,7 @@ let screen: Awaited<ReturnType<typeof testRender>> | null = null;
 
 const marker = () => join(cwd, "marker-written.txt");
 const REPLY = "turn finished";
-const TITLE = "Trust this project's pi files?";
+const TITLE = "Trust this project's files?";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "marcsh-pi-trust-"));
@@ -364,12 +364,12 @@ describe("the trust prompt fits any terminal (S18)", () => {
       const text = frame();
       expect(lines[1]).toContain(TITLE);
       // The folder wraps onto as many rows as its length needs (a long TMPDIR makes it several); the list starts right under the count.
-      const count = lines.findIndex((line) => line.includes("items pi would load or run, most dangerous first"));
+      const count = lines.findIndex((line) => line.includes("items marcsh would load or use, most dangerous first"));
       expect(count).toBeGreaterThan(2);
       expect(count).toBeLessThanOrEqual(2 + Math.ceil(realpathSync(cwd).length / 70));
       expect(lines.slice(2, count).map((line) => line.replace(/[│┃\s]+/g, "")).join("")).toContain("marcsh-pi-trust-");
       expect(lines[count + 1]).toMatch(/^│ {2}• \.pi\/mcp\.json — server evil: sh -c echo/);
-      expect(text).toContain("Trusting lets pi load these files and run their code with your permissions.");
+      expect(text).toContain("Trusting lets these files load and run with your permissions.");
       expect(lines[height - 2]).toMatch(/d {2}don't trust {2}Esc {2}not now \(this turn only\)/);
       expect(lines[height - 2]).toContain("scroll to the end first");
       const position = indicator();
@@ -482,7 +482,7 @@ describe("a project with a file marcsh could not read (S18)", () => {
     expect(prompt).toContain("Esc not now (this turn only)");
     expect(prompt).not.toContain("trust (then Enter)");
     expect(prompt).not.toContain("scroll to the end first");
-    expect(prompt).not.toContain("Trusting lets pi load these files");
+    expect(prompt).not.toContain("Trusting lets these files load");
     expect(existsSync(marker())).toBe(false);
   }, 30000);
 
@@ -548,7 +548,7 @@ describe("a project with a file marcsh could not read (S18)", () => {
     expect(dialog).toContain("Now: not trusted (the stored decision no longer applies)");
     expect(dialog).toContain("Don't trust");
     expect(dialog).toContain("Forget");
-    expect(dialog).not.toContain("pi loads this project's files");
+    expect(dialog).not.toContain("use its pi files, commands and git status");
   }, 30000);
 });
 
@@ -593,8 +593,8 @@ describe("/trust (S18)", () => {
     expect(prompt).toContain(TITLE);
     expect(prompt).toContain(".pi/extensions/marker.ts");
     expect(prompt).toContain("server fixture: fixture-mcp-server --stdio");
-    expect(prompt).toContain("2 items pi would load or run, most dangerous first");
-    expect(prompt).toContain("Trusting lets pi load these files and run their code with your permissions.");
+    expect(prompt).toContain("2 items marcsh would load or use, most dangerous first");
+    expect(prompt).toContain("Trusting lets these files load and run with your permissions.");
     expect(getStorage().getProjectTrust(cwd)).toBeNull();
     expect(existsSync(marker())).toBe(false);
   }, 30000);
@@ -622,7 +622,7 @@ describe("/trust (S18)", () => {
     await press("RETURN");
 
     expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
-    expect(await frameContaining("now trusted for pi from the next turn")).toContain("now trusted for pi from the next turn");
+    expect(await frameContaining("now trusted (pi: from the next turn)")).toContain("now trusted (pi: from the next turn)");
     expect(frame()).not.toContain(TITLE);
     expect(existsSync(marker())).toBe(false);
   }, 30000);
@@ -672,14 +672,61 @@ describe("/trust (S18)", () => {
     expect(frame()).not.toContain("Project Trust");
   }, 30000);
 
-  test("a project with no pi files does not offer Trust, and says there is nothing to trust", async () => {
+  test("a project with nothing to review offers Trust: choosing it says what trusting turns on, and only t then Enter stores the empty review", async () => {
     rmSync(join(cwd, ".pi"), { recursive: true, force: true });
     const dialog = await openTrust();
 
-    expect(dialog).toContain("no pi files found");
-    expect(dialog).toContain("nothing to trust");
+    expect(dialog).toContain("no pi files, project commands or git settings found");
+    expect(dialog).not.toContain("nothing to trust");
     expect(dialog).toContain("Don't trust");
-    expect(dialog).not.toContain("pi loads this project's files");
+    expect(dialog).toContain("use its pi files, commands and git status");
+
+    await arrowDown();
+    await press("RETURN");
+
+    // Down and Enter (or a mouse press, or a filter) only get this far.
+    const confirm = await frameContaining("Nothing to review");
+    expect(confirm).toContain("Trusting turns on its pi files, project commands and the git changed-file count");
+    expect(confirm).toContain("t trust (then Enter)");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+    await press("RETURN");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+
+    await press("t");
+    await press("RETURN");
+
+    expect(getStorage().getProjectTrust(cwd)).toBe("trusted");
+    expect(getStorage().getProjectReview(cwd)).toEqual([]);
+    expect(await frameContaining("now trusted (pi: from the next turn)")).toContain("now trusted (pi: from the next turn)");
+    expect(frame()).not.toContain(TITLE);
+  }, 30000);
+
+  test("files that appear between opening /trust and choosing Trust are listed for review first; nothing is stored yet", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    expect(await openTrust()).toContain("no pi files, project commands or git settings found");
+
+    mkdirSync(join(cwd, ".marcsh", "commands"), { recursive: true });
+    writeFileSync(join(cwd, ".marcsh", "commands", "deploy.md"), "Deploy $ARGUMENTS");
+    await arrowDown();
+    await press("RETURN");
+
+    const prompt = await frameContaining(TITLE);
+    expect(prompt).toContain(".marcsh/commands/deploy.md — project command /deploy");
+    expect(getStorage().getProjectTrust(cwd)).toBeNull();
+  }, 30000);
+
+  test("a project with only commands lists them: the dialog counts them and Trust reviews them", async () => {
+    rmSync(join(cwd, ".pi"), { recursive: true, force: true });
+    mkdirSync(join(cwd, ".marcsh", "commands"), { recursive: true });
+    writeFileSync(join(cwd, ".marcsh", "commands", "deploy.md"), "Deploy $ARGUMENTS");
+
+    expect(await openTrust()).toContain("1 project command found");
+    const prompt = await chooseTrust();
+    expect(prompt).toContain(".marcsh/commands/deploy.md — project command /deploy");
+
+    await press("t");
+    await press("RETURN");
+    expect(getStorage().getProjectReview(cwd)).toEqual(reviewProject(cwd).record);
   }, 30000);
 
   test("Don't trust stores 'untrusted', and the dialog shows the current decision when it is opened again", async () => {

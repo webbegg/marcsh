@@ -362,6 +362,27 @@ describe("runHeadless: nobody to ask (A1)", () => {
     ]);
   });
 
+  test("a trusted project whose pi files changed (or that predates reviews) is skipped with one stderr note; an undecided one silently", async () => {
+    const answers: unknown[] = [];
+    engines.set(
+      "claude",
+      fakeEngine(async (request, host) => {
+        const { signal } = request;
+        answers.push(await host.askProjectTrust?.({ cwd, resources: [] }, signal));
+        answers.push(await host.askProjectTrust?.({ cwd, resources: [], changes: { known: true, status: new Map(), removed: [] } }, signal));
+        answers.push(await host.askProjectTrust?.({ cwd, resources: [], changes: { known: false, status: new Map(), removed: [] } }, signal));
+      }).engine,
+    );
+
+    expect(await run()).toBe(0);
+
+    expect(answers).toEqual(["skip", "skip", "skip"]);
+    expect(err.trim().split("\n")).toEqual([
+      "marcsh: this project's pi files changed since you trusted them, so pi does not load them: run marcsh and /trust",
+      "marcsh: this project was trusted before marcsh kept reviews, so pi does not load its files: run marcsh and /trust",
+    ]);
+  });
+
   test("a saved approvalMode preference is not used: the turn runs as normal, and the asks yolo would skip are still denied", async () => {
     setDefaultApprovalMode("yolo");
     const feature: BranchState = { kind: "feature", branch: "feat/x" };

@@ -42,8 +42,14 @@ export type ProjectTrust = "trusted" | "untrusted";
 /**
  * What the user reviewed when trusting a project: one entry per listed path with a hash of what was shown for it and a hash of
  * its contents (a folder: of what it holds). Only paths and hashes; never contents, commands or environment values.
+ * `kind` says which part of the review the entry belongs to (pi files, project commands, git settings). A review stored before
+ * marcsh reviewed commands and git settings has no `kind` on any entry: all of them are pi files.
  */
-export type StoredReview = { path: string; shown: string; content: string }[];
+export type StoredReview = { path: string; shown: string; content: string; kind?: ReviewKind }[];
+
+/** The parts of a trust review: what pi loads, the project's own marcsh commands, the repo's git settings. */
+export type ReviewKind = "pi" | "command" | "git";
+const REVIEW_KINDS: readonly unknown[] = ["pi", "command", "git"] satisfies ReviewKind[];
 
 export type Storage = {
   listSessions(): SessionSummary[];
@@ -107,7 +113,8 @@ function parseReview(text: string | null): StoredReview | null {
     const review: StoredReview = [];
     for (const entry of parsed) {
       if (typeof entry?.path !== "string" || typeof entry.shown !== "string" || typeof entry.content !== "string") return null;
-      review.push({ path: entry.path, shown: entry.shown, content: entry.content });
+      if (entry.kind !== undefined && !REVIEW_KINDS.includes(entry.kind)) return null;
+      review.push({ path: entry.path, shown: entry.shown, content: entry.content, ...(entry.kind === undefined ? {} : { kind: entry.kind as ReviewKind }) });
     }
     return review;
   } catch {
@@ -398,9 +405,11 @@ export function openStorage(path = defaultDbPath()): Storage {
         db.query("DELETE FROM project_trust WHERE path = $path").run({ path });
         return;
       }
-      // Fields are copied one by one: nothing but the path and the two hashes is ever written.
+      // Fields are copied one by one: nothing but the path, the two hashes and the part is ever written.
       const reviewed =
-        decision === "trusted" && review ? JSON.stringify(review.map(({ path, shown, content }) => ({ path, shown, content }))) : null;
+        decision === "trusted" && review
+          ? JSON.stringify(review.map(({ path, shown, content, kind }) => ({ path, shown, content, ...(kind === undefined ? {} : { kind }) })))
+          : null;
       db.query(
         `INSERT INTO project_trust (path, decision, decided_at, reviewed) VALUES ($path, $decision, $now, $reviewed)
          ON CONFLICT(path) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at, reviewed = excluded.reviewed`,
