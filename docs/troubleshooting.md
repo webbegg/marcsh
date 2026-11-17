@@ -20,6 +20,8 @@ If you installed from source, run `bun run link:cli` again from the repository. 
 
 pi has no model you can use, because no provider is signed in. Type `/login` and sign in to a provider. See [Engines and models](engines-and-models.md).
 
+On the home screen, `Enter` then sends nothing and opens no session. marcsh keeps your text in the input and says `No model yet: run /login to sign in to a pi provider, or /engine to use Claude.` A short card above the input names the same two ways forward; it goes away once a model is available. While marcsh is still checking, or the check failed (`pi unavailable`), `Enter` is not blocked.
+
 You may also see these messages, which mean the same thing:
 
 - `No pi model is available yet. Run /login to sign in to a provider.` when you open `/models`.
