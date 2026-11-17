@@ -30,7 +30,7 @@ describe("listSessions", () => {
     ];
     storage.saveMessages(session.id, messages);
 
-    const [entry] = storage.listSessions();
+    const [entry] = storage.listSessionEntries();
     expect(entry).toMatchObject({ id: session.id, engine: "pi", model: "openai/gpt-5", messageCount: 3 });
     expect(entry!.model).toBe(lastUsedModel(messages)!);
   });
@@ -47,7 +47,7 @@ describe("listSessions", () => {
       raw.query("UPDATE sessions SET messages = 'not json' WHERE id = $id").run({ $id: broken.id });
       raw.close();
 
-      const list = storage.listSessions();
+      const list = storage.listSessionEntries();
       expect(list.find((s) => s.id === broken.id)).toMatchObject({ model: null, messageCount: 0 });
       expect(list.find((s) => s.id === kept.id)).toMatchObject({ messageCount: 3 });
     } finally {
@@ -59,7 +59,7 @@ describe("listSessions", () => {
     const storage = openStorage(":memory:");
     storage.createSession({ title: "Empty", cwd: "/work" });
 
-    expect(storage.listSessions()[0]).toMatchObject({ engine: "claude", model: null, messageCount: 0 });
+    expect(storage.listSessionEntries()[0]).toMatchObject({ engine: "claude", model: null, messageCount: 0 });
   });
 });
 

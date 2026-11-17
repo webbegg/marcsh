@@ -7,7 +7,7 @@ import { getStorage, type Storage } from "../lib/storage";
 import { defaultExportPath, renderTranscript } from "../lib/transcript";
 import { EXIT, processIo, type Io } from "./io";
 
-export type SessionDeps = { storage?: Pick<Storage, "listSessions" | "getSession" | "deleteSession">; io?: Io; now?: () => Date };
+export type SessionDeps = { storage?: Pick<Storage, "listSessionEntries" | "getSession" | "deleteSession">; io?: Io; now?: () => Date };
 
 
 const isFolder = (path: string) => {
@@ -35,7 +35,7 @@ export async function sessionCommand(args: SessionArgs, deps: SessionDeps = {}):
 
   switch (args.action) {
     case "list": {
-      const sessions = storage.listSessions();
+      const sessions = storage.listSessionEntries();
       if (args.json) {
         io.stdout(
           `${JSON.stringify(
@@ -61,7 +61,7 @@ export async function sessionCommand(args: SessionArgs, deps: SessionDeps = {}):
         const at = now();
         for (const { id, title, cwd, updatedAt, engine, model, messageCount } of sessions) {
           const route = `${printable(engine)}/${model === null ? "—" : printable(model)}`;
-          io.stdout(`${id}  ${formatRelativeTime(updatedAt, at)}  ${route}  ${messageCount} msgs  ${printable(cwd)}  ${printable(title)}\n`);
+          io.stdout(`${id}  ${formatRelativeTime(updatedAt, at)}  ${route}  ${messageCount} ${messageCount === 1 ? "msg" : "msgs"}  ${printable(cwd)}  ${printable(title)}\n`);
         }
       }
       return EXIT.ok;

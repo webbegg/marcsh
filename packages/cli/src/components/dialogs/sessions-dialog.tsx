@@ -15,12 +15,18 @@ import { ConfirmDialogContent } from "./confirm-dialog";
 
 type SessionSummary = SessionListEntry;
 
-/** A row's details (S18): `claude · sonnet · 4 messages · 3h ago`, with the time said as `marcsh session list` says it. */
-export function sessionMeta(session: SessionListEntry, now: Date): string {
-  const model = session.model === null ? "—" : printable(session.model);
+/**
+ * A row's details (S18): `claude · sonnet · 4 messages · 3h ago`, with the time said as `marcsh session list` says it. The model is
+ * cut to `modelCells` when given: it is the one part that can be long (a pi `provider/id`).
+ */
+export function sessionMeta(session: SessionListEntry, now: Date, modelCells = Number.POSITIVE_INFINITY): string {
+  const model = session.model === null ? "—" : fitText(printable(session.model), Math.max(1, modelCells));
   const messages = `${session.messageCount} ${session.messageCount === 1 ? "message" : "messages"}`;
   return [printable(session.engine), model, messages, formatRelativeTime(session.updatedAt, now)].join(" · ");
 }
+
+const GAP = 2;
+const MIN_TITLE = 16;
 
 type RowProps = {
   session: SessionSummary;
@@ -42,9 +48,12 @@ export function SessionRow({ session, isSelected, highlighted, width, now }: Row
     };
   }, [isSelected, session, highlighted]);
 
-  const meta = sessionMeta(session, now);
-  // Two cells keep the title off the details.
-  const title = fitText(printable(session.title), Math.max(1, width - Bun.stringWidth(meta) - 2));
+  // Two cells keep the title off the details. The title keeps its first MIN_TITLE cells; a long model gives way first.
+  const fullTitle = printable(session.title);
+  const withoutModel = Bun.stringWidth(sessionMeta({ ...session, model: "" }, now));
+  const keptTitle = Math.min(Bun.stringWidth(fullTitle), MIN_TITLE);
+  const meta = sessionMeta(session, now, width - GAP - keptTitle - withoutModel);
+  const title = fitText(fullTitle, Math.max(1, width - Bun.stringWidth(meta) - GAP));
   return (
     <>
       <text selectable={false} wrapMode="none" fg={isSelected ? "black" : "white"}>
@@ -62,7 +71,7 @@ export function SessionRow({ session, isSelected, highlighted, width, now }: Row
 export const SessionsDialogContent = () => {
   const { sessions, loadError } = useMemo(() => {
     try {
-      return { sessions: getStorage().listSessions(), loadError: null };
+      return { sessions: getStorage().listSessionEntries(), loadError: null };
     } catch (err) {
       return { sessions: [], loadError: err instanceof Error ? err.message : String(err) };
     }
@@ -94,7 +103,7 @@ export const SessionsDialogContent = () => {
 
   const askDelete = useCallback(
     (session: SessionSummary) => {
-      const backToList = () => dialog.open({ title: "Sessions", children: <SessionsDialogContent /> });
+      const backToList = () => dialog.open({ title: "Sessions", width: "wide", children: <SessionsDialogContent /> });
       const remove = () => {
         try {
           if (!getStorage().deleteSession(session.id)) {
@@ -137,7 +146,7 @@ export const SessionsDialogContent = () => {
     <DialogSearchList
       items={sessions}
       onSelect={handleSelect}
-      filterFn={(s, query) => s.title.toLowerCase().includes(query.toLowerCase())}
+      filterFn={(s, query) => printable(s.title).toLowerCase().includes(query.toLowerCase())}
       renderItem={(session, isSelected, width) => (
         <SessionRow session={session} isSelected={isSelected} highlighted={highlighted} width={width} now={now} />
       )}

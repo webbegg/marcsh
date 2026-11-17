@@ -48,14 +48,14 @@ if (args.kind === "upgrade") {
 const { resolveLaunchDir, planLaunch } = await import("./startup/launch");
 const launchDir = resolveLaunchDir(args.dir, process.cwd());
 if (!launchDir.ok) {
-  console.error(`marcsh: ${launchDir.message}`);
+  console.error(usageErrorText(launchDir.message));
   process.exit(2);
 }
 process.chdir(launchDir.dir);
 if (args.engine) (await import("./lib/preferences")).setLaunchEngine(args.engine);
 const launch = planLaunch(args, (await import("./lib/storage")).getStorage(), process.cwd());
 if (!launch.ok) {
-  console.error(`marcsh: ${launch.message}`);
+  console.error(usageErrorText(launch.message));
   process.exit(2);
 }
 

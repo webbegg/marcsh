@@ -35,7 +35,8 @@ export type CommandName = (typeof COMMAND_NAMES)[number];
 export type HelpTopic = CommandName | "run";
 
 /** What a usage mistake prints (exit 2): the mistake and where the help is, not the whole help (S19). */
-export const usageErrorText = (message: string) => `marcsh: ${message}\nsee marcsh --help`;
+export const USAGE_HINT = "see marcsh --help";
+export const usageErrorText = (message: string) => `marcsh: ${message}\n${USAGE_HINT}`;
 
 /** What `marcsh <command> --help` prints. */
 export const COMMAND_USAGE: Record<HelpTopic, string> = {

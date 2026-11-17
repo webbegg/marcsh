@@ -76,6 +76,13 @@ describe("session list", () => {
     expect(out).toContain(`${session.id}  3h ago  claude/opus`);
   });
 
+  test("one message is `1 msg`", async () => {
+    const session = storage.createSession({ title: "One", cwd: "/work/a", engine: "claude" });
+    storage.saveMessages(session.id, [messages[1]!]);
+    await run({ action: "list", json: false });
+    expect(out).toContain("claude/opus  1 msg  /work/a  One");
+  });
+
   test("a session with no recorded model shows a dash", async () => {
     storage.createSession({ title: "Empty", cwd: "/work/a", engine: "pi" });
     await run({ action: "list", json: false });

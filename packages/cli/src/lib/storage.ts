@@ -59,7 +59,9 @@ export type ReviewKind = "pi" | "command" | "git";
 const REVIEW_KINDS: readonly unknown[] = ["pi", "command", "git"] satisfies ReviewKind[];
 
 export type Storage = {
-  listSessions(): SessionListEntry[];
+  listSessions(): SessionSummary[];
+  /** The sessions as the session lists show them, newest first. Reads every session's messages, so only those lists call it. */
+  listSessionEntries(): SessionListEntry[];
   getSession(id: string): StoredSession | null;
   createSession(input: { title: string; cwd: string; engine?: string }): StoredSession;
   saveMessages(id: string, messages: ChatMessage[], engineSessionRef?: string): void;
@@ -263,8 +265,25 @@ export function openStorage(path = defaultDbPath()): Storage {
 
   return {
     listSessions() {
+      return db
+        .query<Pick<SessionRow, "id" | "title" | "cwd" | "created_at" | "updated_at">, []>(
+          "SELECT id, title, cwd, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
+        )
+        .all()
+        .map((row) => ({
+          id: row.id,
+          title: row.title,
+          cwd: row.cwd,
+          createdAt: new Date(row.created_at),
+          updatedAt: new Date(row.updated_at),
+        }));
+    },
+
+    listSessionEntries() {
       // The count and the model are read from the stored messages, as `lastUsedModel` reads them: the last message that names a
-      // model, by position. A row whose messages are not valid JSON lists with no model and no messages instead of failing the list.
+      // model, by position. A row whose messages are not valid JSON lists with no model and no messages instead of failing the list,
+      // and an element that is not an object is skipped before it is read as one (`json_each` gives a string element unquoted, which
+      // the JSON functions would reject for the whole query). CASE is evaluated lazily; AND is not promised to be.
       return db
         .query<
           Pick<SessionRow, "id" | "title" | "cwd" | "created_at" | "updated_at" | "engine"> & { message_count: number; model: string | null },
@@ -274,7 +293,9 @@ export function openStorage(path = defaultDbPath()): Storage {
              CASE WHEN json_valid(messages) AND json_type(messages) = 'array' THEN json_array_length(messages) ELSE 0 END AS message_count,
              CASE WHEN json_valid(messages) AND json_type(messages) = 'array' THEN (
                SELECT json_extract(value, '$.metadata.model') FROM json_each(messages)
-               WHERE json_type(value, '$.metadata.model') = 'text' AND json_extract(value, '$.metadata.model') <> ''
+               WHERE CASE WHEN type = 'object' THEN
+                 CASE WHEN json_type(value, '$.metadata.model') = 'text' THEN json_extract(value, '$.metadata.model') <> '' ELSE 0 END
+               ELSE 0 END
                ORDER BY key DESC LIMIT 1
              ) END AS model
            FROM sessions ORDER BY updated_at DESC`,

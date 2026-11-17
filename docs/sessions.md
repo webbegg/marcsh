@@ -12,7 +12,7 @@ Type `/new`, or start marcsh. Both bring you to the home screen. Your first mess
 
 ## Find and resume a session
 
-Type `/sessions`. The list shows your sessions, the most recently used first. Each row has the title, then the session's engine, the model of its last turn (`—` before any), its message count and when it was last used: `claude · sonnet · 4 messages · 3h ago`. The time reads `just now`, `5m ago`, `3h ago`, `yesterday`, `4d ago`, then the date (`2026-11-02`) from a week on; `marcsh session list` says it the same way. A long title is cut with `…` so the details stay whole.
+Type `/sessions`. The list shows your sessions, the most recently used first. Each row has the title, then the session's engine, the model of its last turn (`—` before any), its message count and when it was last used: `claude · sonnet · 4 messages · 3h ago`. The time reads `just now`, `5m ago`, `3h ago`, `yesterday`, `4d ago`, then the date (`2026-11-02`) from a week on; `marcsh session list` says it the same way. On a narrow screen a long model name is cut first, then the title, both with `…`; the title keeps at least its first 16 characters.
 
 - Type to search. The search matches the title.
 - Use `Up` and `Down`, then `Enter` to open a session. You can also click one.

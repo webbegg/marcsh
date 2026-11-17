@@ -19,6 +19,7 @@ import { latestSessionForCwd } from "../startup/launch";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
 import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { userCommandTurn } from "../lib/user-commands";
+import { USAGE_HINT } from "../cli-args";
 import { composeRequest, missingRequired, prefillFromArguments, readFacts } from "../lib/command-questions";
 
 /** What `marcsh run` was asked: the parsed arguments plus the standard input (when it was not a terminal) and the folder. */
@@ -125,8 +126,10 @@ export async function runHeadless(options: RunOptions, deps: Partial<RunDeps> = 
   const cwd = options.cwd ?? process.cwd();
   // Every stderr line is cleaned: it may carry an engine's message or a tool's name.
   const note = (message: string) => io.stderr(`marcsh: ${plain(message)}\n`);
+  // A usage mistake ends with where the help is, as the parser's mistakes do (S19).
   const usage = (message: string) => {
     note(message);
+    io.stderr(`${USAGE_HINT}\n`);
     return EXIT.usage;
   };
 
