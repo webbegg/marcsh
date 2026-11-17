@@ -1,5 +1,6 @@
 import prettyMs from "pretty-ms";
 import { useTheme } from "../../providers/theme";
+import { useSyntaxStyle } from "../../hooks/use-syntax-style";
 import type { MessagePart } from "../../lib/chat-types";
 import { Mode, type ModeType } from "../../lib/modes";
 import { escapeTranscriptText as safe } from "../../lib/display-text";
@@ -63,6 +64,10 @@ export function BotMessage({
   streaming = false,
 }: Props) {
   const { colors } = useTheme();
+  // One style for every text part of the message.
+  const syntaxStyle = useSyntaxStyle();
+  // Only the last part of a message still being written can be unfinished.
+  const lastPart = parts[parts.length - 1];
   return (
     <box width="100%" alignItems="center">
       {groupConsecutiveParts(parts).map((group, i) => (
@@ -71,7 +76,7 @@ export function BotMessage({
             if (part.type === "reasoning") return <ReasoningPart key={`reasoning-${j}`} part={part} />;
             if (isToolPart(part)) return <ToolPart key={part.toolCallId} part={part} />;
             if (part.type === "task") return <TaskPart key={`task-${part.taskId}`} part={part} />;
-            if (part.type === "text") return <TextPart key={`text-${j}`} part={part} />;
+            if (part.type === "text") return <TextPart key={`text-${j}`} part={part} syntaxStyle={syntaxStyle} streaming={streaming && part === lastPart} />;
             return null;
           })}
         </box>

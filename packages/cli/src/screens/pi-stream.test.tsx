@@ -105,16 +105,17 @@ describe("a pi reply streams on screen (S3)", () => {
     const thinking = Array.from({ length: 24 }, (_, i) => `idea${String(i + 1).padStart(2, "0")}`).join(" ");
     await openPiSession([fauxAssistantMessage([fauxThinking(thinking), fauxText("final answer")])], 70);
 
+    // Thinking is folded to one line by default (S11 of the usability work): its start shows, cut to the width.
     const partial = await frameContaining("idea03");
 
-    expect(partial).toContain("Thinking: idea01 idea02 idea03");
-    expect(partial).not.toContain("idea24");
+    expect(partial).toContain("Thinking");
+    expect(partial).toContain("idea01 idea02 idea03");
     expect(partial).not.toContain("final answer");
 
     const whole = await frameContaining("final answer");
 
-    expect(whole).toContain("Thinking: idea01");
-    expect(whole.indexOf("idea24")).toBeLessThan(whole.indexOf("final answer"));
-    expect(occurrences(whole, "Thinking:")).toBe(1);
+    expect(whole).toContain("idea01");
+    expect(whole.indexOf("Thinking")).toBeLessThan(whole.indexOf("final answer"));
+    expect(occurrences(whole, "Thinking")).toBe(1);
   }, 30000);
 });

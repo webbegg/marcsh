@@ -6,7 +6,9 @@ This page describes what you see in marcsh and what each part does: the two scre
 
 **Home.** The first screen. It shows the marcsh logo, the input and a `tab agents` hint. Your first message starts a new session and opens the session screen.
 
-**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
+**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. Thinking is folded to one line (`Thinking · 2.3s` on pi) and `ctrl+x h` unfolds it; a tool call shows the last lines of its output, an edit shows its diff, and `ctrl+x o` shows them in full (see [/details](commands.md#details) and [/thinking](commands.md#thinking)). While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
+
+The text of a reply is shown as markdown: headings, bold and italic, lists, quotes, links and tables are drawn without their markers, and code in a fenced block is shown as monospace text with its own colours. Only TypeScript, TSX, JavaScript, Markdown and Zig code is coloured; code in any other language, or in a block with no language, is shown as plain text. While a reply is still being written, a half-written marker is drawn as if it were closed, and a coloured block may appear a moment after its text. Control characters in a reply are shown as `\u001b` and the like, never sent to your terminal. Your own messages are shown as you typed them.
 
 ## The input
 

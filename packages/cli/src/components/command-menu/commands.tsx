@@ -19,6 +19,7 @@ import { ProfileDialogContent } from "../dialogs/profile-dialog";
 import { availableSubagents, findAgent, loadSubagents } from "../../lib/agents";
 import { parseProfileCommand, runProfileCommand } from "../../lib/profiles-command";
 import { branchState } from "../../lib/git-branch";
+import { transcriptView, transcriptViewKey, type TranscriptViewKey } from "../../providers/transcript-view";
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { SessionCommands } from "./session-commands";
 import type { Command, CommandContext } from "./types";
@@ -93,6 +94,16 @@ const onSession =
   (name: string, run: (session: SessionCommands, ctx: CommandContext) => void | Promise<void>) =>
   (ctx: CommandContext) =>
     ctx.session ? run(ctx.session, ctx) : ctx.toast.show({ variant: "info", message: `/${name} works inside a session. Open one first.` });
+
+/** Flips one of the transcript's switches (`/details`, `/thinking`) and says the new state, with the keys that flip it back. */
+function toggleTranscriptView(key: TranscriptViewKey, label: string, ctx: CommandContext) {
+  const on = transcriptView.toggle(key);
+  const keys = transcriptViewKey(key);
+  ctx.toast.show({
+    variant: "info",
+    message: `${label}: ${on ? "shown in full" : "collapsed"} (${keys || `/${key}`} to switch)`,
+  });
+}
 
 export const COMMANDS: Command[] = [
   {
@@ -328,6 +339,20 @@ export const COMMANDS: Command[] = [
         children: <ThemeDialogContent />,
       })
     },
+  },
+  {
+    name: "details",
+    description: "Show or collapse the full tool output and diffs",
+    value: "/details",
+    scope: "session",
+    action: onSession("details", (_session, ctx) => toggleTranscriptView("details", "Tool details", ctx)),
+  },
+  {
+    name: "thinking",
+    description: "Show or collapse the model's thinking",
+    value: "/thinking",
+    scope: "session",
+    action: onSession("thinking", (_session, ctx) => toggleTranscriptView("thinking", "Thinking", ctx)),
   },
   {
     name: "exit",
