@@ -65,10 +65,12 @@ beforeAll(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 beforeEach(() => {
-	rmSync(join(scratch, "home"), { recursive: true, force: true });
-	rmSync(join(scratch, "myrepo"), { recursive: true, force: true });
-	home = join(scratch, "home");
-	repo = join(scratch, "myrepo");
+	// Each case gets its own folder: removing and recreating one shared `myrepo` raced with a git process an earlier case
+	// (the slow-git timeout probe) could still be running in it (EEXIST on mkdir). The repo keeps the name `myrepo`,
+	// because the evidence folder is named after it.
+	const caseDir = mkdtempSync(join(scratch, "case-"));
+	home = join(caseDir, "home");
+	repo = join(caseDir, "myrepo");
 	mkdirSync(repo);
 	git(repo, "init", "-q", "-b", "main");
 	git(repo, "config", "user.email", "t@t");
