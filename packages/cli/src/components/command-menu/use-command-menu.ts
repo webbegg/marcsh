@@ -97,9 +97,11 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     }
   };
 
-  // The mouse passing over a row only highlights it: a stray move must not change what Enter runs. The arrows and a click choose a row.
+  // The mouse passing over a row only highlights it, and undoes an earlier arrow choice: Enter runs what was typed again. A stray move
+  // must not change what Enter runs; the arrows and a click choose a row.
   const setSelectedIndex = (index: number) => {
     setSelectedIndexState(index);
+    setNavigated(false);
   };
 
   // Resolve a command at a specific index (returns the command, caller handles execution)
@@ -111,43 +113,23 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     return command;
   };
 
-  // Arrow keys move selection; the list follows along when the highlight goes off-screen
+  // Arrow keys move the selection. Only a move that changed the highlight counts as choosing a row: Up on the first row moves
+  // nothing, so Enter still runs what was typed. The menu (`CommandMenu`) keeps the highlighted row in view, header rows included.
   useKeyboard((key) => {
     if (!showCommandMenu || !isTopLayer("command")) return;
 
     if (key.name === "escape") {
       key.preventDefault();
       close();
-    } else if (key.name === "up") {
+    } else if (key.name === "up" || key.name === "down") {
       key.preventDefault();
-      setNavigated(true);
+      const last = filteredCommands.length - 1;
+      const up = key.name === "up";
+      // From the latest index, not this render's: two presses can arrive before the next render. Setting `navigated` again is harmless.
       setSelectedIndexState((i: number) => {
-        const newIndex = Math.max(0, i - 1);
-        // Keep the highlighted item visible when arrowing past the edge
-        const sb = scrollRef.current;
-        if (sb && newIndex < sb.scrollTop) {
-          sb.scrollTo(newIndex);
-        }
-        return newIndex;
-      });
-    } else if (key.name === "down") {
-      key.preventDefault();
-      setNavigated(true);
-      setSelectedIndexState((i: number) => {
-        if (filteredCommands.length === 0) {
-          return 0;
-        }
-
-        const newIndex = Math.min(filteredCommands.length - 1, i + 1);
-        const sb = scrollRef.current;
-        if (sb) {
-          const viewportHeight = sb.viewport.height;
-          const visibleEnd = sb.scrollTop + viewportHeight - 1;
-          if (newIndex > visibleEnd) {
-            sb.scrollTo(newIndex - viewportHeight + 1);
-          }
-        }
-        return newIndex;
+        const next = last < 0 ? 0 : up ? Math.max(0, i - 1) : Math.min(last, i + 1);
+        if (next !== i) setNavigated(true);
+        return next;
       });
     }
   });

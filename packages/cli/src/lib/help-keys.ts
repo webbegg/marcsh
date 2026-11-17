@@ -9,9 +9,9 @@ const FIXED_KEYS: readonly HelpKeyRow[] = [
   { keys: "Shift+Enter, ctrl+j", action: "New line" },
   { keys: "Tab", action: "Switch agent" },
   { keys: "Esc", action: "Stop a running reply, close a menu or dialog" },
-  { keys: "Ctrl+C", action: "Quit (press twice)" },
+  { keys: "Ctrl+C", action: "Close a menu, clear the prompt; on an empty prompt press twice to quit" },
   { keys: "@", action: "Mention a file or folder" },
-  { keys: "Up / Down", action: "Earlier prompts" },
+  { keys: "Up / Down", action: "Move in a menu; on the prompt, earlier prompts" },
   { keys: "?", action: "Open this help (on an empty prompt)" },
 ];
 

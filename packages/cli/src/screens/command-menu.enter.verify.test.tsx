@@ -86,6 +86,10 @@ describe("Enter in the / menu (verify)", () => {
     await type("/review");
     await enter();
     expect(frame()).not.toContain("not a known command");
+    // The menu closed on `/review ` (ready for arguments), not on `/reviews-all`.
+    expect(frame()).not.toContain("Review everything");
+    expect(frame()).toContain("/review");
+    expect(frame()).not.toContain("/reviews-all");
     expect(sent).toEqual([]);
   });
 

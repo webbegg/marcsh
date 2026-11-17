@@ -6,7 +6,7 @@ import { InputBar } from "../components/input-bar";
 import { COMMAND_NAMES } from "../components/command-menu/commands";
 import { engineCommandNames } from "../components/command-menu/use-command-menu";
 import { openCommandQuestions } from "../components/dialogs/command-questions";
-import { PaletteHint } from "../components/dialogs/help-dialog";
+import { PaletteHint } from "../components/palette-hint";
 import { usePromptConfig } from "../providers/prompt-config";
 import { useDialog } from "../providers/dialog";
 import { useToast } from "../providers/toast";

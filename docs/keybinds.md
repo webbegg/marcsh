@@ -16,7 +16,7 @@ Press `Ctrl+P` to open the palette. It lists every command you can run where you
 
 Type `/help`, or press `?` on an empty prompt, to see the keys and the commands in one dialog.
 
-- The keys section lists the keys that are active now, so a key you changed in `keybinds.json` shows its new key, and a key you unbound is left out. It also lists the fixed keys: `Enter`, `Shift+Enter` and `Ctrl+J`, `Tab`, `Esc`, `Ctrl+C`, `@` and `Up` and `Down`.
+- The keys section lists the keys that are active now, so a key you changed in `keybinds.json` shows its new key, and a key you unbound is left out. It also lists the fixed keys: `Enter`, `Shift+Enter` and `Ctrl+J`, `Tab`, `Esc`, `Ctrl+C`, `@`, `Up` and `Down`, and `?`.
 - The commands section lists every command you can run where you are, with its description: marcsh's own, your custom commands and the engine's. A long description ends with `…`.
 - `Up` and `Down`, `PageUp` and `PageDown`, `Home` and `End` scroll the list. `Esc` closes the dialog.
 - The hint under the prompt shows the palette's key next to `tab agents`: `ctrl+p commands` by default. If you unbind the palette, the hint is left out.

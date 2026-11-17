@@ -35,9 +35,9 @@ describe("helpKeyRows", () => {
     expect(keysFor(list, "New line")).toBe("Shift+Enter, ctrl+j");
     expect(keysFor(list, "Switch agent")).toBe("Tab");
     expect(keysFor(list, "Stop a running reply, close a menu or dialog")).toBe("Esc");
-    expect(keysFor(list, "Quit (press twice)")).toBe("Ctrl+C");
+    expect(keysFor(list, "Close a menu, clear the prompt; on an empty prompt press twice to quit")).toBe("Ctrl+C");
     expect(keysFor(list, "Mention a file or folder")).toBe("@");
-    expect(keysFor(list, "Earlier prompts")).toBe("Up / Down");
+    expect(keysFor(list, "Move in a menu; on the prompt, earlier prompts")).toBe("Up / Down");
     expect(keysFor(list, "Open this help (on an empty prompt)")).toBe("?");
   });
 

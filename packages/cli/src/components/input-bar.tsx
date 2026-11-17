@@ -609,21 +609,33 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
   currentAgentRef.current = agent;
   // What a switch of agent says, in one toast: what the new mode does when the mode changed, and what the engine cannot apply of the
   // agent (it still works: what it ignores is said once, when it is selected). The warnings take a moment to work out: a toast that
-  // arrives after the user moved to another agent is about an agent no longer in use.
-  const announceAgent = useCallback(async (previous: Agent, selected: Agent) => {
-    const warnings = await agentWarnings(selected, engineId);
-    const lines = [
-      ...(previous.mode !== selected.mode ? [`${selected.name}: ${MODE_SENTENCES[selected.mode]}`] : []),
-      ...(warnings.length > 0 ? [`Warning: ${warnings.join("; ")}`] : []),
-    ];
-    if (lines.length > 0 && currentAgentRef.current.id === selected.id) toast.show({ variant: "info", message: lines.join(" · ") });
+  // arrives after the user moved to another agent is about an agent no longer in use, and is dropped. The mode is judged against the
+  // last one the user was told about, so Build, Plan, Reviewer pressed quickly still says Plan mode once the switching stops.
+  const announcedModeRef = useRef(agent.mode);
+  const pendingAnnouncementsRef = useRef(0);
+  const announceAgent = useCallback(async (selected: Agent) => {
+    try {
+      const warnings = await agentWarnings(selected, engineId);
+      if (currentAgentRef.current.id !== selected.id) return;
+      const modeChanged = announcedModeRef.current !== selected.mode;
+      announcedModeRef.current = selected.mode;
+      const lines = [
+        ...(modeChanged ? [`${selected.name}: ${MODE_SENTENCES[selected.mode]}`] : []),
+        ...(warnings.length > 0 ? [`Warning: ${warnings.join("; ")}`] : []),
+      ];
+      if (lines.length > 0) toast.show({ variant: "info", message: lines.join(" · ") });
+    } finally {
+      pendingAnnouncementsRef.current -= 1;
+    }
   }, [engineId, toast]);
   // Selects an agent (Tab, `/agents`) and says what changed.
   const switchAgent = useCallback((select: () => Agent) => {
-    const previous = currentAgentRef.current;
+    // With nothing still being announced, the agent in use is what the user last saw (it can also change from outside, e.g. a resumed session).
+    if (pendingAnnouncementsRef.current === 0) announcedModeRef.current = currentAgentRef.current.mode;
     const selected = select();
     currentAgentRef.current = selected;
-    void announceAgent(previous, selected);
+    pendingAnnouncementsRef.current += 1;
+    void announceAgent(selected);
   }, [announceAgent]);
   const { colors } = useTheme();
   const { isTopLayer, push, pop, setResponder, quitArmed, registerPrompt } = useKeyboardLayer();

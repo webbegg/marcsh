@@ -101,6 +101,21 @@ describe("the Build/Plan toast (S17)", () => {
     expect(frame()).toContain("Builder: edits files and runs commands, asking first");
   });
 
+  test("two quick switches that end in Plan mode (Build → Plan → a read-only agent) still say what Plan does", async () => {
+    writeAgent("auditor.md", "---\nname: Auditor\npermission: read-only\n---\nAudit only.");
+    await openHome();
+
+    // Both presses land before the first switch's toast is worked out, which is then about an agent no longer in use.
+    await act(async () => {
+      screen!.mockInput.pressTab();
+      screen!.mockInput.pressTab();
+    });
+    await settle(120);
+
+    expect(frame()).toContain("Auditor › ");
+    expect(frame()).toContain("Auditor: reads and plans; changes nothing");
+  });
+
   test("a switch that keeps the mode (Build → a build agent) shows no toast", async () => {
     await openHome();
     // Plan is the second agent: go to it and past it to the first build agent, then forward to the next one.

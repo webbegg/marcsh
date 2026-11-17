@@ -24,7 +24,7 @@ Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to
 ### How the menu filters
 
 - Keep typing to filter. The letters you type must appear in the command name in that order, so `/mo` finds `/models` and `/ss` finds `/sessions`. Case does not matter. Better matches come first.
-- With nothing after the `/`, the menu is grouped under dim headers: marcsh's own commands, then `packs & custom`, then the engine's commands, each group sorted by name. With a query the list is one list, best match first.
+- With nothing after the `/`, the menu is grouped under dim headers: marcsh's own commands, then `packs & custom`, then the engine's commands. marcsh's own keep the order of this page's list; the other groups are sorted by name. With a query the list is one list, best match first.
 - `/login` and `/logout` manage pi's logins, so they are listed only on pi. On Claude they still run when you type the full name.
 - The menu shows at most 10 rows and scrolls.
 - The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.

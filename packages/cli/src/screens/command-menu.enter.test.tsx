@@ -115,7 +115,9 @@ describe("Enter in the / menu runs what was typed (S13, L6/Q1)", () => {
     await enter();
 
     expect(frame()).not.toContain("not a known command");
+    // The prompt now holds the completed name, ready for arguments, and the menu is closed.
     expect(frame()).toContain("/review");
+    expect(frame()).not.toContain("Review a pull request");
     expect(sent).toEqual([]);
   });
 
@@ -129,6 +131,31 @@ describe("Enter in the / menu runs what was typed (S13, L6/Q1)", () => {
     // The first row is /new, the second /agents: Down once is the second row.
     expect(frame()).toContain("Select Agent");
     expect(frame()).not.toContain("not a known command");
+  });
+
+  test("Up on the first row moves nothing, so Enter still runs what was typed", async () => {
+    await open();
+    await type("/e");
+    await act(async () => screen!.mockInput.pressArrow("up"));
+    await settle(60);
+    await enter();
+
+    expect(frame()).toContain("/e is not a known command");
+  });
+
+  test("the mouse passing over a row after an arrow press undoes the arrow's choice", async () => {
+    await open("claude", true);
+    await type("/e");
+    await act(async () => screen!.mockInput.pressArrow("down"));
+    await settle(60);
+    const rows = screen!.captureCharFrame().split("\n");
+    const y = rows.findIndex((row) => row.includes("/theme"));
+    await act(async () => screen!.mockMouse.moveTo(rows[y]!.indexOf("/theme") + 2, y));
+    await settle(60);
+    await enter();
+
+    expect(frame()).not.toContain("Select Theme");
+    expect(frame()).toContain("/e is not a known command");
   });
 
   test("the mouse passing over a row does not choose it: only the arrows or a click do", async () => {

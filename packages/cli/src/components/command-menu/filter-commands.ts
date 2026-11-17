@@ -30,7 +30,7 @@ const groupRank = (command: Command) => {
  * The engine's copy of a pack command marcsh runs (Claude's `<plugin>:<name>`) is not listed a second time, nor that of a pack command
  * hidden by a clash (`hidden`). Commands without a source are Claude's. The commands on the open session (`scope: "session"`) are left
  * out with `inSession` false. Given an `engine`, the commands that do not work on it (`engines` without it) are left out too; no engine, no
- * filtering. The list is kept in group order (see `groupOf`), each group by name, so the `/` menu can head the groups.
+ * filtering. The list is kept in group order (see `groupOf`) so the `/` menu can head the groups: marcsh's own in their usual order, the others by name.
  */
 export function getMenuCommands(
   claude: ClaudeCommand[],

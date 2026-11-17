@@ -2,7 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import type { ReactNode } from "react";
 import { InputBar } from "./input-bar";
 import { Spinner } from "./spinner";
-import { PaletteHint } from "./dialogs/help-dialog";
+import { PaletteHint } from "./palette-hint";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 
