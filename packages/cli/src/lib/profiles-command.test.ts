@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getSessionProfile, loadProfiles, setSessionProfile } from "./profiles";
@@ -180,6 +180,14 @@ describe("the starter profiles file (S17, L6/Q3)", () => {
     expect(none).toMatchObject({ create: true });
     const present = runProfileCommand({ kind: "show" }, env("pi"));
     expect("create" in present).toBe(false);
+  });
+
+  test("a dangling link at the path is not offered as a missing file", () => {
+    const link = join(dir, "dangling-profiles.json");
+    symlinkSync(join(dir, "nowhere", "target.json"), link);
+    const shown = runProfileCommand({ kind: "show" }, env("pi", { path: link }));
+    expect("create" in shown).toBe(false);
+    expect("show" in shown && shown.show[0]).toBe(`${link} is a link to a file that does not exist, so marcsh reads no profiles. Fix or remove the link.`);
   });
 
   test("the typed command line never creates a file: only the dialog's confirm does", () => {

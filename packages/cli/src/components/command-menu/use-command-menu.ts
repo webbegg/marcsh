@@ -40,12 +40,12 @@ type UseCommandMenuReturn = {
   /** The commands matching the query, marcsh's own first. */
   commands: Command[];
   selectedIndex: number;
-  /** The user moved the highlight (arrows, mouse) since the text last changed: Enter then runs the highlighted row (see `typedCommand`). */
+  /** The user moved the highlight with the arrows since the text last changed: Enter then runs the highlighted row (see `typedCommand`). */
   navigated: boolean;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   handleContentChange: (text: string) => void;
   resolveCommand: (index: number) => Command | undefined;
-  /** Moves the highlight on purpose (the mouse): it counts as navigating. */
+  /** Highlights a row the mouse is over; it does not count as navigating. */
   setSelectedIndex: (index: number) => void;
 };
 
@@ -97,10 +97,9 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     }
   };
 
-  // The mouse moving over a row highlights it: a row the user chose, as the arrows do.
+  // The mouse passing over a row only highlights it: a stray move must not change what Enter runs. The arrows and a click choose a row.
   const setSelectedIndex = (index: number) => {
     setSelectedIndexState(index);
-    setNavigated(true);
   };
 
   // Resolve a command at a specific index (returns the command, caller handles execution)

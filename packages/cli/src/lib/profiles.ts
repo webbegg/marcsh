@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { PI_DEFAULT_MODEL } from "./models";
@@ -178,21 +178,40 @@ export function writeDefaultProfile(name: string, path = profilesPath()): void {
 }
 
 const STARTER_COMMENT =
-  'Model profiles for marcsh. A profile routes models. "primary" is the model of the main turn; add more routes under a subagent\'s file name, a prefix such as "review-*", or "*", each as { "model": ..., "thinking": ..., "fallback": [...] }. ' +
+  'Model profiles for marcsh. A profile routes models. "primary" routes the main turn: the default profile adds its thinking level and fallback chain, and /profile use <name> also switches to its primary model. Add more routes under a subagent\'s file name, a prefix such as "review-*", or "*", each as { "model": ..., "thinking": ..., "fallback": [...] }. ' +
   'pi takes provider/id and Claude takes opus, sonnet or haiku; a route for the other engine is skipped, so this starter lists both. ' +
   'Choose a profile for a session with /profile use <name>; the profile named in "default" applies to every session that has not chosen another. ' +
   "marcsh never overwrites this file; /profile default only changes the \"default\" entry. See docs/configuration.md.";
 
+/** Whether a plain file, not a link or a folder, is at the path. */
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a link whose target is missing is at the path: `existsSync` says no, yet a file cannot be created there. */
+export function isDanglingLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
 /** The text of the starter file: one `default` profile whose primary model is the current engine's, with the other engine's as a fallback its own engine skips. */
 export function starterProfilesText(models: { engine: string; piModel: string; claudeModel: string }): string {
-  const pi = models.piModel.trim() || PI_DEFAULT_MODEL;
+  const piModel = models.piModel.trim();
   const claude = models.claudeModel;
-  const [model, other] = models.engine === "pi" ? [pi, claude] : [claude, pi];
+  // The main model must be set, so pi without one takes pi's default; the other engine's model is listed only when there is one.
+  const [model, other] = models.engine === "pi" ? [piModel || PI_DEFAULT_MODEL, claude] : [claude, piModel];
   const starter = {
     $comment: STARTER_COMMENT,
     version: 1,
     default: "default",
-    profiles: { default: { primary: { model, ...(other !== model ? { fallback: [{ model: other }] } : {}) } } },
+    profiles: { default: { primary: { model, ...(other && other !== model ? { fallback: [{ model: other }] } : {}) } } },
   };
   return `${JSON.stringify(starter, null, 2)}\n`;
 }
@@ -227,7 +246,12 @@ export function createStarterProfiles(models: { engine: string; piModel: string;
     writeFileSync(path, text, { encoding: "utf8", flag: "wx" });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EEXIST") return { ok: false, reason: "exists", message: `A profiles file already exists at ${path}, so it was left as it is.` };
+    if (code === "EEXIST") {
+      const message = isRegularFile(path)
+        ? `A profiles file already exists at ${path}, so it was left as it is.`
+        : `Something other than a profiles file is at ${path} (a link or a folder), so nothing was written.`;
+      return { ok: false, reason: "exists", message };
+    }
     if (denied(code)) return deniedResult();
     return { ok: false, reason: "failed", message: `Could not create ${path}: ${error instanceof Error ? error.message : String(error)}` };
   }

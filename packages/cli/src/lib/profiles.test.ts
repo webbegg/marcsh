@@ -240,6 +240,27 @@ describe("createStarterProfiles (S17)", () => {
     expect(loadProfiles(path).file.profiles.default!.primary!.model).toBe("anthropic/claude-opus-5-5");
   });
 
+  test("on Claude with no pi model yet, there is no pi fallback: only current models are written", () => {
+    createStarterProfiles({ ...models, engine: "claude", piModel: "" }, path);
+    const primary = loadProfiles(path).file.profiles.default!.primary!;
+    expect(primary.model).toBe("sonnet");
+    expect(primary.fallback).toBeUndefined();
+  });
+
+  test("the comment does not claim the default profile sets the main turn's model", () => {
+    createStarterProfiles(models, path);
+    const comment: string = JSON.parse(readFileSync(path, "utf8")).$comment;
+    expect(comment).not.toContain('"primary" is the model of the main turn');
+    expect(comment).toContain("/profile use <name> also switches to its primary model");
+  });
+
+  test("a link or a folder at the path is not called a profiles file", () => {
+    const link = join(dir, "dangling.json");
+    symlinkSync(join(dir, "nowhere", "target.json"), link);
+    const result = createStarterProfiles(models, link);
+    expect(result).toEqual({ ok: false, reason: "exists", message: `Something other than a profiles file is at ${link} (a link or a folder), so nothing was written.` });
+  });
+
   test("the file explains itself in a top-level $comment, which the reader ignores, and /profile default keeps it", () => {
     createStarterProfiles(models, path);
     const raw = JSON.parse(readFileSync(path, "utf8"));

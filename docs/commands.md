@@ -8,7 +8,7 @@ Type `/` in the prompt to run a command. This page lists every marcsh command, h
 
 - Type `/` at the start of the prompt. The menu opens as soon as the text starts with `/` and has no space yet.
 - Press `Up` and `Down` to move the highlight. Click a row to run it.
-- `Enter` runs the command you typed: an exact name, or a start that only one command has (`/mod` runs `/models`). A start that several commands share (`/s`) runs nothing. If you moved the highlight with `Up`/`Down` or the mouse, `Enter` runs that row.
+- `Enter` runs the command you typed: an exact name, or a start that only one command has (`/mod` runs `/models`). A start that several commands share (`/s`) runs nothing. If you moved the highlight with `Up`/`Down`, `Enter` runs that row. Moving the mouse over a row only highlights it; click to run it.
 - Press `Esc` to close the menu. Your text stays.
 
 Picking a command that is not one of marcsh's own (for example one from the engine) puts `/name ` in the prompt. Add what it needs and press `Enter`.

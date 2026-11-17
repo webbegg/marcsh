@@ -1,6 +1,6 @@
 import { agentModelFits } from "./agents";
 import { primaryModel, routingReport } from "./model-routing";
-import { activeProfiles, createStarterProfiles, getSessionProfile, isProfileName, loadProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
+import { activeProfiles, createStarterProfiles, getSessionProfile, isDanglingLink, isProfileName, loadProfiles, profilesPath, profilesWarning, setSessionProfile, writeDefaultProfile } from "./profiles";
 import { DEFAULT_CHAT_MODEL_ID, SUPPORTED_CHAT_MODELS } from "./models";
 
 export const PROFILE_USAGE = "Usage: /profile [use <name> | default <name> | clear]";
@@ -76,6 +76,10 @@ export function runProfileCommand(command: ProfileCommand, env: ProfileEnv): Pro
 
   if (command.kind === "show") {
     const lines = routingReport({ active: activeProfiles(file), subagents: env.subagents(), engine, problems: loaded.problems });
+    if (!loaded.exists && isDanglingLink(path)) {
+      lines.unshift(`${path} is a link to a file that does not exist, so marcsh reads no profiles. Fix or remove the link.`);
+      return { show: lines };
+    }
     if (!loaded.exists) lines.unshift(`There is no profiles file yet (${path}). Create it to route models: see the configuration guide.`);
     else if (Object.keys(file.profiles).length > 0) lines.push(`Profiles in the file: ${names(file.profiles)}`);
     return loaded.exists ? { show: lines } : { show: lines, create: true };

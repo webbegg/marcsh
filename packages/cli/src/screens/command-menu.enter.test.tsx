@@ -46,10 +46,17 @@ const enter = async () => {
   await settle(60);
 };
 
-async function open(engine = "claude") {
-  const router = createMemoryRouter([
-    { path: "/", element: <RootLayout />, children: [{ index: true, element: <InputBar engine={engine} onSubmit={(text) => sent.push(text)} /> }] },
-  ]);
+async function open(engine = "claude", atBottom = false) {
+  const bar = <InputBar engine={engine} onSubmit={(text) => sent.push(text)} />;
+  const element = atBottom ? (
+    <box flexDirection="column" height="100%">
+      <box flexGrow={1} />
+      {bar}
+    </box>
+  ) : (
+    bar
+  );
+  const router = createMemoryRouter([{ path: "/", element: <RootLayout />, children: [{ index: true, element }] }]);
   screen = await testRender(<RouterProvider router={router} />, { width: 110, height: 30, kittyKeyboard: true, exitOnCtrlC: false });
   await settle(120);
 }
@@ -122,6 +129,20 @@ describe("Enter in the / menu runs what was typed (S13, L6/Q1)", () => {
     // The first row is /new, the second /agents: Down once is the second row.
     expect(frame()).toContain("Select Agent");
     expect(frame()).not.toContain("not a known command");
+  });
+
+  test("the mouse passing over a row does not choose it: only the arrows or a click do", async () => {
+    await open("claude", true);
+    await type("/e");
+    const rows = screen!.captureCharFrame().split("\n");
+    const y = rows.findIndex((row) => row.includes("/theme"));
+    expect(y).toBeGreaterThan(-1);
+    await act(async () => screen!.mockMouse.moveTo(rows[y]!.indexOf("/theme") + 2, y));
+    await settle(60);
+    await enter();
+
+    expect(frame()).not.toContain("Select Theme");
+    expect(frame()).toContain("/e is not a known command");
   });
 
   test("`/` and Enter alone run nothing: no row was chosen", async () => {

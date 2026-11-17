@@ -7,7 +7,7 @@ export type TypedCommand = { run: Command } | { unknown: true } | { send: true }
  * Decides what Enter does in the `/` menu, from what the user typed and not from what the fuzzy list ranks first (`/he` must never
  * open `/theme`). `query` is the text after the `/`; `commands` is the list as the menu shows it, and `selectedIndex` its highlighted row.
  *
- * - A row the user moved to (arrows, mouse: `navigated`) runs, whatever was typed.
+ * - A row the user moved to with the arrows (`navigated`) runs, whatever was typed. The mouse passing over a row does not count; a click runs the row directly.
  * - Otherwise the first word of `query` must be the name of a command, or the start of exactly one name (`/mod` → `/models`).
  *   An exact name wins over longer names that start with it. What follows the name is the command's arguments, not matched here.
  * - A text with a `/` in its name (`/usr/bin/env`) is a path in a prompt, not a command: it is sent as typed.

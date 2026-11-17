@@ -80,9 +80,9 @@ With no profiles file, `/profile` lists the routing and adds a row, `Create a st
 }
 ```
 
-- **Your current models.** The `default` profile's `primary` model is the model in use for the engine of the session (pi's `provider/id`, or the Claude alias you last chose), and the other engine's model is its fallback, which that engine skips. The starter therefore changes nothing until you edit it.
+- **Your current models.** The `default` profile's `primary` model is the model in use for the engine of the session (pi's `provider/id`, or the Claude alias you last chose), and the other engine's model, when it has one, is its fallback, which that engine skips. A default profile's `primary` adds its thinking level and fallback chain to the main turn but does not switch the model; `/profile use <name>` does. The starter therefore changes nothing until you edit it.
 - **Comments.** JSON cannot hold comments, so the file explains itself in a top-level `$comment` string. marcsh ignores any top-level key it does not know, and `/profile default` keeps it.
-- **Never overwritten.** The file is created only if nothing is at that path. If a file appeared after the dialog opened, marcsh leaves it as it is and says `A profiles file already exists at <path>, so it was left as it is.` If the folder cannot be written, the message is `Cannot create <path>: permission denied.` and names `MARCSH_PROFILES_PATH`. marcsh reads the file back after writing it, and removes it again if it does not read as valid.
+- **Never overwritten.** The file is created only if nothing is at that path. If a file appeared after the dialog opened, marcsh leaves it as it is and says `A profiles file already exists at <path>, so it was left as it is.` A link or a folder at the path is not written through either; a link to a missing file is named in the dialog and no starter is offered. If the folder cannot be written, the message is `Cannot create <path>: permission denied.` and names `MARCSH_PROFILES_PATH`. marcsh reads the file back after writing it, and removes it again if it does not read as valid.
 
 ```json
 {
