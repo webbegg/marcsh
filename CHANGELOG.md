@@ -2,6 +2,25 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.6.0
+
+Commands that ask before they send, a task list, subagents held to the files they may change, model profiles with fallback chains, and the brigadev workflow as a pack.
+
+### Commands
+- **Commands can ask questions.** A custom or pack command can declare `questions` in its frontmatter (text, long or choice; required, options, defaults). marcsh asks them in a form, fills the `{{id}}` placeholders, and shows the request with Start, Edit answers and Cancel before it sends. Defaults can use the current branch, the default branch and the test script. Text typed after the command fills the first question. See [docs/commands.md](docs/commands.md).
+- **`marcsh run "/name …"` runs your custom and pack commands** as the interface does, with the agent and model the command names. A command with questions takes the text after its name as its first answer and the defaults for the rest; a required answer nobody gave exits with `2` before anything is sent. Before, the typed `/name` reached the engine as it was. See [docs/cli.md](docs/cli.md).
+
+### Agents and subagents
+- **A task list.** On pi, the agent keeps a `todo` list (pending, in progress, done, blocked, dropped). It changes no files, so it never asks, also in Plan; only marcsh's own tool runs unasked. On Claude, Claude's own TodoWrite stays available.
+- **Subagents held to the files they may change.** On pi, `Task` takes an `editSurfaces` list of paths or globs. Edits and writes outside it are denied without asking, literal shell writes outside it are blocked, other changes are flagged, and the Task result lists every file changed outside it, also when the subagent times out or fails. Writers running at the same time must have separate lists. See [docs/agents.md](docs/agents.md).
+
+### Models
+- **Model profiles.** `~/.marcsh/profiles.json` routes your agent's turn, each subagent (by name, prefix or `*`) to a model, a thinking level and a fallback chain. `/profile` shows the routing and where each value comes from, and switches profiles. Without the file nothing changes. See [docs/configuration.md](docs/configuration.md).
+- **Fallback chains.** On pi, a turn that fails on quota, auth, a rate limit, a provider error, a timeout or the network moves to the next model in its chain, and the failed model rests (30 minutes after quota or auth, 2 minutes otherwise). A subagent restarts on the next model only if it had not run any tool yet, so nothing runs twice. On Claude, the first fallback becomes Claude's own fallback model.
+
+### The brigadev pack
+- **`packs/brigadev`** brings the brigadev ODD workflow: an orchestrator agent, explore, verify, worker, review and Judgment Day subagents, 11 skills and 16 commands (13 with question forms), and opt-in hooks that block `git commit` until a passing test run is recorded for the current files. It lives in this repository; `scripts/brigadev-pack-dev.sh` mirrors it for a local install. See [packs/brigadev/README.md](packs/brigadev/README.md).
+
 ## 0.5.0
 
 Trust any project, with its commands and git settings in what you review.
