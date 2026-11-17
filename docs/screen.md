@@ -14,6 +14,7 @@ This page describes what you see in marcsh and what each part does: the two scre
 | --- | --- |
 | `Enter` | Sends your message. In a menu, it picks the highlighted item. |
 | `Shift+Enter` | Adds a new line. |
+| `Ctrl+J` | Adds a new line too. It works in every terminal, including inside tmux. See [New lines in tmux](#new-lines-in-tmux). |
 | `/` | Opens the command menu. Keep typing to filter it. |
 | `@` | Opens the file picker. |
 | `Ctrl+V` | Pastes what the clipboard holds. See [Pasting](#pasting). |
@@ -55,7 +56,19 @@ On a pi session you can keep typing while a reply runs. Say the agent is rewriti
 
 The hint next to the status line tells you what the keys do right now, for example `enter steers · alt+enter queues`. If the turn is starting or ending, the hint says so and nothing is sent. The text stays in the input. Press `Enter` again when the hint is gone.
 
-On a Claude session the input is off while a reply runs. Wait for the reply, or press `Esc` to stop it.
+On a Claude session the input is off while a reply runs, and the placeholder says `reply running · esc to stop`. Wait for the reply, or press `Esc` to stop it.
+
+## New lines in tmux
+
+Inside tmux, `Shift+Enter` reaches marcsh as a plain `Enter` unless tmux passes extended keys on, so it sends a half-written message instead of adding a line. Use `Ctrl+J` to add a new line. It always works.
+
+When marcsh sees it runs inside tmux with `extended-keys off`, the dim hint under the input shows `ctrl+j new line`, always. It is not shown once and then hidden. If tmux does not answer, no hint is shown.
+
+To make `Shift+Enter` work in tmux (tmux 3.2 or later), add this to `~/.tmux.conf` and restart tmux. Your terminal must also send extended keys:
+
+```
+set -g extended-keys on
+```
 
 ## Background results
 

@@ -432,6 +432,7 @@ function SessionChat({
         messages={messages}
         onSubmit={sendTyped}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null || compacting}
+        replyRunning={busy && !compacting}
         loading={busy}
         interruptible={busy}
       >
