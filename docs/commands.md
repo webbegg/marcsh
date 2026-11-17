@@ -362,6 +362,14 @@ Change the color theme.
 - Opens "Select Theme". Moving the highlight previews each theme.
 - `Enter` keeps the theme and remembers it. `Esc` goes back to the theme you had.
 
+### /help
+
+Show the keys and the commands.
+
+```
+/help
+```
+
 ### /exit
 
 Quit marcsh.

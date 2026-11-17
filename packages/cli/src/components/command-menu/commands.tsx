@@ -15,6 +15,7 @@ import {
   TrustDialogContent,
 } from "../dialogs";
 import { runPackCommand } from "../dialogs/pack-dialogs";
+import { openHelp } from "../dialogs/help-dialog";
 import { ProfileDialogContent } from "../dialogs/profile-dialog";
 import { availableSubagents, findAgent, loadSubagents } from "../../lib/agents";
 import { parseProfileCommand, runProfileCommand } from "../../lib/profiles-command";
@@ -158,12 +159,14 @@ export const COMMANDS: Command[] = [
     name: "login",
     description: "Log in to a pi provider (subscription or API key)",
     value: "/login",
+    engines: ["pi"],
     action: openLogin,
   },
   {
     name: "logout",
     description: "Remove a pi provider login",
     value: "/logout",
+    engines: ["pi"],
     action: openLogout,
   },
   {
@@ -353,6 +356,12 @@ export const COMMANDS: Command[] = [
     value: "/thinking",
     scope: "session",
     action: onSession("thinking", (_session, ctx) => toggleTranscriptView("thinking", "Thinking", ctx)),
+  },
+  {
+    name: "help",
+    description: "Show the keys and the commands",
+    value: "/help",
+    action: openHelp,
   },
   {
     name: "exit",
