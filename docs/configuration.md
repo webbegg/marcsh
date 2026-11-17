@@ -55,7 +55,7 @@ A value marcsh does not understand is ignored, and the default is used. Use the 
 
 The `system` notification is shown by `osascript` and reads `<session title>: done` (or `failed`, when the turn ended with an error). It is not sent when you interrupt a turn with `Esc`. A `favoriteModels` or `recentModels` entry for a model that is no longer offered is kept in the file and not shown.
 
-Both engines start on the model you chose last. A session you open again goes on with the model its last turn used, for this run only; the saved choice does not change.
+Both engines start on the model you chose last. A session you open again goes on with the model its last turn used, only while that session is open; when you leave it, new sessions use the saved choice again. A model you pick inside it is saved like any other.
 
 A permission mode you choose with `/permissions` lasts for the app session. Only the default is saved. See [Security](security.md#permission-modes).
 

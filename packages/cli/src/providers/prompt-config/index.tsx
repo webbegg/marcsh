@@ -44,11 +44,13 @@ type PromptConfigContextValue = {
   /** Picks the Claude model for the following turns and for new Claude sessions (kept in the preferences). */
   setModel: (model: SupportedChatModelId) => void;
   /**
-   * Makes an opened (resumed) session start on the model it used last, for this run only: the saved choices stay as they are. A
-   * model that is not usable on the session's engine (not a Claude alias, not a pi ref, no model named) leaves the current one;
-   * a pi model that has no credentials any more is replaced by the saved pick at the next check.
+   * Makes an opened (resumed) session start on the model it used last, while that session screen is open: the saved choices stay
+   * as they are. A model that is not usable on the session's engine (not a Claude alias, not a pi ref, no model named) leaves the
+   * current one; a pi model that has no credentials any more is replaced by the saved pick at the next check. Returns the function
+   * to call when the screen is left (an effect cleanup): it puts the saved choice back, so the next session does not inherit the
+   * resumed one's model. A model the user picked inside the session was saved, so it stays.
    */
-  adoptSessionModel: (engine: string, messages: readonly { metadata?: { model?: string } }[]) => void;
+  adoptSessionModel: (engine: string, messages: readonly { metadata?: { model?: string } }[]) => () => void;
   /** The engine new sessions start on; an open session keeps the one it was created with. */
   defaultEngine: EngineId;
   setDefaultEngine: (engine: EngineId) => void;
@@ -131,7 +133,11 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
 
   const [model, setModelState] = useState<SupportedChatModelId>(() => getClaudeModel());
 
+  // The saved choice, apart from the model in use: a resumed session's model is in use while it is open, then this comes back.
+  const preferredClaudeModel = useRef(model);
+
   const setModel = useCallback((next: SupportedChatModelId) => {
+    preferredClaudeModel.current = next;
     setModelState(next);
     persistClaudeModel(next);
   }, []);
@@ -201,13 +207,23 @@ export function PromptConfigProvider({ children }: PromptConfigProviderProps) {
   const adoptSessionModel = useCallback((engine: string, messages: readonly { metadata?: { model?: string } }[]) => {
     const used = lastUsedModel(messages);
     if (engine === "pi") {
-      if (!used || !PI_REF.test(used)) return;
+      if (!used || !PI_REF.test(used)) return () => {};
       sessionPiModel.current = used;
       applyPiModel(used);
-    } else if (engine === "claude" && isChatModelId(used)) {
-      setModelState(used);
+      return () => {
+        // The user picked another model inside the session (it was saved and cleared this one): nothing to put back.
+        if (sessionPiModel.current !== used) return;
+        sessionPiModel.current = undefined;
+        applyPiModel(preferredPiModel.current, getPiModel() ? "ready" : "pending");
+        void refreshPiModel();
+      };
     }
-  }, [applyPiModel]);
+    if (engine === "claude" && isChatModelId(used)) {
+      setModelState(used);
+      return () => setModelState(preferredClaudeModel.current);
+    }
+    return () => {};
+  }, [applyPiModel, refreshPiModel]);
 
   // New sessions start on pi: the status line on the home screen shows the model they will use.
   useEffect(() => {

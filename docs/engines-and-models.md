@@ -42,7 +42,7 @@ On both engines, the list shows your favorite models first, then your recent mod
 
 Favorites and recent models are kept in `preferences.json` ([Configuration](configuration.md#preferences)), for each engine apart. This also applies to Claude: the favorites and the recent models are kept between launches, and so is the model in use.
 
-A session you open again (`marcsh -c`, `marcsh -s <id>` or the session list) starts on the model it used last, when that model is still available. Otherwise it starts on the model you chose last. Opening an old session does not change the model marcsh keeps for new sessions.
+A session you open again (`marcsh -c`, `marcsh -s <id>` or the session list) starts on the model it used last, when that model is still available. Otherwise it starts on the model you chose last. That model applies only while the session is open: when you leave it (to the home screen, another session or a new one), marcsh goes back to the model you chose last. Opening an old session does not change the model marcsh keeps for new sessions. A model you pick inside the old session is a new choice, so it is kept.
 
 ### Claude
 
