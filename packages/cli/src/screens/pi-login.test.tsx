@@ -18,6 +18,9 @@ const { Session } = await import("./session");
 const { getStorage } = await import("../lib/storage");
 const { engines } = await import("../lib/engine");
 const { setUrlOpener } = await import("../lib/engine/pi-auth");
+
+/** Ends the fake device-code sign-in that is waiting. */
+let finishDeviceLogin: () => void = () => {};
 type Engine = import("../lib/engine/types").Engine;
 type ProviderAuth = import("@earendil-works/pi-ai").ProviderAuth;
 type OAuthCredential = import("@earendil-works/pi-ai").OAuthCredential;
@@ -57,8 +60,8 @@ const providers = [
       name: "Fake Device Login",
       login: async (interaction) => {
         interaction.notify({ type: "device_code", userCode: "WDJB-MJHT", verificationUri: "https://dev.example.test/act" });
-        // The user finishes the sign-in in the browser; the flow polls until then.
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        // The user finishes the sign-in in the browser; the flow polls until then (the test says when, so a slow machine cannot finish it early).
+        await new Promise<void>((resolve) => (finishDeviceLogin = resolve));
         return oauthCredential("device");
       },
       refresh: async (credential) => credential,
@@ -259,6 +262,7 @@ describe("/login (S12)", () => {
     expect(flow).toContain("https://dev.example.test/act");
     expect(opened).toEqual(["https://dev.example.test/act"]);
 
+    finishDeviceLogin();
     await settle(250);
     expect(frame()).toContain("Logged in to Fake Device");
     expect(await credentials.read("fake-device")).toMatchObject({ type: "oauth" });
