@@ -2,6 +2,24 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.5.0
+
+Trust any project, with its commands and git settings in what you review.
+
+### Project trust
+- **`/trust` works for any project**, also one without pi files. A project with nothing to review says so, and trusting it takes `t` then Enter.
+- **What you trust is reviewed in three parts**, and each one only counts while it is as you reviewed it:
+  - **pi files**: pi loads them only while they match.
+  - **Project commands** (`.marcsh/commands`): marcsh uses them only while they match. Adding, changing or removing one asks again; it does not affect pi. Each command is read once and used only if it is exactly what you reviewed.
+  - **Git settings**: the repository's own filter drivers (including files its config includes) and its attribute files. The status line counts changed files with `git status` only while they match. Git's own writes (`git push -u`, `git remote add`, `core.*`) and your global `~/.gitconfig` never count as a change.
+- **The list shows the parts.** Command rows show their `agent:` and `model:`, and the git row shows each filter driver's command.
+- **When a part changes**, only that part stops, and a short notice says which one and what to do. The trust question reads "Trust this project's files?".
+- **Upgrading from 0.4.0:** projects you trusted keep their pi trust, also in `marcsh run` and `marcsh mcp`. Their commands and the changed-file count wait for one `/trust`, with a note that says why. `marcsh run` and `marcsh mcp` print a note when a trusted project's pi files changed and nobody can be asked.
+- On Claude, nothing asks at turn time: run `/trust`. Claude's own project settings are not gated by marcsh trust. See [docs/security.md](docs/security.md).
+
+### Fixes
+- A pack install that is cancelled, times out or goes over the download limit no longer leaves its staging folder behind.
+
 ## 0.4.0
 
 Pasting anything into the prompt, packs that work closely with marcsh, and tracking of processes your tools leave running.
