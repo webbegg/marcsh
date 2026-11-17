@@ -449,7 +449,7 @@ function SessionChat({
         {queued.followUp.map((text, index) => (
           <UserMessage key={`queued-${index}`} message={text} mode={agent.mode} marker="queued" pending />
         ))}
-        {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
+        {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} cwd={session.cwd} />}
         {pendingRequest?.kind === "question" && (
           <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
         )}
