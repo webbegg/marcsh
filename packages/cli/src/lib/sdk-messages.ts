@@ -3,6 +3,8 @@ import { Mode, type ModeType } from "./modes";
 import type { ChatMessage, ChatUsage, MessagePart, TaskStatus } from "./chat-types";
 import type { PermissionDecision } from "./engine/types";
 import { contextTokensOf, mergeUsage, reported } from "./usage";
+import { redactSecrets } from "./engine/pi-auth";
+import { patchFromHunks, storedOutput } from "./tool-output";
 
 type ContentBlock = Record<string, unknown> & { type?: string };
 
@@ -41,8 +43,14 @@ function appendParts(reply: ChatMessage, blocks: ContentBlock[]): ChatMessage {
   return added.length === 0 ? reply : { ...reply, parts: [...reply.parts, ...added] };
 }
 
-function applyToolResults(reply: ChatMessage, blocks: ContentBlock[]): ChatMessage {
+/** The tools whose result carries the hunks they wrote (`structuredPatch`). */
+const PATCH_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+
+function applyToolResults(reply: ChatMessage, blocks: ContentBlock[], toolUseResult?: unknown): ChatMessage {
   let parts = reply.parts;
+  // `tool_use_result` is the message's one structured result: it only belongs to a block when the message has just one.
+  const single = blocks.filter((b) => b.type === "tool_result").length === 1;
+  const structured = single && toolUseResult && typeof toolUseResult === "object" ? (toolUseResult as { structuredPatch?: unknown }) : undefined;
 
   for (const block of blocks) {
     if (block.type !== "tool_result") continue;
@@ -51,9 +59,13 @@ function applyToolResults(reply: ChatMessage, blocks: ContentBlock[]): ChatMessa
     const part = parts[index];
     if (!part || part.type !== "tool") continue;
 
-    const next: MessagePart = block.is_error
-      ? { ...part, state: "error", errorText: toolResultText(block.content) }
-      : { ...part, state: "done" };
+    let next: MessagePart;
+    if (block.is_error) {
+      next = { ...part, state: "error", errorText: redactSecrets(toolResultText(block.content)) };
+    } else {
+      const patch = PATCH_TOOLS.has(part.toolName) ? patchFromHunks(structured?.structuredPatch) : undefined;
+      next = { ...part, state: "done", ...storedOutput(toolResultText(block.content)), ...(patch ? { patch } : {}) };
+    }
     parts = parts.map((p, i) => (i === index ? next : p));
   }
 
@@ -182,7 +194,7 @@ export function applySdkMessage(reply: ChatMessage, message: SDKMessage): ChatMe
     case "assistant":
       return applyRequestUsage(appendParts(reply, contentBlocks(message.message)), message);
     case "user":
-      return applyToolResults(reply, contentBlocks(message.message));
+      return applyToolResults(reply, contentBlocks(message.message), (message as { tool_use_result?: unknown }).tool_use_result);
     case "result": {
       const usage = resultUsage(reply.metadata?.usage, message, reply.metadata?.model);
       return {

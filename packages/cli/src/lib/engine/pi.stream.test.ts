@@ -109,7 +109,7 @@ describe("pi replies stream while they are generated", () => {
     expect(early?.text.length).toBeGreaterThan(0);
     expect(early?.text.length).toBeLessThan("considering the question carefully ".repeat(8).length);
     expect(running.reply().parts).toEqual([
-      { type: "reasoning", text: "considering the question carefully ".repeat(8) },
+      { type: "reasoning", text: "considering the question carefully ".repeat(8), durationMs: expect.any(Number) },
       { type: "text", text: "done" },
     ]);
   }, 20000);
@@ -145,11 +145,11 @@ describe("pi replies stream while they are generated", () => {
     expect(reply.parts).toEqual([
       { type: "reasoning", text: "plan" },
       { type: "text", text: "Reading it now." },
-      { type: "tool", toolCallId: "r1", toolName: "read", input: { path: join(cwd, "notes.txt") }, state: "done" },
+      { type: "tool", toolCallId: "r1", toolName: "read", input: { path: join(cwd, "notes.txt") }, state: "done", output: "hello notes" },
       { type: "text", text: "It says hello." },
     ]);
     expect(JSON.parse(JSON.stringify(reply.parts))).toEqual(reply.parts);
-    expect(reply.parts.every((p) => Object.keys(p).every((key) => ["type", "text", "toolCallId", "toolName", "input", "state"].includes(key)))).toBe(true);
+    expect(reply.parts.every((p) => Object.keys(p).every((key) => ["type", "text", "toolCallId", "toolName", "input", "state", "output"].includes(key)))).toBe(true);
   }, 20000);
 
   test("leaves nothing queued or timed once the turn is done", async () => {

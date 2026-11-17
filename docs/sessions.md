@@ -45,6 +45,8 @@ Leaving a session while a reply is still running stops that reply. It also stops
 
 Sessions live in `~/.marcsh/marcsh.db`, a SQLite file that only your user account can read. The same file holds your project trust decisions, the command list the `/` menu shows and, for pi sessions, your "always allow" answers. On Claude, "always allow" is stored by Claude Code, not by marcsh. pi also keeps its own session files inside `~/.marcsh/agent`. See [Configuration](configuration.md) to move the database.
 
+A session keeps your messages, the replies, and what each tool call did: its input, whether it worked, and, for a call that worked, the end of its output (the last 200 lines or 16 KB, whichever is less). The output is saved so the transcript can show a preview of it after a reload. Known secrets are hidden first (`Bearer` tokens, `sk-` keys, JWTs and other long token-like strings are shown as `•••`), then the output is cut. When the start of an output was cut off, the call is marked as cut. The patch of an edit or write call is saved with it, up to 64 KB. A secret that the hiding does not recognise is saved as it is, so deleting the session (`/sessions` then `Ctrl+D`, or `marcsh session delete <id>`) is how you remove it. Sessions saved by an earlier version have no saved output and load as before.
+
 ## Rename, fork, export and delete
 
 - `/rename <title>` changes the title. The session keeps its place in the list.

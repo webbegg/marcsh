@@ -1,6 +1,7 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatMessage, ChatUsage, MessagePart } from "../chat-types";
 import { addTo, contextTokensOf, mergeUsage, reported } from "../usage";
+import { boundedPatch, storedOutput } from "../tool-output";
 import { redactSecrets } from "./pi-auth";
 import type { EngineEvent } from "./types";
 
@@ -24,6 +25,9 @@ function resultText(result: unknown): string {
  */
 const streamed = new WeakMap<MessagePart, number>();
 
+/** When the first and the last thinking delta of a streamed reasoning part arrived, to give the finished part its duration. */
+const thinkingSpan = new WeakMap<MessagePart, { from: number; to: number }>();
+
 type StreamDelta = { kind: "text" | "reasoning"; contentIndex: number; delta: string };
 
 function streamDelta(event: AgentSessionEvent): StreamDelta | null {
@@ -39,13 +43,18 @@ export function isStreamDelta(event: AgentSessionEvent): boolean {
   return !("parentToolCallId" in event && event.parentToolCallId != null) && streamDelta(event) !== null;
 }
 
-function appendDelta(reply: ChatMessage, { kind, contentIndex, delta }: StreamDelta): ChatMessage {
+function appendDelta(reply: ChatMessage, { kind, contentIndex, delta }: StreamDelta, now: () => number): ChatMessage {
   if (delta === "") return reply;
 
   const at = reply.parts.findIndex((p) => p.type === kind && streamed.get(p) === contentIndex);
   const current = reply.parts[at];
   const next: MessagePart = { type: kind, text: (current && current.type === kind ? current.text : "") + delta };
   streamed.set(next, contentIndex);
+  if (kind === "reasoning") {
+    const time = now();
+    const before = current ? thinkingSpan.get(current) : undefined;
+    thinkingSpan.set(next, { from: before?.from ?? time, to: time });
+  }
   return { ...reply, parts: current ? reply.parts.map((p, i) => (i === at ? next : p)) : [...reply.parts, next] };
 }
 
@@ -55,6 +64,8 @@ type PiRequestUsage = { input?: number; output?: number; cacheRead?: number; cac
 export type PiEventOptions = {
   /** The context window of the model the turn runs on, which a pi message does not say. */
   contextWindow?: number;
+  /** The clock that times thinking, in ms. Default `Date.now`. */
+  now?: () => number;
 };
 
 /**
@@ -82,11 +93,14 @@ function foldUsage(base: ChatUsage | undefined, usage: PiRequestUsage | undefine
 function appendAssistant(reply: ChatMessage, message: { usage?: PiRequestUsage }, options: PiEventOptions): ChatMessage {
   const added: MessagePart[] = [];
 
-  for (const block of contentBlocks(message)) {
+  contentBlocks(message).forEach((block, contentIndex) => {
     if (block.type === "text" && typeof block.text === "string") {
       added.push({ type: "text", text: block.text });
     } else if (block.type === "thinking" && typeof block.thinking === "string") {
-      added.push({ type: "reasoning", text: block.thinking });
+      // The time thinking took is known only for a block that streamed in more than one moment: its first delta to its last.
+      const live = reply.parts.find((p) => p.type === "reasoning" && streamed.get(p) === contentIndex);
+      const span = live ? thinkingSpan.get(live) : undefined;
+      added.push({ type: "reasoning", text: block.thinking, ...(span && span.to > span.from ? { durationMs: span.to - span.from } : {}) });
     } else if (block.type === "toolCall") {
       added.push({
         type: "tool",
@@ -96,7 +110,7 @@ function appendAssistant(reply: ChatMessage, message: { usage?: PiRequestUsage }
         state: "running",
       });
     }
-  }
+  });
 
   // The final parts take the place of the streamed ones. A message that ended without content (an interrupted one) keeps what streamed.
   const live = reply.parts.filter((p) => streamed.has(p));
@@ -118,12 +132,24 @@ function appendAssistant(reply: ChatMessage, message: { usage?: PiRequestUsage }
   return { ...reply, parts, metadata };
 }
 
+/** The patch pi's edit and write results carry in `details` (`patch`, or the older `diff`), as the tool part keeps it. */
+function patchOf(toolName: string, result: unknown): { patch?: string } {
+  if (toolName !== "edit" && toolName !== "write") return {};
+
+  const details = (result as { details?: { patch?: unknown; diff?: unknown } } | undefined)?.details;
+  const text = typeof details?.patch === "string" && details.patch !== "" ? details.patch : details?.diff;
+  const patch = boundedPatch(typeof text === "string" ? text : undefined);
+  return patch === undefined ? {} : { patch };
+}
+
 function finishTool(reply: ChatMessage, toolCallId: string, result: unknown, isError: boolean): ChatMessage {
   const index = reply.parts.findIndex((p) => p.type === "tool" && p.toolCallId === toolCallId);
   const part = reply.parts[index];
   if (!part || part.type !== "tool") return reply;
 
-  const next: MessagePart = isError ? { ...part, state: "error", errorText: redactSecrets(resultText(result)) } : { ...part, state: "done" };
+  const next: MessagePart = isError
+    ? { ...part, state: "error", errorText: redactSecrets(resultText(result)) }
+    : { ...part, state: "done", ...storedOutput(resultText(result)), ...patchOf(part.toolName, result) };
   return { ...reply, parts: reply.parts.map((p, i) => (i === index ? next : p)) };
 }
 
@@ -135,7 +161,7 @@ export function applyPiEvent(reply: ChatMessage, event: AgentSessionEvent, optio
   switch (event.type) {
     case "message_update": {
       const delta = streamDelta(event);
-      return delta ? appendDelta(reply, delta) : reply;
+      return delta ? appendDelta(reply, delta, options.now ?? Date.now) : reply;
     }
     case "message_end":
       return event.message.role === "assistant" ? appendAssistant(reply, event.message, options) : reply;
