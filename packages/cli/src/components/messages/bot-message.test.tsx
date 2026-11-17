@@ -79,3 +79,30 @@ describe("the label of a reply", () => {
     expect(text).not.toContain("Plan › m-one");
   });
 });
+
+describe("the footer of an interrupted reply (S6)", () => {
+  test("ends with `interrupted` after the duration; a reply that was not interrupted has none", async () => {
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text: "cut" }]} model="haiku" mode="BUILD" durationMs={3700} interrupted />
+        <BotMessage parts={[{ type: "text", text: "whole" }]} model="opus" mode="BUILD" durationMs={2100} />
+      </ThemeProvider>,
+      { width: 80, height: 14 },
+    );
+    await settle();
+    expect(frame()).toContain("Build › haiku › 3.7s › interrupted");
+    expect(frame()).toContain("Build › opus › 2.1s");
+    expect(frame().match(/interrupted/g)).toHaveLength(1);
+  });
+
+  test("still says interrupted when no duration was reported", async () => {
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text: "cut" }]} model="haiku" mode="BUILD" interrupted />
+      </ThemeProvider>,
+      { width: 80, height: 8 },
+    );
+    await settle();
+    expect(frame()).toContain("Build › haiku › interrupted");
+  });
+});

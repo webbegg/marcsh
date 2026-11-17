@@ -457,6 +457,8 @@ export function useChat(session: StoredSession, engine: Engine = claudeEngine, o
         // Only this turn's: what background work asked through the session stays until it is answered.
         for (const request of [...turnRequests]) decline(request);
         for (const id of replyIds) applyToReply(finishReply, id);
+        // Esc stopped this turn: its last reply says so (an error, leaving the session or quitting does not set the flag).
+        if (interruptedRef.current) applyToReply((reply) => ({ ...reply, metadata: { ...reply.metadata, interrupted: true } }), replyId);
         const save = () => {
           try {
             getStorage().saveMessages(session.id, messagesRef.current, resumeRefRef.current ?? undefined);

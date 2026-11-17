@@ -88,6 +88,7 @@ function ChatMessage(
       mode={msg.metadata?.mode ?? "BUILD"}
       agentName={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
+      interrupted={msg.metadata?.interrupted}
       streaming={false}
     />
   );
