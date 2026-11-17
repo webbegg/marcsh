@@ -2,8 +2,10 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { openStorage } from "./storage";
 import type { ChatMessage } from "./chat-types";
+import { lastUsedModel } from "./models";
 
 const message = (id: string, role: ChatMessage["role"], text: string): ChatMessage => ({
   id,
@@ -15,6 +17,50 @@ const conversation = [message("m1", "user", "hello"), message("m2", "assistant",
 
 afterEach(() => {
   setSystemTime();
+});
+
+describe("listSessions", () => {
+  test("each entry has its engine, the model of its last turn and its message count", () => {
+    const storage = openStorage(":memory:");
+    const session = storage.createSession({ title: "Chat", cwd: "/work", engine: "pi" });
+    const messages: ChatMessage[] = [
+      { ...message("m1", "user", "hello"), metadata: { model: "anthropic/claude-haiku-5-5" } },
+      { ...message("m2", "assistant", "hi"), metadata: { model: "openai/gpt-5" } },
+      message("m3", "user", "no model on this one"),
+    ];
+    storage.saveMessages(session.id, messages);
+
+    const [entry] = storage.listSessions();
+    expect(entry).toMatchObject({ id: session.id, engine: "pi", model: "openai/gpt-5", messageCount: 3 });
+    expect(entry!.model).toBe(lastUsedModel(messages)!);
+  });
+
+  test("a row whose messages are not valid JSON is still listed, with no model and no messages", () => {
+    const dir = mkdtempSync(join(tmpdir(), "marcsh-list-"));
+    try {
+      const path = join(dir, "marcsh.db");
+      const storage = openStorage(path);
+      const broken = storage.createSession({ title: "Broken", cwd: "/work" });
+      const kept = storage.createSession({ title: "Kept", cwd: "/work" });
+      storage.saveMessages(kept.id, conversation);
+      const raw = new Database(path);
+      raw.query("UPDATE sessions SET messages = 'not json' WHERE id = $id").run({ $id: broken.id });
+      raw.close();
+
+      const list = storage.listSessions();
+      expect(list.find((s) => s.id === broken.id)).toMatchObject({ model: null, messageCount: 0 });
+      expect(list.find((s) => s.id === kept.id)).toMatchObject({ messageCount: 3 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a session with no turn yet has no model and no messages", () => {
+    const storage = openStorage(":memory:");
+    storage.createSession({ title: "Empty", cwd: "/work" });
+
+    expect(storage.listSessions()[0]).toMatchObject({ engine: "claude", model: null, messageCount: 0 });
+  });
 });
 
 describe("renameSession", () => {

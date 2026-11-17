@@ -14,6 +14,13 @@ export type SessionSummary = {
   updatedAt: Date;
 };
 
+/** A session as the session lists show it: its summary, engine, the model of its last turn (`null` before any) and its message count. */
+export type SessionListEntry = SessionSummary & {
+  engine: string;
+  model: string | null;
+  messageCount: number;
+};
+
 export type StoredSession = SessionSummary & {
   /** The engine that runs this session's turns (`claude` for sessions created before engines existed). */
   engine: string;
@@ -52,7 +59,7 @@ export type ReviewKind = "pi" | "command" | "git";
 const REVIEW_KINDS: readonly unknown[] = ["pi", "command", "git"] satisfies ReviewKind[];
 
 export type Storage = {
-  listSessions(): SessionSummary[];
+  listSessions(): SessionListEntry[];
   getSession(id: string): StoredSession | null;
   createSession(input: { title: string; cwd: string; engine?: string }): StoredSession;
   saveMessages(id: string, messages: ChatMessage[], engineSessionRef?: string): void;
@@ -256,9 +263,21 @@ export function openStorage(path = defaultDbPath()): Storage {
 
   return {
     listSessions() {
+      // The count and the model are read from the stored messages, as `lastUsedModel` reads them: the last message that names a
+      // model, by position. A row whose messages are not valid JSON lists with no model and no messages instead of failing the list.
       return db
-        .query<Pick<SessionRow, "id" | "title" | "cwd" | "created_at" | "updated_at">, []>(
-          "SELECT id, title, cwd, created_at, updated_at FROM sessions ORDER BY updated_at DESC",
+        .query<
+          Pick<SessionRow, "id" | "title" | "cwd" | "created_at" | "updated_at" | "engine"> & { message_count: number; model: string | null },
+          []
+        >(
+          `SELECT id, title, cwd, created_at, updated_at, engine,
+             CASE WHEN json_valid(messages) AND json_type(messages) = 'array' THEN json_array_length(messages) ELSE 0 END AS message_count,
+             CASE WHEN json_valid(messages) AND json_type(messages) = 'array' THEN (
+               SELECT json_extract(value, '$.metadata.model') FROM json_each(messages)
+               WHERE json_type(value, '$.metadata.model') = 'text' AND json_extract(value, '$.metadata.model') <> ''
+               ORDER BY key DESC LIMIT 1
+             ) END AS model
+           FROM sessions ORDER BY updated_at DESC`,
         )
         .all()
         .map((row) => ({
@@ -267,6 +286,9 @@ export function openStorage(path = defaultDbPath()): Storage {
           cwd: row.cwd,
           createdAt: new Date(row.created_at),
           updatedAt: new Date(row.updated_at),
+          engine: row.engine,
+          model: row.model,
+          messageCount: row.message_count,
         }));
     },
 

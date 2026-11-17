@@ -59,6 +59,29 @@ describe("session list", () => {
     expect(rows[1]).toContain(first.id);
   });
 
+  test("a row reads id, when, engine/model, message count, folder and title", async () => {
+    const session = seed("Chat");
+    await run({ action: "list", json: false });
+    const row = out.trimEnd();
+    // The id stays first, so `awk '{print $1}'` still finds it.
+    expect(row.startsWith(`${session.id}  `)).toBe(true);
+    expect(row).toContain("  claude/opus  2 msgs  /work/a  Chat");
+  });
+
+  test("the date is relative to now, the same way the sessions dialog says it", async () => {
+    const session = seed("Chat");
+    const updatedAt = storage.getSession(session.id)!.updatedAt;
+    out = "";
+    await sessionCommand({ kind: "session", action: "list", json: false }, { storage, io, now: () => new Date(updatedAt.getTime() + 3 * 60 * 60 * 1000) });
+    expect(out).toContain(`${session.id}  3h ago  claude/opus`);
+  });
+
+  test("a session with no recorded model shows a dash", async () => {
+    storage.createSession({ title: "Empty", cwd: "/work/a", engine: "pi" });
+    await run({ action: "list", json: false });
+    expect(out).toContain("pi/—  0 msgs  /work/a  Empty");
+  });
+
   test("a title cannot send terminal escapes", async () => {
     seed("evil\x1b]0;pwned\x07title");
     await run({ action: "list", json: false });
@@ -76,6 +99,9 @@ describe("session list", () => {
         cwd: "/work/a",
         createdAt: session.createdAt.toISOString(),
         updatedAt: storage.getSession(session.id)!.updatedAt.toISOString(),
+        engine: "claude",
+        model: "opus",
+        messageCount: 2,
       },
     ]);
   });
