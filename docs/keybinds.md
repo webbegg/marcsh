@@ -12,6 +12,15 @@ Press `Ctrl+P` to open the palette. It lists every command you can run where you
 - A command runs the same way as when you type it. A command that needs text after its name (`/rename`, `/export`, a custom or engine command) puts `/name ` in the prompt for you to finish. That needs an empty prompt: with text in it, marcsh says "Clear the prompt, then pick /name again" and leaves your text alone. Commands that run at once keep your draft.
 - `Ctrl+P` does nothing while a dialog, a menu, a permission question or another prompt has the keys, while the prompt is off for a Claude turn, and on the screen that opens a new session.
 
+## The help dialog
+
+Type `/help`, or press `?` on an empty prompt, to see the keys and the commands in one dialog.
+
+- The keys section lists the keys that are active now, so a key you changed in `keybinds.json` shows its new key, and a key you unbound is left out. It also lists the fixed keys: `Enter`, `Shift+Enter` and `Ctrl+J`, `Tab`, `Esc`, `Ctrl+C`, `@`, `Up` and `Down`, and `?`.
+- The commands section lists every command you can run where you are, with its description: marcsh's own, your custom commands and the engine's. A long description ends with `…`.
+- `Up` and `Down`, `PageUp` and `PageDown`, `Home` and `End` scroll the list. `Esc` closes the dialog.
+- The hint under the prompt shows the palette's key next to `tab agents`: `ctrl+p commands` by default. If you unbind the palette, the hint is left out.
+
 ## The leader key
 
 Press `Ctrl+X`, then within 2 seconds press one more key to run its command. The status line shows `ctrl+x: …` and the first keys while marcsh waits.

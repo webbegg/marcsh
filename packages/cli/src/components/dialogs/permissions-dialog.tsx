@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useDialog } from "../../providers/dialog";
@@ -7,10 +7,10 @@ import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useTheme } from "../../providers/theme";
 import { APPROVAL_MODES, type ApprovalMode } from "../../lib/approval-policy";
 import { branchState } from "../../lib/git-branch";
-import { defaultModeMessage, sessionModeMessage } from "../command-menu/permissions-command";
+import { defaultModeMessage, pausedLabel, sessionModeMessage } from "../command-menu/permissions-command";
 
 export const MODE_DESCRIPTIONS: Record<ApprovalMode, string> = {
-  normal: "asks before edits and commands, as before",
+  normal: "asks before edits and commands",
   auto: "on a feature branch: edits and ordinary commands run; commits and remote actions ask",
   yolo: "on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask",
 };
@@ -39,6 +39,8 @@ export const PermissionsDialogContent = ({
   const { isTopLayer } = useKeyboardLayer();
   const { colors } = useTheme();
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Read once per open: auto and yolo are paused where the folder is not on a feature branch, and the row says so.
+  const branch = useMemo(() => branchState(cwd), [cwd]);
 
   const rows: Row[] = [
     ...APPROVAL_MODES.map((mode): Row => ({ kind: "mode", mode })),
@@ -85,7 +87,9 @@ export const PermissionsDialogContent = ({
             onMouseDown={() => choose(row)}
           >
             <text selectable={false} fg={isSelected ? "black" : "white"}>
-              {row.kind === "mode" ? `${row.mode === currentMode ? " • " : "   "}${row.mode}` : `   Use ${row.mode} for new sessions`}
+              {row.kind === "mode"
+                ? `${row.mode === currentMode ? " • " : "   "}${row.mode}${pausedLabel(row.mode, branch) ? ` ${pausedLabel(row.mode, branch)}` : ""}`
+                : `   Use ${row.mode} for new sessions`}
             </text>
             {row.kind === "mode" ? (
               <text selectable={false} attributes={isSelected ? undefined : TextAttributes.DIM} fg={isSelected ? "black" : "gray"}>

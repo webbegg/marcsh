@@ -1,13 +1,18 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { TextAttributes, type InputRenderable, type ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { TextAttributes, type BoxRenderable, type InputRenderable, type ScrollBoxRenderable } from "@opentui/core";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { getFilteredCommands } from "./command-menu/filter-commands";
 import type { Command } from "./command-menu/types";
+import { fitText } from "../lib/fit-text";
 import { useKeyboardLayer } from "../providers/keyboard-layer";
 import { useTheme } from "../providers/theme";
 
 const MAX_VISIBLE_ITEMS = 8;
 const MAX_NAME_COL_WIDTH = 20;
+// The wide dialog (providers/dialog) is up to 100 columns, 4 less than the terminal, and pads its content by 4 on each side.
+const WIDE_DIALOG_WIDTH = 100;
+const DIALOG_MARGIN = 4;
+const DIALOG_PADDING_X = 4;
 
 type Props = {
   /** Every command the prompt can run, in the order the `/` menu lists them. */
@@ -26,13 +31,25 @@ export function CommandPalette({ commands, keys, onSelect }: Props) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<InputRenderable>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
+  const rootRef = useRef<BoxRenderable>(null);
+  const measure = useCallback(() => {
+    const width = rootRef.current?.width ?? 0;
+    if (width > 0) setMeasuredWidth(width);
+  }, []);
   const { isTopLayer } = useKeyboardLayer();
   const { colors } = useTheme();
+  // The cells a row has: measured once laid out; until then what the wide dialog gives at this terminal width.
+  const { width: terminalWidth } = useTerminalDimensions();
+  const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+  const rowWidth = measuredWidth ?? Math.min(WIDE_DIALOG_WIDTH, terminalWidth - DIALOG_MARGIN) - 2 * DIALOG_PADDING_X;
 
   const filtered = useMemo(() => getFilteredCommands(query, commands), [query, commands]);
   const visibleHeight = Math.min(filtered.length, MAX_VISIBLE_ITEMS);
   const nameWidth = Math.min(MAX_NAME_COL_WIDTH, Math.max(...filtered.map((command) => command.name.length), 0) + 3);
   const keysWidth = Math.max(...filtered.map((command) => keys[command.name]?.length ?? 0), 0);
+  // What a description may take: the row (the list's scrollbar takes a column when it scrolls), less the name column and the keys column.
+  const scrollbarWidth = filtered.length > MAX_VISIBLE_ITEMS ? 1 : 0;
+  const descriptionCells = rowWidth - scrollbarWidth - nameWidth - (keysWidth > 0 ? keysWidth + 1 : 0);
 
   const handleContentChange = useCallback(() => {
     setQuery(inputRef.current?.value ?? "");
@@ -67,7 +84,7 @@ export function CommandPalette({ commands, keys, onSelect }: Props) {
   });
 
   return (
-    <box flexDirection="column" gap={1}>
+    <box flexDirection="column" gap={1} onSizeChange={() => measure()} ref={rootRef}>
       <input ref={inputRef} placeholder="Search commands" focused onContentChange={handleContentChange} />
       {filtered.length === 0 ? (
         <text attributes={TextAttributes.DIM}>No matching commands</text>
@@ -92,7 +109,7 @@ export function CommandPalette({ commands, keys, onSelect }: Props) {
                 </box>
                 <box flexGrow={1} flexShrink={1} overflow="hidden">
                   <text selectable={false} fg={isSelected ? "black" : "gray"}>
-                    {command.argumentHint ? `${command.argumentHint} ${command.description}` : command.description}
+                    {fitText(command.argumentHint ? `${command.argumentHint} ${command.description}` : command.description, descriptionCells)}
                   </text>
                 </box>
                 {keysWidth > 0 && (

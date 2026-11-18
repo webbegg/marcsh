@@ -93,11 +93,42 @@ describe("permissions dialog (S6)", () => {
     await openDialog();
     const text = frame();
     expect(text).toContain("Permissions");
-    expect(text).toContain("• normal asks before edits and commands, as before");
-    expect(text).toContain("auto on a feature branch: edits and ordinary commands run; commits and remote actions ask");
-    expect(text).toContain("yolo on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask");
+    expect(text).toContain("• normal asks before edits and commands");
+    expect(text).not.toContain("as before");
+    // The folder is not a repository, so each of auto and yolo carries a "(paused: ...)" note after its name, before its description.
+    expect(text).toContain("auto (paused: not a git repository) on a feature branch: edits and ordinary commands run; commits and remote actions ask");
+    expect(text).toContain("yolo (paused: not a git repository) on a feature branch: as auto, and local commits run; remote actions and leaving the branch ask");
     // The session mode equals the saved default: no row to save it.
     expect(text).not.toContain("for new sessions");
+  });
+
+  test("auto and yolo say (paused on main) on the default branch; normal does not", async () => {
+    dialogCwd = join(prefsDir, "repo-main");
+    mkdirSync(dialogCwd);
+    const init = Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: dialogCwd, stdout: "ignore", stderr: "pipe" });
+    expect(init.exitCode).toBe(0);
+    await openDialog();
+
+    const text = frame();
+    expect(text).toContain("auto (paused on main)");
+    expect(text).toContain("yolo (paused on main)");
+    expect(text).not.toContain("normal (paused");
+  });
+
+  test("in a folder that is not a repository the reason is shown instead of a branch", async () => {
+    await openDialog();
+    expect(frame()).toContain("auto (paused: not a git repository)");
+  });
+
+  test("on a feature branch no mode is marked as paused", async () => {
+    dialogCwd = join(prefsDir, "repo-feat");
+    mkdirSync(dialogCwd);
+    const init = Bun.spawnSync(["git", "init", "-q", "-b", "feat/x"], { cwd: dialogCwd, stdout: "ignore", stderr: "pipe" });
+    expect(init.exitCode).toBe(0);
+    await openDialog();
+
+    expect(frame()).toContain("auto on a feature branch");
+    expect(frame()).not.toContain("paused");
   });
 
   test("choosing a mode sets this session's mode, shows a toast and saves nothing", async () => {

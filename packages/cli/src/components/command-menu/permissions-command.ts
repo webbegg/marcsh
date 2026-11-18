@@ -1,7 +1,14 @@
 import { APPROVAL_MODES, isApprovalMode, type ApprovalMode } from "../../lib/approval-policy";
 import type { BranchState } from "../../lib/git-branch";
+import { escapeTranscriptText } from "../../lib/display-text";
 
 export const PERMISSIONS_USAGE = `Usage: /permissions [${APPROVAL_MODES.join("|")} | default <${APPROVAL_MODES.join("|")}>]`;
+
+/** Why auto and yolo are paused in a folder (`on the default branch main`, `detached HEAD`); undefined on a feature branch. */
+function pauseReason(branch: BranchState): string | undefined {
+  if (branch.kind === "feature") return undefined;
+  return branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
+}
 
 /**
  * The toast after the session's mode is set. In auto and yolo, when the folder is not on a feature branch (`branch`), it adds that the
@@ -9,9 +16,19 @@ export const PERMISSIONS_USAGE = `Usage: /permissions [${APPROVAL_MODES.join("|"
  */
 export function sessionModeMessage(mode: ApprovalMode, branch?: BranchState): string {
   const message = `Approval mode: ${mode} for this session`;
-  if (mode === "normal" || !branch || branch.kind === "feature") return message;
-  const reason = branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
+  const reason = mode === "normal" || !branch ? undefined : pauseReason(branch);
+  if (reason === undefined) return message;
   return `${message}. ${mode} is paused here: ${reason}. marcsh asks as in normal mode until you work on a feature branch, preferably in a worktree.`;
+}
+
+/**
+ * The short note next to a mode in the `/permissions` dialog: `(paused on main)` on the default branch, `(paused: detached HEAD)`
+ * where there is no branch, and nothing for normal, on a feature branch, or while the branch is not known. The branch name comes
+ * from the folder, so what could act on the terminal shows as a visible escape.
+ */
+export function pausedLabel(mode: ApprovalMode, branch?: BranchState): string {
+  if (mode === "normal" || !branch || branch.kind === "feature") return "";
+  return branch.kind === "default" ? `(paused on ${escapeTranscriptText(branch.branch)})` : `(paused: ${escapeTranscriptText(branch.reason)})`;
 }
 
 /** The toast after the default for new sessions is saved. */

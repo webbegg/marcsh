@@ -80,7 +80,7 @@ function Dialog({ currentDialog, close }: DialogProps) {
     return null;
   }
 
-  const { title, children } = currentDialog;
+  const { title, children, width } = currentDialog;
 
   return (
     <box
@@ -96,7 +96,7 @@ function Dialog({ currentDialog, close }: DialogProps) {
       onMouseDown={() => close()}
     >
       <box
-        width={Math.min(60, dimensions.width - 4)}
+        width={Math.min(width === "wide" ? 100 : 60, dimensions.width - 4)}
         height="auto"
         backgroundColor={colors.dialogSurface}
         paddingX={4}

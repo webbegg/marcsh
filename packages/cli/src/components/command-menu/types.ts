@@ -49,5 +49,7 @@ export type Command = {
   argumentHint?: string;
   /** `session`: works on the open session, so the `/` menu lists it only there. */
   scope?: "session";
+  /** The engines the command works on; the `/` menu and the palette hide it on the others (typing it still runs it). Unset: every engine. */
+  engines?: readonly EngineId[];
   action?: (ctx: CommandContext) => void | Promise<void>;
 };

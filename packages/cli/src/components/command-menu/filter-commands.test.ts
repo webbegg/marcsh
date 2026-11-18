@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getFilteredCommands, getMenuCommands } from "./filter-commands";
+import { getFilteredCommands, getMenuCommands, groupOf } from "./filter-commands";
 import type { Command } from "./types";
 import type { UserCommand } from "../../lib/user-commands";
 
@@ -29,7 +29,8 @@ describe("pack commands in the menu (M2)", () => {
     const claude = [{ name: "acme-flows:spec", description: "Write a spec", argumentHint: "" }, { name: "acme-flows:ship", description: "Ship", argumentHint: "" }];
     const pi = [{ name: "spec", description: "Write a spec", argumentHint: "", source: "prompt" }];
     const names = (list: Command[]) => list.map((command) => command.name);
-    expect(names(getMenuCommands(claude, [spec])).filter((name) => name.includes("spec") || name.includes("ship"))).toEqual(["acme-flows:ship", "spec"]);
+    // The list is ordered by group (marcsh, packs & custom, engine) so the `/` menu can head each group: the pack's `spec` comes before Claude's `ship`.
+    expect(names(getMenuCommands(claude, [spec])).filter((name) => name.includes("spec") || name.includes("ship"))).toEqual(["spec", "acme-flows:ship"]);
     expect(getMenuCommands(pi, [spec]).filter((command) => command.name === "spec")).toEqual([expect.objectContaining({ source: "flows" })]);
   });
 
@@ -82,5 +83,48 @@ describe("fuzzy command filter", () => {
   test("keeps the original order between equally good matches", () => {
     const list = ["alpha-one", "alpha-two"].map(command);
     expect(names("alpha", list)).toEqual(["alpha-one", "alpha-two"]);
+  });
+});
+
+describe("the engine hides commands that do not work on it (S16)", () => {
+  const listed = (engine?: string) => getMenuCommands([], [], true, [], engine).map((entry) => entry.name);
+
+  test("/login and /logout are hidden on claude, kept on pi", () => {
+    expect(listed("claude")).not.toContain("login");
+    expect(listed("claude")).not.toContain("logout");
+    expect(listed("pi")).toEqual(expect.arrayContaining(["login", "logout"]));
+  });
+
+  test("no engine given: nothing is filtered", () => {
+    expect(listed()).toEqual(expect.arrayContaining(["login", "logout"]));
+    expect(listed().length).toBe(listed("pi").length);
+  });
+
+  test("the other commands stay on both engines", () => {
+    expect(listed("claude").length).toBe(listed("pi").length - 2);
+    expect(listed("claude")).toContain("new");
+  });
+});
+
+describe("groups of the `/` menu (S16)", () => {
+  test("marcsh's own commands, pack and custom commands, and the engine's", () => {
+    expect(groupOf(command("new"))).toBe("marcsh");
+    expect(groupOf({ ...command("spec"), source: "flows" , })).toBe("packs & custom");
+    expect(groupOf({ ...command("mine"), source: "personal" })).toBe("packs & custom");
+    expect(groupOf({ ...command("proj"), source: "project" })).toBe("packs & custom");
+    expect(groupOf({ ...command("init"), source: "claude" })).toBe("claude");
+    for (const source of ["extension", "prompt", "skill"]) expect(groupOf({ ...command("x"), source })).toBe("pi");
+  });
+
+  test("the list is ordered marcsh, packs & custom, then the engine's, whatever the names", () => {
+    const user: UserCommand[] = [
+      { name: "zeta", description: "z", template: "x", source: "personal" },
+      { name: "pack-cmd", description: "p", template: "x", source: "pack", pack: "acme/flows", engineName: "acme-flows:pack-cmd" },
+    ];
+    const claude = [{ name: "alpha", description: "a", argumentHint: "" }, { name: "init", description: "i", argumentHint: "" }];
+    const groups = getMenuCommands(claude, user).map(groupOf);
+    expect(groups.indexOf("packs & custom")).toBeGreaterThan(groups.lastIndexOf("marcsh"));
+    expect(groups.indexOf("claude")).toBeGreaterThan(groups.lastIndexOf("packs & custom"));
+    expect(groups).toEqual([...groups].sort((a, b) => ["marcsh", "packs & custom", "claude"].indexOf(a) - ["marcsh", "packs & custom", "claude"].indexOf(b)));
   });
 });

@@ -16,7 +16,7 @@ import { COMMAND_NAMES } from "./commands";
 export function loadMenuCommands(engine: string, cwd: string, inSession: boolean): Command[] {
   const known = loadEngineCommands(engine);
   const { commands, hidden } = loadCommandSet({ cwd, builtinNames: COMMAND_NAMES, engineNames: known.map((command) => command.name) });
-  return getMenuCommands(known, commands, inSession, hidden);
+  return getMenuCommands(known, commands, inSession, hidden, engine);
 }
 
 /** The engine's commands as marcsh knows them: the list its last turn or warm-up cached, plus the bundled plugin's. */
@@ -40,9 +40,12 @@ type UseCommandMenuReturn = {
   /** The commands matching the query, marcsh's own first. */
   commands: Command[];
   selectedIndex: number;
+  /** The user moved the highlight with the arrows since the text last changed: Enter then runs the highlighted row (see `typedCommand`). */
+  navigated: boolean;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   handleContentChange: (text: string) => void;
   resolveCommand: (index: number) => Command | undefined;
+  /** Highlights a row the mouse is over; it does not count as navigating. */
   setSelectedIndex: (index: number) => void;
 };
 
@@ -52,7 +55,8 @@ type UseCommandMenuReturn = {
  */
 export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSession = false): UseCommandMenuReturn {
   const [textValue, setTextValue] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndexState] = useState(0);
+  const [navigated, setNavigated] = useState(false);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const { push, pop, isTopLayer } = useKeyboardLayer();
@@ -72,7 +76,8 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
 
   const handleContentChange = (text: string) => {
     setTextValue(text);
-    setSelectedIndex(0);
+    setSelectedIndexState(0);
+    setNavigated(false);
 
     // Jump back to the top of the list when the user types a new character
     const scrollbox = scrollRef.current;
@@ -92,6 +97,13 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     }
   };
 
+  // The mouse passing over a row only highlights it, and undoes an earlier arrow choice: Enter runs what was typed again. A stray move
+  // must not change what Enter runs; the arrows and a click choose a row.
+  const setSelectedIndex = (index: number) => {
+    setSelectedIndexState(index);
+    setNavigated(false);
+  };
+
   // Resolve a command at a specific index (returns the command, caller handles execution)
   const resolveCommand = (index: number): Command | undefined => {
     const command = filteredCommands[index];
@@ -101,41 +113,23 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     return command;
   };
 
-  // Arrow keys move selection; the list follows along when the highlight goes off-screen
+  // Arrow keys move the selection. Only a move that changed the highlight counts as choosing a row: Up on the first row moves
+  // nothing, so Enter still runs what was typed. The menu (`CommandMenu`) keeps the highlighted row in view, header rows included.
   useKeyboard((key) => {
     if (!showCommandMenu || !isTopLayer("command")) return;
 
     if (key.name === "escape") {
       key.preventDefault();
       close();
-    } else if (key.name === "up") {
+    } else if (key.name === "up" || key.name === "down") {
       key.preventDefault();
-      setSelectedIndex((i: number) => {
-        const newIndex = Math.max(0, i - 1);
-        // Keep the highlighted item visible when arrowing past the edge
-        const sb = scrollRef.current;
-        if (sb && newIndex < sb.scrollTop) {
-          sb.scrollTo(newIndex);
-        }
-        return newIndex;
-      });
-    } else if (key.name === "down") {
-      key.preventDefault();
-      setSelectedIndex((i: number) => {
-        if (filteredCommands.length === 0) {
-          return 0;
-        }
-
-        const newIndex = Math.min(filteredCommands.length - 1, i + 1);
-        const sb = scrollRef.current;
-        if (sb) {
-          const viewportHeight = sb.viewport.height;
-          const visibleEnd = sb.scrollTop + viewportHeight - 1;
-          if (newIndex > visibleEnd) {
-            sb.scrollTo(newIndex - viewportHeight + 1);
-          }
-        }
-        return newIndex;
+      const last = filteredCommands.length - 1;
+      const up = key.name === "up";
+      // From the latest index, not this render's: two presses can arrive before the next render. Setting `navigated` again is harmless.
+      setSelectedIndexState((i: number) => {
+        const next = last < 0 ? 0 : up ? Math.max(0, i - 1) : Math.min(last, i + 1);
+        if (next !== i) setNavigated(true);
+        return next;
       });
     }
   });
@@ -145,6 +139,7 @@ export function useCommandMenu(engine: string, cwd: string = process.cwd(), inSe
     commandQuery,
     commands: filteredCommands,
     selectedIndex,
+    navigated,
     scrollRef,
     handleContentChange,
     resolveCommand,

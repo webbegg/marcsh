@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getSessionProfile, setSessionProfile } from "./profiles";
+import { getSessionProfile, loadProfiles, setSessionProfile } from "./profiles";
 import { parseProfileCommand, PROFILE_USAGE, runProfileCommand, type ProfileEnv } from "./profiles-command";
 
 let dir: string;
@@ -169,5 +169,57 @@ describe("/profile (show)", () => {
     writeFileSync(path, JSON.stringify({ version: 1, profiles: { ok: { "*": { model: "a/b" } }, bad: 3 } }));
     const partly = (runProfileCommand({ kind: "show" }, env("pi")) as { show: string[] }).show.join("\n");
     expect(partly).toContain('Ignored: profile "bad" must be an object of routes');
+  });
+});
+
+describe("the starter profiles file (S17, L6/Q3)", () => {
+  const noFile = () => join(dir, "sub", "profiles.json");
+
+  test("/profile with no file offers to create one; with a file it does not", () => {
+    const none = runProfileCommand({ kind: "show" }, env("pi", { path: noFile() }));
+    expect(none).toMatchObject({ create: true });
+    const present = runProfileCommand({ kind: "show" }, env("pi"));
+    expect("create" in present).toBe(false);
+  });
+
+  test("a dangling link at the path is not offered as a missing file", () => {
+    const link = join(dir, "dangling-profiles.json");
+    symlinkSync(join(dir, "nowhere", "target.json"), link);
+    const shown = runProfileCommand({ kind: "show" }, env("pi", { path: link }));
+    expect("create" in shown).toBe(false);
+    expect("show" in shown && shown.show[0]).toBe(`${link} is a link to a file that does not exist, so marcsh reads no profiles. Fix or remove the link.`);
+  });
+
+  test("the typed command line never creates a file: only the dialog's confirm does", () => {
+    expect(parseProfileCommand("create")).toMatchObject({ kind: "usage" });
+    expect(parseProfileCommand("")).toEqual({ kind: "show" });
+  });
+
+  test("creating writes the file at the path, with the current models, and shows the path and the routing", () => {
+    const target = noFile();
+    const outcome = runProfileCommand({ kind: "create-starter" }, env("pi", { path: target, piModel: "openai/gpt-5", claudeModel: "haiku" }));
+
+    expect(existsSync(target)).toBe(true);
+    const loaded = loadProfiles(target);
+    expect(loaded.problems).toEqual([]);
+    expect(loaded.file.profiles.default?.primary?.model).toBe("openai/gpt-5");
+    expect("show" in outcome).toBe(true);
+    const text = (outcome as { show: string[] }).show.join("\n");
+    expect(text).toContain(`Created ${target}`);
+    expect(text).toContain("Default profile: default");
+    expect("create" in outcome).toBe(false);
+  });
+
+  test("on Claude the primary is the Claude model", () => {
+    const target = noFile();
+    runProfileCommand({ kind: "create-starter" }, env("claude", { path: target, piModel: "openai/gpt-5", claudeModel: "haiku" }));
+    expect(loadProfiles(target).file.profiles.default?.primary?.model).toBe("haiku");
+  });
+
+  test("a file that appeared after the offer is not touched, and the message says so", () => {
+    const outcome = runProfileCommand({ kind: "create-starter" }, env("pi"));
+    expect(outcome).toMatchObject({ toast: { variant: "error" } });
+    expect((outcome as { toast: { message: string } }).toast.message).toContain(`A profiles file already exists at ${path}`);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(profiles);
   });
 });

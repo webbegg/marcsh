@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PI_DEFAULT_MODEL } from "./models";
 
 /**
  * Model profiles: named presets of which model (and thinking level, and fallback chain) each subagent and the main turn use.
@@ -174,6 +175,95 @@ export function writeDefaultProfile(name: string, path = profilesPath()): void {
   const temp = `${path}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify({ ...raw, default: name }, null, 2)}\n`, "utf8");
   renameSync(temp, path);
+}
+
+const STARTER_COMMENT =
+  'Model profiles for marcsh. A profile routes models. "primary" routes the main turn: the default profile adds its thinking level and fallback chain, and /profile use <name> also switches to its primary model. Add more routes under a subagent\'s file name, a prefix such as "review-*", or "*", each as { "model": ..., "thinking": ..., "fallback": [...] }. ' +
+  'pi takes provider/id and Claude takes opus, sonnet or haiku; a route for the other engine is skipped, so this starter lists both. ' +
+  'Choose a profile for a session with /profile use <name>; the profile named in "default" applies to every session that has not chosen another. ' +
+  "marcsh never overwrites this file; /profile default only changes the \"default\" entry. See docs/configuration.md.";
+
+/** Whether a plain file, not a link or a folder, is at the path. */
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a link whose target is missing is at the path: `existsSync` says no, yet a file cannot be created there. */
+export function isDanglingLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+/** The text of the starter file: one `default` profile whose primary model is the current engine's, with the other engine's as a fallback its own engine skips. */
+export function starterProfilesText(models: { engine: string; piModel: string; claudeModel: string }): string {
+  const piModel = models.piModel.trim();
+  const claude = models.claudeModel;
+  // The main model must be set, so pi without one takes pi's default; the other engine's model is listed only when there is one.
+  const [model, other] = models.engine === "pi" ? [piModel || PI_DEFAULT_MODEL, claude] : [claude, piModel];
+  const starter = {
+    $comment: STARTER_COMMENT,
+    version: 1,
+    default: "default",
+    profiles: { default: { primary: { model, ...(other && other !== model ? { fallback: [{ model: other }] } : {}) } } },
+  };
+  return `${JSON.stringify(starter, null, 2)}\n`;
+}
+
+export type StarterResult = { ok: true; path: string } | { ok: false; reason: "exists" | "denied" | "failed"; message: string };
+
+/**
+ * Creates a starter profiles file at `path` (default `profilesPath()`), with the parent folder if it is missing. The file is created
+ * exclusively (`wx`): an existing file, a symlink or one that appeared a moment ago is never touched. Whatever is written is read back
+ * with the profile reader; a file that does not read as the starter is removed again. Never throws.
+ */
+export function createStarterProfiles(models: { engine: string; piModel: string; claudeModel: string }, path = profilesPath()): StarterResult {
+  const text = starterProfilesText(models);
+  const check = (parsed: { file: ProfilesFile; problems: string[] }) => parsed.problems.length === 0 && parsed.file.default === "default" && Object.hasOwn(parsed.file.profiles, "default");
+  // The text is ours, but it is checked before it is written all the same.
+  if (!check(parseProfiles(JSON.parse(text)))) return { ok: false, reason: "failed", message: "The starter profiles file did not pass marcsh's own check, so nothing was written." };
+  const denied = (code: string | undefined) => code === "EACCES" || code === "EPERM" || code === "EROFS";
+  const deniedResult = (): StarterResult => ({
+    ok: false,
+    reason: "denied",
+    message: `Cannot create ${path}: permission denied. Fix the folder's permissions, or set MARCSH_PROFILES_PATH to a file you can write.`,
+  });
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // A file in the way of the folder is also reported as EEXIST: that is not a profiles file that exists.
+    if (denied(code)) return deniedResult();
+    return { ok: false, reason: "failed", message: `Could not create the folder for ${path}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  try {
+    writeFileSync(path, text, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      const message = isRegularFile(path)
+        ? `A profiles file already exists at ${path}, so it was left as it is.`
+        : `Something other than a profiles file is at ${path} (a link or a folder), so nothing was written.`;
+      return { ok: false, reason: "exists", message };
+    }
+    if (denied(code)) return deniedResult();
+    return { ok: false, reason: "failed", message: `Could not create ${path}: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const written = loadProfiles(path);
+  if (!check(written)) {
+    // Only the file just created is removed, and only while it still holds exactly what was written: a file something else wrote to meanwhile is left alone.
+    try {
+      if (readFileSync(path, "utf8") === text) rmSync(path);
+    } catch {}
+    return { ok: false, reason: "failed", message: `The file written to ${path} did not read back as a valid profiles file, so it was removed.` };
+  }
+  return { ok: true, path };
 }
 
 // What `/profile use` chose, for this run of marcsh (like `/permissions <mode>`): never saved.

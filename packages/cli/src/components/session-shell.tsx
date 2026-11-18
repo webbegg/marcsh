@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import type { ReactNode } from "react";
 import { InputBar } from "./input-bar";
 import { Spinner } from "./spinner";
+import { PaletteHint } from "./palette-hint";
 import { usePromptConfig } from "../providers/prompt-config";
 import type { ChatMessage, MessageAttachment } from "../lib/chat-types";
 
@@ -83,9 +84,12 @@ export function SessionShell({
           ) : null}
         </box>
 
-        <box flexDirection="row" gap={1} flexShrink={0} marginLeft="auto">
-          <text>tab</text>
-          <text attributes={TextAttributes.DIM}>agents</text>
+        <box flexDirection="row" gap={2} flexShrink={0} marginLeft="auto">
+          <PaletteHint />
+          <box flexDirection="row" gap={1} flexShrink={0}>
+            <text>tab</text>
+            <text attributes={TextAttributes.DIM}>agents</text>
+          </box>
         </box>
       </box>
     </box>

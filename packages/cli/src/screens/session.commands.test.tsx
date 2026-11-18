@@ -188,10 +188,15 @@ describe("slash commands from Claude Code (S11a)", () => {
     expect(calls.map((c) => c.prompt)).toEqual(["hi", "/probe:hello world"]);
   });
 
-  test("a /name that matches no command and has no arguments is submitted verbatim", async () => {
+  // S13 (L6/Q2): with the menu open, the first Enter on an unknown name says so and keeps the text; the second sends it.
+  test("a /name that matches no command and has no arguments is said to be unknown, then submitted verbatim on a second Enter", async () => {
     await openAfterTurn();
 
     await type("/unknown-thing");
+    await press("RETURN");
+    await settle(80);
+    expect(calls.map((c) => c.prompt)).toEqual(["hi"]);
+
     await press("RETURN");
     await settle(80);
 

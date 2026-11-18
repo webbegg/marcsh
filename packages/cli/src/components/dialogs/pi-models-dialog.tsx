@@ -5,6 +5,7 @@ import { useToast } from "../../providers/toast";
 import { DialogSearchList } from "../dialog-search-list";
 import { FavoriteMark, RecentMark, useModelPicks, type ModelRow } from "./models-dialog";
 import { recordRecentModel } from "../../lib/preferences";
+import { fitText } from "../../lib/fit-text";
 import type { PiModelOption } from "../../lib/engine/pi-models";
 
 type Props = {
@@ -34,20 +35,23 @@ export const PiModelsDialogContent = ({ models, currentModel, onSelectModel }: P
       items={picks.rows}
       onSelect={handleSelect}
       filterFn={({ item: model }, query) => `${model.ref} ${model.name}`.toLowerCase().includes(query.toLowerCase())}
-      renderItem={(row, isSelected) => {
+      renderItem={(row, isSelected, width) => {
         const model = row.item;
         picks.track(row, isSelected);
+        // The row: the favorite mark and the current mark (2 + 3 cells), the ref, a gap and the name, and `recent` (a gap and 6 cells) when it carries one.
+        const ref = fitText(model.ref, width - 5 - (row.section === "recent" ? 7 : 0));
+        const nameCells = width - 5 - Bun.stringWidth(ref) - 1 - (row.section === "recent" ? 7 : 0);
         return (
           <box flexDirection="row" gap={1} overflow="hidden">
             <box flexDirection="row">
               <FavoriteMark favorite={picks.isFavorite(model)} selected={isSelected} />
               <text selectable={false} fg={isSelected ? "black" : "white"}>
                 {model.ref === currentModel ? " • " : "   "}
-                {model.ref}
+                {ref}
               </text>
             </box>
             <text selectable={false} fg={isSelected ? "black" : "gray"} attributes={TextAttributes.DIM}>
-              {model.name}
+              {fitText(model.name, nameCells)}
             </text>
             <RecentMark section={row.section} selected={isSelected} />
           </box>

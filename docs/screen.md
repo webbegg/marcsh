@@ -4,7 +4,7 @@ This page describes what you see in marcsh and what each part does: the two scre
 
 ## The screens
 
-**Home.** The first screen. It shows the marcsh logo, the input and a `tab agents` hint. Your first message starts a new session and opens the session screen.
+**Home.** The first screen. It shows the marcsh logo, the input and a hint with the keys for the palette and for agents: `ctrl+p commands` and `tab agents`. The session screen shows the same hint at the bottom right. The palette's key is the one in your [keybinds](keybinds.md#the-help-dialog), and the hint is left out if you unbound it. Type `/help` to see all the keys and commands. Your first message starts a new session and opens the session screen.
 
 **Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. Thinking is folded to one line (`Thinking · 2.3s` on pi) and `ctrl+x h` unfolds it; a tool call shows the last lines of its output, an edit shows its diff, and `ctrl+x o` shows them in full (see [/details](commands.md#details) and [/thinking](commands.md#thinking)). While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
 

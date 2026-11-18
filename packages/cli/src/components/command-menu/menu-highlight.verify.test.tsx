@@ -47,6 +47,8 @@ async function open(kind: "session" | "home", w: number, h: number, msgs = 0) {
   await settle(150, screen);
   return screen;
 }
+// `expectMax`: the command rows of a full menu. The menu has 10 rows, and the `marcsh` group header on an empty query is one of them (S16), so 9 are commands.
+const FULL_MENU_COMMANDS = 9;
 const check = (tag: string, screen: Scr, expectMax?: number) => {
   const { rows, hl } = dump(tag, screen);
   expect(rows.length).toBeGreaterThan(0);
@@ -59,7 +61,7 @@ for (const kind of ["session", "home"] as const)
   for (const h of [8, 10, 12, 16, 17, 18, 24, 40]) {
     test(`${kind} 80x${h}`, async () => {
       const screen = await open(kind, 80, h);
-      try { check(`${kind} 80x${h}`, screen, h >= 40 ? 10 : undefined); } finally { await act(async () => screen.renderer.destroy()); }
+      try { check(`${kind} 80x${h}`, screen, h >= 40 ? FULL_MENU_COMMANDS : undefined); } finally { await act(async () => screen.renderer.destroy()); }
     });
   }
 // Runs with the real default engine (pi): shrinking once left the menu scrolled with /new off the top.
@@ -68,10 +70,10 @@ for (const kind of ["session", "home"] as const)
     const prefs = process.env.MARCSH_PREFERENCES_PATH!;
     const screen = await open(kind, 80, 40);
     try {
-      check(`${kind} start 40`, screen, 10);
+      check(`${kind} start 40`, screen, FULL_MENU_COMMANDS);
       for (const h of [16, 12, 17, 9, 40]) {
         await act(async () => screen.resize(80, h)); await settle(150, screen);
-        check(`${kind} resized ${h}`, screen, h === 40 ? 10 : undefined);
+        check(`${kind} resized ${h}`, screen, h === 40 ? FULL_MENU_COMMANDS : undefined);
       }
     } finally {
       await act(async () => screen.renderer.destroy());
