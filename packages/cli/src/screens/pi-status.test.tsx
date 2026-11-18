@@ -272,7 +272,8 @@ describe("the status line on pi (S17)", () => {
   });
 
   test("a check that hangs becomes the same failure after its time limit, and the next check recovers", async () => {
-    piModelCheck.timeoutMs = 200;
+    // Long enough that opening the session on a slow runner does not use it up before the first look.
+    piModelCheck.timeoutMs = 1000;
     let release: () => void = () => {};
     runtimeGate = new Promise<void>((resolve) => (release = resolve));
 
@@ -280,7 +281,7 @@ describe("the status line on pi (S17)", () => {
     expect(frame()).not.toContain("pi unavailable");
     expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
-    await settle(400);
+    await settle(1200);
     expect(frame()).toContain("pi unavailable");
     expect(frame()).not.toContain(PI_DEFAULT_MODEL);
 
