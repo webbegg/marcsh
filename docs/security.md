@@ -253,7 +253,7 @@ The `marcsh` command starts Bun so that it does **not** read a `.env` file or a 
 - **No MCP servers.** marcsh never runs MCP servers from a pack.
 - **Per agent.** A pack's skills and commands are loaded only while one of its agents is selected.
 - **Only what you saw is loaded.** marcsh copies the skills and commands it scanned into its own folder. The engine loads that copy, not the repository.
-- **Safe text.** Names and descriptions from a pack are cleaned of control characters before they reach your screen.
+- **Safe text.** Names and descriptions from a pack are cleaned of control characters before they reach your screen. So are a project's custom command descriptions and the engine's own commands and skills in the `/` menu and the palette (see [commands](commands.md#other-name-input)), and a branch name in the `/permissions` toast is shown with its control characters as visible escapes.
 
 ### Hooks
 

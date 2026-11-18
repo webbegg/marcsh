@@ -4,10 +4,13 @@ import { escapeTranscriptText } from "../../lib/display-text";
 
 export const PERMISSIONS_USAGE = `Usage: /permissions [${APPROVAL_MODES.join("|")} | default <${APPROVAL_MODES.join("|")}>]`;
 
-/** Why auto and yolo are paused in a folder (`on the default branch main`, `detached HEAD`); undefined on a feature branch. */
+/**
+ * Why auto and yolo are paused in a folder (`on the default branch main`, `detached HEAD`); undefined on a feature branch. The branch
+ * name comes from the folder, so what could act on the terminal shows as a visible escape, as in `pausedLabel`.
+ */
 function pauseReason(branch: BranchState): string | undefined {
   if (branch.kind === "feature") return undefined;
-  return branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason;
+  return escapeTranscriptText(branch.kind === "default" ? `on the default branch ${branch.branch}` : branch.reason);
 }
 
 /**

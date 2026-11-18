@@ -36,6 +36,13 @@ describe("sessionModeMessage", () => {
     expect(sessionModeMessage("auto", { kind: "none", reason: "detached HEAD" })).toContain("auto is paused here: detached HEAD.");
     expect(sessionModeMessage("auto", { kind: "none", reason: "not a git repository" })).toContain("auto is paused here: not a git repository.");
   });
+
+  test("shows what in the branch name or the reason could act on the terminal as a visible escape, as the dialog row does", () => {
+    expect(sessionModeMessage("yolo", { kind: "default", branch: "ma\u001b[31min‮" })).toContain(
+      "yolo is paused here: on the default branch ma\\u001b[31min\\u202e.",
+    );
+    expect(sessionModeMessage("auto", { kind: "none", reason: "odd\u0007" })).toContain("auto is paused here: odd\\u0007.");
+  });
 });
 
 describe("parsePermissionsCommand", () => {

@@ -117,6 +117,19 @@ describe("loadUserCommands (S7)", () => {
     ]);
   });
 
+  test("a project command's shown texts are printable, as a pack's are; the template is sent as written", () => {
+    projectFile("red.md", "---\ndescription: a\u001b[31mred‮\nargument-hint: <x\u0007>\n---\nDo \u001b[1mit\n");
+    projectFile("bare.md", "First\u001b]0;t\u0007 line\nmore\n");
+
+    const commands = loadUserCommands({ cwd: project, trusted: true });
+
+    expect(commands.map((c) => [c.name, c.description, c.argumentHint])).toEqual([
+      ["bare", "First]0;t line", undefined],
+      ["red", "a[31mred", "<x>"],
+    ]);
+    expect(commands.find((c) => c.name === "red")!.template).toBe("Do \u001b[1mit");
+  });
+
   test("an untrusted project loads no project commands; personal ones still load", () => {
     personalFile("mine.md", "mine");
     projectFile("theirs.md", "theirs");

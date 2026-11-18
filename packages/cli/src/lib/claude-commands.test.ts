@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { combineClaudeCommands, mergeCommands, normalizeClaudeCommands, slashInputKind } from "./claude-commands";
+import { combineClaudeCommands, mergeCommands, normalizeClaudeCommands, normalizeEngineCommands, slashInputKind } from "./claude-commands";
 
 const OWN = ["new", "agents", "models", "sessions", "theme", "exit"];
 
@@ -40,6 +40,34 @@ describe("normalizeClaudeCommands", () => {
     expect(list).toEqual([
       { name: "dup", description: "second", argumentHint: "" },
       { name: "other", description: "a", argumentHint: "" },
+    ]);
+  });
+
+  test("a description or argument hint reaches the menu as one printable line: no terminal escapes, format characters or line breaks", () => {
+    const list = normalizeClaudeCommands([
+      { name: "skill", description: "Red\u001b[31m text‮\nsecond\tline\u0007", argumentHint: "<who\u001b]8;;x\u0007>" },
+    ]);
+
+    expect(list).toEqual([{ name: "skill", description: "Red[31m text second line", argumentHint: "<who]8;;x>" }]);
+  });
+
+  test("a command whose name hides text is left out, since what the menu shows would not be what it runs", () => {
+    const list = normalizeClaudeCommands([
+      { name: "ev\u001b[8mil" },
+      { name: "zero​width" },
+      { name: "rtl‮name" },
+      { name: "nbsp name" },
+      { name: "ok" },
+    ]);
+
+    expect(list.map((command) => command.name)).toEqual(["ok"]);
+  });
+});
+
+describe("normalizeEngineCommands", () => {
+  test("cleans the source as it cleans the description", () => {
+    expect(normalizeEngineCommands([{ name: "x", description: "d", argumentHint: "", source: "ext\u001b[2Jension" }])).toEqual([
+      { name: "x", description: "d", argumentHint: "", source: "ext[2Jension" },
     ]);
   });
 });
@@ -105,6 +133,12 @@ describe("combineClaudeCommands", () => {
     );
 
     expect(combined).toEqual([{ name: "marcsh:feature", description: "from the CLI", argumentHint: "<feature-name>" }]);
+  });
+
+  test("the bundled entries are cleaned like the engine's, so every row of the menu is", () => {
+    expect(combineClaudeCommands([], [{ name: "marcsh:a", description: "b\u001b[2J\nc", argumentHint: "" }, { name: "marcsh:\u001bx", description: "", argumentHint: "" }])).toEqual([
+      { name: "marcsh:a", description: "b[2J c", argumentHint: "" },
+    ]);
   });
 
   test("with an empty cache the bundled commands are all there is", () => {

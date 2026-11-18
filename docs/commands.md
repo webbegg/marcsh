@@ -414,6 +414,8 @@ The `/` menu lists the commands and skills of the engine you are on. The list is
 
 marcsh's own names always win. An engine command with the same name as one of the commands above does not appear in the menu.
 
+An engine's command can come from a skill in the project you opened, so marcsh cleans what it shows. A description or argument hint is shown on one line, with control and format characters removed. A command whose name has such a character, or a space other than the ordinary one, is left out of the menu: the name you would read is not the one that would run. You can still type it: marcsh says it is not a known command, and a second `Enter` sends it to the engine.
+
 Your [custom commands](#custom-commands) and the [pack commands that name an agent or ask questions](#pack-commands) are the exception: marcsh expands them itself before sending.
 
 ## Custom commands

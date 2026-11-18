@@ -1,3 +1,5 @@
+import { hidesText, printable } from "./safe-text";
+
 /**
  * A command or skill as the `/` menu shows it (for Claude Code, the SDK's `SlashCommand` minus what the menu doesn't use).
  * Other engines' commands share the shape.
@@ -13,9 +15,13 @@ export type ClaudeCommand = {
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 
+/** Text an engine reports, as the menu may show it: one line, with nothing that could act on the terminal or hide what it says. */
+const displayText = (value: unknown) => printable(text(value).replace(/\s+/g, " ")).trim();
+
 /**
  * Turns the SDK's `SlashCommand[]` (or what was persisted) into menu entries.
- * Unusable entries are skipped; rows that share a name collapse to the builtin row, else the first.
+ * Unusable entries are skipped, and so is a name that hides text (control or format characters, an odd space): the menu would show one
+ * command and run another. Descriptions, hints and sources are made printable. Rows that share a name collapse to the builtin row, else the first.
  */
 export function normalizeClaudeCommands(raw: unknown): ClaudeCommand[] {
   return normalizeCommands(raw, false);
@@ -34,17 +40,17 @@ function normalizeCommands(raw: unknown, keepSource: boolean): ClaudeCommand[] {
     if (typeof item !== "object" || item === null) continue;
     const row = item as Record<string, unknown>;
     const name = text(row.name).trim().replace(/^\/+/, "");
-    if (name === "") continue;
+    if (name === "" || hidesText(name)) continue;
 
     const builtin = row.builtin === true;
     const known = byName.get(name);
     if (known && (known.builtin || !builtin)) continue;
-    const source = keepSource ? text(row.source) : "";
+    const source = keepSource ? displayText(row.source) : "";
     byName.set(name, {
       command: {
         name,
-        description: text(row.description),
-        argumentHint: text(row.argumentHint),
+        description: displayText(row.description),
+        argumentHint: displayText(row.argumentHint),
         ...(source !== "" ? { source } : {}),
       },
       builtin,
@@ -53,10 +59,13 @@ function normalizeCommands(raw: unknown, keepSource: boolean): ClaudeCommand[] {
   return [...byName.values()].map((entry) => entry.command);
 }
 
-/** The cached list plus the bundled plugin's entries it lacks; a cached entry wins on the same name (exact CLI text). */
+/**
+ * The cached list plus the bundled plugin's entries it lacks; a cached entry wins on the same name (exact CLI text). The bundled
+ * entries are cleaned like an engine's, so every row the menu gets has been through `normalizeCommands`.
+ */
 export function combineClaudeCommands(cached: ClaudeCommand[], bundled: ClaudeCommand[]): ClaudeCommand[] {
   const known = new Set(cached.map((command) => command.name));
-  return [...cached, ...bundled.filter((command) => !known.has(command.name))];
+  return [...cached, ...normalizeEngineCommands(bundled).filter((command) => !known.has(command.name))];
 }
 
 /**
