@@ -25,6 +25,29 @@ export type Stats = { days: number | null; models: Array<StatsRow & { model: str
 
 const emptyRow = (): StatsRow => ({ sessions: 0, messages: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null });
 
+/**
+ * The messages of a session as stats can read them. A damaged session (another version's format, or edited by hand) gives what it can:
+ * only the elements that are objects, none when the column is not a list, and nothing at all when it cannot be read.
+ */
+function readableMessages(storage: Pick<Storage, "getSession">, id: string): ChatMessage[] | null {
+  let session;
+  try {
+    session = storage.getSession(id);
+  } catch {
+    return null;
+  }
+  if (!session) return null;
+  const messages: unknown = session.messages;
+  if (!Array.isArray(messages)) return [];
+  return messages.filter((message): message is ChatMessage => typeof message === "object" && message !== null && !Array.isArray(message));
+}
+
+/** The model a message names; anything that is not text counts as unknown. */
+const modelOf = (message: ChatMessage) => {
+  const model: unknown = message.metadata?.model;
+  return typeof model === "string" && model !== "" ? model : UNKNOWN_MODEL;
+};
+
 const addCost = (a: number | null, b: number | null) => (a === null && b === null ? null : (a ?? 0) + (b ?? 0));
 
 /**
@@ -39,13 +62,13 @@ export function collectStats(storage: Pick<Storage, "listSessions" | "getSession
 
   for (const { id, updatedAt } of storage.listSessions()) {
     if (since !== undefined && updatedAt.getTime() < since) continue;
-    const session = storage.getSession(id);
-    if (!session) continue;
+    const sessionMessages = readableMessages(storage, id);
+    if (!sessionMessages) continue;
     totals.sessions += 1;
 
     const byModel = new Map<string, ChatMessage[]>();
-    for (const message of session.messages) {
-      const model = message.metadata?.model || UNKNOWN_MODEL;
+    for (const message of sessionMessages) {
+      const model = modelOf(message);
       byModel.set(model, [...(byModel.get(model) ?? []), message]);
     }
 

@@ -144,7 +144,7 @@ The change applies from the next message in a pi session. To add a remote server
 marcsh stats [--days N] [--json]
 ```
 
-It prints one row per model and a `Total` row: the sessions that used the model, the messages sent to it and its replies, the input and output tokens, the cache tokens (read and write) and the cost. A cost of `-` means no reply reported one. A message counts for the model it names, and messages that name none count as `unknown`. A session that used two models is in both rows and counted once in the total. Tokens and cost are what the engines reported, so sessions from before they were recorded show none.
+It prints one row per model and a `Total` row: the sessions that used the model, the messages sent to it and its replies, the input and output tokens, the cache tokens (read and write) and the cost. A cost of `-` means no reply reported one. A message counts for the model it names, and messages that name none count as `unknown`. A damaged session (one whose stored messages are not what marcsh writes) adds what can be read from it, and one that cannot be read at all is left out, so it never stops the others from being counted. A session that used two models is in both rows and counted once in the total. Tokens and cost are what the engines reported, so sessions from before they were recorded show none.
 
 | Option | What it does |
 | --- | --- |

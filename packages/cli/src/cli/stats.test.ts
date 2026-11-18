@@ -85,6 +85,56 @@ describe("collectStats", () => {
   });
 });
 
+// A damaged session (written by another version, or by hand) must not stop the others from being counted.
+describe("collectStats with damaged stored messages", () => {
+  /** A storage whose second session holds `messages` as given, or throws on read like an invalid JSON column does. */
+  const damaged = (messages: unknown | (() => never)) => {
+    const good = { id: "good", updatedAt: new Date(), messages: [user("opus"), reply("opus", { inputTokens: 10, costUsd: 0.25 })] };
+    const bad = { id: "bad", updatedAt: new Date() };
+    return {
+      listSessions: () => [good, bad],
+      getSession: (id: string) => {
+        if (id === "good") return good;
+        if (typeof messages === "function") return (messages as () => never)();
+        return { ...bad, messages };
+      },
+    } as unknown as Pick<Storage, "listSessions" | "getSession">;
+  };
+
+  const cases: Array<[string, unknown]> = [
+    ["null and other non-message elements", [3, null, true, [1], "oops"]],
+    ["a value that is not a list", { a: 1 }],
+    ["a model that is not text", [{ id: "m", role: "user", parts: [], metadata: { model: { x: 1 } } }, { id: "n", role: "user", parts: [], metadata: { model: 7 } }]],
+    ["metadata that is not an object", [{ id: "m", role: "assistant", parts: [], metadata: "text" }]],
+  ];
+  for (const [name, messages] of cases) {
+    test(`${name} still lets the good session count`, () => {
+      const stats = collectStats(damaged(messages), undefined, Date.now());
+      expect(stats.models.find((row) => row.model === "opus")).toMatchObject({ sessions: 1, messages: 2, inputTokens: 10, costUsd: 0.25 });
+      expect(stats.totals.sessions).toBe(2);
+    });
+  }
+
+  test("a model that is not text counts as unknown", () => {
+    const stats = collectStats(damaged(cases[2]![1]), undefined, Date.now());
+    expect(stats.models.map((row) => row.model)).toEqual(["opus", "unknown"]);
+    expect(stats.models[1]).toMatchObject({ sessions: 1, messages: 2 });
+  });
+
+  test("a session that cannot be read at all is left out", () => {
+    const stats = collectStats(damaged(() => { throw new SyntaxError("JSON Parse error: Unexpected identifier"); }), undefined, Date.now());
+    expect(stats.totals.sessions).toBe(1);
+    expect(stats.models.map((row) => row.model)).toEqual(["opus"]);
+  });
+
+  test("marcsh stats prints the table instead of failing", async () => {
+    storage = damaged([3, null]) as unknown as Storage;
+    expect(await run()).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("opus");
+  });
+});
+
 describe("stats", () => {
   test("prints a table per model and the totals", async () => {
     seed([user("opus"), reply("opus", { inputTokens: 1500, outputTokens: 20, cacheReadTokens: 1000, costUsd: 0.125 })]);
