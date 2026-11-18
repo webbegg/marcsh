@@ -74,6 +74,8 @@ function parseCommands(files: (CommandFile & { read: () => string })[], source: 
         const value = fields.get(key)?.trim() || undefined;
         return value && pack ? printable(value) : value;
       };
+      // What only the menu and the palette show is cleaned for a project too: the repository wrote it, not you.
+      const shown = (value: string | undefined) => (value !== undefined && source === "project" ? printable(value) : value);
       // A pack command with an empty `agent:` stays marcsh's (it warns when run) rather than going back to the engine's copy unnoticed.
       const agent = field("agent") ?? (pack && fields.has("agent") ? "" : undefined);
       // A command with `questions` (valid or not) is marcsh's whatever it names: the engine's copy would send the raw template.
@@ -81,10 +83,10 @@ function parseCommands(files: (CommandFile & { read: () => string })[], source: 
       const invalid = asked && "error" in asked ? (pack ? printable(asked.error) : asked.error) : undefined;
       const questions = asked && "questions" in asked && asked.questions.length > 0 ? (pack ? asked.questions.map(printableQuestion) : asked.questions) : undefined;
       if (pack && agent === undefined && !questions && invalid === undefined) continue;
-      const argumentHint = field("argument-hint");
+      const argumentHint = shown(field("argument-hint"));
       commands.push({
         name,
-        description: field("description") ?? (pack ? printable(firstLine(template)) : firstLine(template)),
+        description: shown(field("description")) ?? (pack || source === "project" ? printable(firstLine(template)) : firstLine(template)),
         template,
         agent,
         model: field("model"),

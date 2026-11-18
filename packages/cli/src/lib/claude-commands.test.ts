@@ -135,6 +135,12 @@ describe("combineClaudeCommands", () => {
     expect(combined).toEqual([{ name: "marcsh:feature", description: "from the CLI", argumentHint: "<feature-name>" }]);
   });
 
+  test("the bundled entries are cleaned like the engine's, so every row of the menu is", () => {
+    expect(combineClaudeCommands([], [{ name: "marcsh:a", description: "b\u001b[2J\nc", argumentHint: "" }, { name: "marcsh:\u001bx", description: "", argumentHint: "" }])).toEqual([
+      { name: "marcsh:a", description: "b[2J c", argumentHint: "" },
+    ]);
+  });
+
   test("with an empty cache the bundled commands are all there is", () => {
     expect(combineClaudeCommands([], [cmd("marcsh:feature", "static")])).toEqual([cmd("marcsh:feature", "static")]);
     expect(combineClaudeCommands([], [])).toEqual([]);

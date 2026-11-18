@@ -59,10 +59,13 @@ function normalizeCommands(raw: unknown, keepSource: boolean): ClaudeCommand[] {
   return [...byName.values()].map((entry) => entry.command);
 }
 
-/** The cached list plus the bundled plugin's entries it lacks; a cached entry wins on the same name (exact CLI text). */
+/**
+ * The cached list plus the bundled plugin's entries it lacks; a cached entry wins on the same name (exact CLI text). The bundled
+ * entries are cleaned like an engine's, so every row the menu gets has been through `normalizeCommands`.
+ */
 export function combineClaudeCommands(cached: ClaudeCommand[], bundled: ClaudeCommand[]): ClaudeCommand[] {
   const known = new Set(cached.map((command) => command.name));
-  return [...cached, ...bundled.filter((command) => !known.has(command.name))];
+  return [...cached, ...normalizeEngineCommands(bundled).filter((command) => !known.has(command.name))];
 }
 
 /**
