@@ -157,6 +157,28 @@ describe("the size of a download [S17]", () => {
   });
 });
 
+// git fetch starts `git maintenance run --auto --detach`, which leaves git's process group and can still be writing into the staging
+// folder when it is removed: the folder was then left behind (seen on GitHub's macOS runners). A fetch must not start it.
+describe("no git runs after a fetch", () => {
+  test("a fetch does not start git's background maintenance", async () => {
+    const repo = makeRepo("acme/flows", { "agents/reviewer.md": AGENT });
+    const trace = join(work, "git-trace.txt");
+    const saved = process.env.GIT_TRACE;
+    process.env.GIT_TRACE = trace;
+    try {
+      const { staging } = await fetchPack({ url: `file://${repo}`, root });
+      rmSync(staging, { recursive: true, force: true });
+    } finally {
+      if (saved === undefined) delete process.env.GIT_TRACE;
+      else process.env.GIT_TRACE = saved;
+    }
+    const text = readFileSync(trace, "utf8");
+    expect(text).toContain("built-in: git fetch");
+    expect(text).not.toContain("maintenance run");
+    expect(text).not.toMatch(/\bgc --auto\b/);
+  });
+});
+
 describe("the scan does not block the UI [S17]", () => {
   test("a timer keeps firing while a pack of 2,000 small files is installed", async () => {
     const files: Record<string, string> = { "agents/reviewer.md": AGENT };

@@ -213,6 +213,10 @@ function git(cwd: string, args: string[], { url, timeoutMs, signal, watch }: { u
     "-c", "core.fsmonitor=false",
     "-c", "submodule.recurse=false",
     "-c", "advice.detachedHead=false",
+    // A fetch would start `git maintenance run --auto --detach`: it leaves git's process group, so it is not stopped with git, and it
+    // can still be writing into the staging directory when that is removed. A one-commit throwaway repository needs no upkeep.
+    "-c", "maintenance.auto=false",
+    "-c", "gc.auto=0",
   ];
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(cancelled());
