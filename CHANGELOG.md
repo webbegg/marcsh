@@ -2,6 +2,37 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.7.0
+
+The interface gets easier to use: no lost prompts or sessions, replies in markdown, diffs in the approval prompt, a help dialog, and session lists that say what each session is.
+
+### Fewer traps
+- **The model you chose is kept.** The model you picked last is kept between launches and `marcsh -c`, for each engine. A session you open again starts on the model it used last while that model is available, and leaving it goes back to your choice. See [docs/engines-and-models.md](docs/engines-and-models.md).
+- **Ctrl+C asks twice.** On an empty prompt, `Ctrl+C` shows "ctrl+c again to quit", and a second press within about 1.5 seconds quits. Quitting from a session prints its id and `marcsh -c` to resume it. See [docs/keybinds.md](docs/keybinds.md).
+- **A new line in tmux.** `Ctrl+J` types a new line, and inside tmux without extended keys (where Shift+Enter arrives as Enter) the hint under the prompt says so.
+- **A first run with no model.** The home screen shows how to get one (`/login` for pi, `/engine` for Claude), and Enter sends nothing and creates no session until there is one.
+- **Clear turn states.** A turn stopped with Esc says `interrupted` in its footer, also after a reload. While a Claude reply runs, the prompt says "reply running · esc to stop".
+
+### The transcript
+- **Markdown replies** with highlighted code blocks.
+- **Diffs for edits.** Edit and Write show a coloured diff in the approval prompt, instead of the tool's raw input, and in the transcript afterwards. The prompt's diff is exactly what the tool will write; when marcsh cannot be sure, it shows the raw input and says why.
+- **Tool output.** Tool calls show the last lines of their output, and errors in full. The output of a successful tool is saved with the session, through secret redaction and capped at about the last 200 lines or 16 KB. See [docs/security.md](docs/security.md).
+- **Folded thinking.** A thinking block folds to one line with its duration, and an empty one is not shown. `/details` (`<leader>o`) and `/thinking` (`<leader>h`) show everything, for the current session.
+
+### Finding things
+- **`/help`, and `?` on an empty prompt,** list the keys you have now (a rebinding shows) and the commands. The footer shows `ctrl+p commands`.
+- **Enter in the `/` menu runs what you typed:** an exact name, a unique prefix, or the row you moved to. `/he` never runs `/theme`. An unknown `/x` says so, and a second Enter sends it to the engine. See [docs/commands.md](docs/commands.md).
+- **A grouped `/` menu** (marcsh, pack and engine commands), with `/login` and `/logout` hidden on Claude. The palette uses the width it has, and cut descriptions end with `…`.
+- **Setting dialogs that say what they do.** `/permissions` shows when it is paused on the default branch, `/trust` marks the current state, and `/profile` without a profiles file offers to create a commented starter one (it never overwrites). Switching between Build and Plan says what the mode does.
+
+### Sessions and the CLI
+- **Session lists show the engine, the model, the message count and a relative time** ("3h ago"), in `marcsh session list` and in `/sessions`, in one time format. `--json` adds `engine`, `model` and `messageCount`. See [docs/sessions.md](docs/sessions.md).
+- **`marcsh run --help`** prints run's own options and says that approval requests are denied in `run`. A usage error prints the error and `see marcsh --help`, not the whole help. See [docs/cli.md](docs/cli.md).
+
+### Fixes
+- `marcsh stats` counts the other sessions when one is damaged, instead of failing for all of them.
+- Pack fetches no longer start git's background maintenance, which could keep writing into a staging folder after it was removed.
+
 ## 0.6.0
 
 Commands that ask before they send, a task list, subagents held to the files they may change, model profiles with fallback chains, and the brigadev workflow as a pack.
