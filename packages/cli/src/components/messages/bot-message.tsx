@@ -1,16 +1,17 @@
 import prettyMs from "pretty-ms";
-import { EmptyBorder } from "../border";
 import { useTheme } from "../../providers/theme";
+import { useSyntaxStyle } from "../../hooks/use-syntax-style";
 import type { MessagePart } from "../../lib/chat-types";
 import { Mode, type ModeType } from "../../lib/modes";
 import { escapeTranscriptText as safe } from "../../lib/display-text";
 import { TextAttributes } from "@opentui/core";
+import { ReasoningPart } from "./reasoning-part";
+import { TaskPart, ToolPart } from "./tool-part";
+import { TextPart } from "./text-part";
 
-type ToolPart = Extract<MessagePart, { type: "tool" }>;
-type TaskPart = Extract<MessagePart, { type: "task" }>;
+export { formatTaskLine, summarizeToolInput } from "./tool-part";
 
-const MAX_SUMMARY_LENGTH = 80;
-const PREFERRED_INPUT_KEYS = ["command", "file_path", "path", "pattern", "url", "description"];
+type ToolPartData = Extract<MessagePart, { type: "tool" }>;
 
 type Props = {
   parts: MessagePart[];
@@ -24,42 +25,9 @@ type Props = {
   streaming?: boolean;
 };
 
-function formatToolName(name: string): string {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/^./, (c) => c.toUpperCase());
-};
-
-function isToolPart(part: MessagePart): part is ToolPart {
+function isToolPart(part: MessagePart): part is ToolPartData {
   return part.type === "tool";
 };
-
-export function summarizeToolInput(input: Record<string, unknown>): string {
-  const values = Object.values(input);
-  const preferred = PREFERRED_INPUT_KEYS.map((key) => input[key]).find((v) => typeof v === "string");
-  const summary = preferred ?? values.find((v) => typeof v === "string") ?? "";
-
-  return typeof summary === "string" && summary.length > MAX_SUMMARY_LENGTH
-    ? `${summary.slice(0, MAX_SUMMARY_LENGTH - 1)}…`
-    : String(summary);
-}
-
-/** The task's one-line status: description, status, last tool and usage when known. */
-export function formatTaskLine(part: TaskPart): string {
-  const fields = [
-    part.description,
-    part.status,
-    part.lastToolName,
-    part.toolUses != null ? `${part.toolUses} ${part.toolUses === 1 ? "tool" : "tools"}` : undefined,
-    part.totalTokens != null ? `${part.totalTokens} tok` : undefined,
-  ];
-  return fields.filter((field) => field).join(" · ");
-}
-
-/** What a finished task reports below its line: the summary, or the error of a task that failed without one. */
-function taskOutcome(part: TaskPart): string | undefined {
-  return part.status === "running" ? undefined : part.summary || part.error;
-}
 
 type PartGroup = {
   type: MessagePart["type"];
@@ -96,83 +64,19 @@ export function BotMessage({
   streaming = false,
 }: Props) {
   const { colors } = useTheme();
+  // One style for every text part of the message.
+  const syntaxStyle = useSyntaxStyle();
+  // Only the last part of a message still being written can be unfinished.
+  const lastPart = parts[parts.length - 1];
   return (
     <box width="100%" alignItems="center">
       {groupConsecutiveParts(parts).map((group, i) => (
         <box key={group.key} width="100%" paddingTop={i === 0 ? 0 : 1}>
           {group.parts.map((part, j) => {
-            if (part.type === "reasoning") {
-              return (
-                <box
-                  key={`reasoning-${j}`}
-                  border={["left"]}
-                  borderColor={colors.thinkingBorder}
-                  customBorderChars={{
-                    ...EmptyBorder,
-                    vertical: "│",
-                  }}
-                  width="100%"
-                  paddingX={2}
-                >
-                  <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.thinking}>Thinking:</em> {safe(part.text)}
-                  </text>
-                </box>
-              );
-            }
-
-            if (isToolPart(part)) {
-              return (
-                <box
-                  key={part.toolCallId}
-                  border={["left"]}
-                  borderColor={colors.thinkingBorder}
-                  customBorderChars={{
-                    ...EmptyBorder,
-                    vertical: "│",
-                  }}
-                  width="100%"
-                  paddingX={2}
-                >
-                  <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.info}>{safe(formatToolName(part.toolName))}:</em> {safe(summarizeToolInput(part.input))}
-                    {part.state === "running" ? " …" : ""}
-                    {part.state === "error" ? ` ${safe(String(part.errorText))}` : ""}
-                  </text>
-                </box>
-              );
-            }
-
-            if (part.type === "task") {
-              const outcome = taskOutcome(part);
-              return (
-                <box
-                  key={`task-${part.taskId}`}
-                  border={["left"]}
-                  borderColor={colors.thinkingBorder}
-                  customBorderChars={{
-                    ...EmptyBorder,
-                    vertical: "│",
-                  }}
-                  width="100%"
-                  paddingX={2}
-                >
-                  <text attributes={TextAttributes.DIM}>
-                    <em fg={colors.info}>Task:</em> {safe(formatTaskLine(part))}
-                  </text>
-                  {outcome && <text attributes={TextAttributes.DIM}>{safe(outcome)}</text>}
-                </box>
-              );
-            }
-
-            if (part.type === "text") {
-              return (
-                <box key={`text-${j}`} paddingX={3} width="100%">
-                  <text>{safe(part.text)}</text>
-                </box>
-              );
-            }
-            
+            if (part.type === "reasoning") return <ReasoningPart key={`reasoning-${j}`} part={part} />;
+            if (isToolPart(part)) return <ToolPart key={part.toolCallId} part={part} />;
+            if (part.type === "task") return <TaskPart key={`task-${part.taskId}`} part={part} />;
+            if (part.type === "text") return <TextPart key={`text-${j}`} part={part} syntaxStyle={syntaxStyle} streaming={streaming && part === lastPart} />;
             return null;
           })}
         </box>

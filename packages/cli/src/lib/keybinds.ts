@@ -53,6 +53,8 @@ const DEFAULT_LEADER_KEYS: readonly (readonly [command: string, key: string])[] 
   ["copy", "y"],
   ["fork", "f"],
   ["export", "x"],
+  ["details", "o"],
+  ["thinking", "h"],
   ["exit", "q"],
 ];
 
@@ -249,6 +251,9 @@ export function loadKeybinds(commands: readonly string[]): Keybinds {
   }
   return loaded;
 }
+
+/** The keybinds as already read, or null before the first `loadKeybinds` (a hint can show them without reading the file itself). */
+export const loadedKeybinds = (): Keybinds | null => loaded;
 
 /** What was wrong with the file, once: the screen that loaded it says so in a single toast. */
 export function takeKeybindWarnings(): string[] {

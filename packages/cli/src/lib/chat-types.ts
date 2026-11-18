@@ -6,7 +6,12 @@ export type TaskStatus = "running" | "completed" | "failed" | "stopped";
 
 export type MessagePart =
   | { type: "text"; text: string }
-  | { type: "reasoning"; text: string }
+  | {
+      type: "reasoning";
+      text: string;
+      /** How long the model thought, in milliseconds, when the engine reported it. */
+      durationMs?: number;
+    }
   | {
       type: "tool";
       toolCallId: string;
@@ -14,6 +19,12 @@ export type MessagePart =
       input: Record<string, unknown>;
       state: ToolState;
       errorText?: string;
+      /** The tail of a successful call's output, redacted and capped; left out when the call gave none. */
+      output?: string;
+      /** The output was cut: `output` is only its tail. */
+      outputTruncated?: boolean;
+      /** A unified diff of what an edit or write call did. */
+      patch?: string;
     }
   | {
       type: "task";

@@ -14,7 +14,7 @@ Picking a command that is not one of marcsh's own (for example one from the engi
 
 `/agents`, `/permissions`, `/rename` and `/export` take arguments. For the other commands, text after the name is ignored.
 
-The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact` and `/copy`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
+The commands that work on the open session (`/rename`, `/fork`, `/export`, `/undo`, `/redo`, `/diff`, `/compact`, `/copy`, `/details` and `/thinking`) are listed in the menu only inside a session. Typed on the home screen they say "/name works inside a session. Open one first." and nothing is sent.
 
 `Ctrl+P` opens the command palette, a searchable list of every command, and `Ctrl+X` followed by a key runs a command without it. Both can be changed. See [Keybinds](keybinds.md).
 
@@ -324,6 +324,32 @@ Show this session's background subagents.
 - `Up` and `Down` move. `Enter` opens the selected subagent's transcript: its prompt, then what it has said and done so far. It is read-only and follows the subagent live. `Up` and `Down` scroll. `Left` goes back to the list.
 - `x` cancels the selected subagent, in the list and in the transcript. The agent gets its result as stopped.
 - Background subagents stop when you leave the session or quit marcsh. On Claude, `/subagents` says they run in pi sessions only.
+
+### /details
+
+Show or collapse the full tool output and diffs in the transcript.
+
+```
+/details
+```
+
+- By default a finished tool call shows a short preview under its line: the last 4 lines of its output (`… 6 more lines (ctrl+x o)` says how many are left out), and for an edit or write the first 12 lines of its diff. A failed call always shows its whole error.
+- `/details` shows everything marcsh kept of each call: up to the last 200 lines or 16 KB of the output, and the whole diff. Run it again to collapse. A toast says which it is now. `Ctrl+X` then `o` does the same.
+- It applies to the whole transcript at once, and only until you quit: the choice is not saved, and every start is collapsed.
+- Only calls made after this version kept their output and diff; older messages show the one-line call, as before.
+- The edit diff is drawn with the added lines in green and the removed ones in red, with line numbers.
+
+### /thinking
+
+Show or collapse the model's thinking in the transcript.
+
+```
+/thinking
+```
+
+- A thinking block is one dim line: `Thinking · 2.3s`, then the first words of the thought when they fit, then the key that expands it. The duration is shown when the engine reports it (pi does; Claude does not, so the line is `Thinking`). A block with no text shows nothing.
+- `/thinking` shows the whole thought of every block. Run it again to collapse. A toast says which it is now. `Ctrl+X` then `h` does the same.
+- Like `/details`, it lasts until you quit and is not saved.
 
 ### /theme
 

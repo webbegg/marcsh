@@ -66,8 +66,10 @@ const isChatModel = (value: string): value is (typeof SUPPORTED_CHAT_MODELS)[num
 const isPiRef = (value: string) => /^[^/\s]+\/\S+$/.test(value);
 
 function ChatMessage(
-  { msg }: {
-    msg: ChatMessageData
+  { msg, streaming = false }: {
+    msg: ChatMessageData;
+    /** True for the reply a running turn is writing: its text is markdown still being written. */
+    streaming?: boolean;
   }
 ) {
   if (msg.role === "user") {
@@ -89,7 +91,7 @@ function ChatMessage(
       agentName={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
       interrupted={msg.metadata?.interrupted}
-      streaming={false}
+      streaming={streaming}
     />
   );
 };
@@ -439,7 +441,7 @@ function SessionChat({
         {messages.map((msg, index) => (
           <Fragment key={msg.id}>
             {noticesAt(index, index + 1)}
-            <ChatMessage msg={msg} />
+            <ChatMessage msg={msg} streaming={busy && !compacting && index === messages.length - 1} />
           </Fragment>
         ))}
         {noticesAt(messages.length, Infinity)}
@@ -449,7 +451,7 @@ function SessionChat({
         {queued.followUp.map((text, index) => (
           <UserMessage key={`queued-${index}`} message={text} mode={agent.mode} marker="queued" pending />
         ))}
-        {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} />}
+        {pendingRequest?.kind === "permission" && <PermissionPrompt request={pendingRequest} cwd={session.cwd} />}
         {pendingRequest?.kind === "question" && (
           <QuestionPrompt key={pendingRequest.id} request={pendingRequest} onTextEntryChange={setTextEntry} />
         )}

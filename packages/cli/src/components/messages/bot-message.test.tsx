@@ -106,3 +106,74 @@ describe("the footer of an interrupted reply (S6)", () => {
     expect(frame()).toContain("Build › haiku › interrupted");
   });
 });
+
+describe("the text of a reply is markdown (S8)", () => {
+  test("shows bold, a heading and a fenced block without their markers, and keeps the footer", async () => {
+    const text = "# Plan\n\nuse **bold** here\n\n```ts\nconst answer = 42;\n```";
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text }]} model="opus" mode="BUILD" />
+      </ThemeProvider>,
+      { width: 80, height: 20 },
+    );
+    await settle();
+    expect(frame()).toContain("Plan");
+    expect(frame()).not.toContain("# Plan");
+    expect(frame()).toContain("use bold here");
+    expect(frame()).toContain("const answer = 42;");
+    expect(frame()).not.toContain("```");
+    expect(frame()).toContain("Build › opus");
+  });
+
+  test("an ESC in a reply still shows as \\u001b", async () => {
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text: "a\u001b[2Jb" }]} model="opus" mode="BUILD" />
+      </ThemeProvider>,
+      { width: 80, height: 8 },
+    );
+    await settle();
+    expect(frame()).toContain("a\\u001b[2Jb");
+  });
+
+  test("while streaming, only the last text part is treated as unfinished; earlier parts and a final message are complete", async () => {
+    const parts = [
+      { type: "text" as const, text: "first **one" },
+      { type: "tool" as const, toolCallId: "t1", toolName: "Read", input: { file_path: "/tmp/a.txt" }, state: "done" as const },
+      { type: "text" as const, text: "second **two" },
+    ];
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={parts} model="opus" mode="BUILD" streaming />
+      </ThemeProvider>,
+      { width: 80, height: 14 },
+    );
+    await settle();
+    // The unclosed marker of the part still streaming is hidden; the earlier part is complete, so its marker is text.
+    expect(frame()).toContain("first **one");
+    expect(frame()).toContain("second two");
+    expect(frame()).not.toContain("**two");
+  });
+
+  test("a final reply (not streaming) is complete: an unclosed marker stays visible", async () => {
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text: "so **bo" }]} model="opus" mode="BUILD" />
+      </ThemeProvider>,
+      { width: 80, height: 8 },
+    );
+    await settle();
+    expect(frame()).toContain("so **bo");
+  });
+
+  test("a streaming reply with an unclosed emphasis renders", async () => {
+    screen = await testRender(
+      <ThemeProvider>
+        <BotMessage parts={[{ type: "text", text: "so **bo" }]} model="opus" mode="BUILD" streaming />
+      </ThemeProvider>,
+      { width: 80, height: 8 },
+    );
+    await settle();
+    expect(frame()).toContain("so bo");
+  });
+});

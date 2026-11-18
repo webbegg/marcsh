@@ -6,7 +6,9 @@ This page describes what you see in marcsh and what each part does: the two scre
 
 **Home.** The first screen. It shows the marcsh logo, the input and a `tab agents` hint. Your first message starts a new session and opens the session screen.
 
-**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
+**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. Thinking is folded to one line (`Thinking · 2.3s` on pi) and `ctrl+x h` unfolds it; a tool call shows the last lines of its output, an edit shows its diff, and `ctrl+x o` shows them in full (see [/details](commands.md#details) and [/thinking](commands.md#thinking)). While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
+
+The text of a reply is shown as markdown: headings, bold and italic, lists, quotes, links and tables are drawn without their markers, and code in a fenced block is shown as monospace text with its own colours. Only TypeScript, TSX, JavaScript, Markdown and Zig code is coloured; code in any other language, or in a block with no language, is shown as plain text. While a reply is still being written, a half-written marker is drawn as if it were closed, and a coloured block may appear a moment after its text. Control characters in a reply are shown as `\u001b` and the like, never sent to your terminal. Your own messages are shown as you typed them.
 
 ## The input
 
@@ -133,6 +135,16 @@ By default the Build agent asks before it edits files or runs commands. `/permis
 | `Esc` | Deny it and stop the reply. |
 
 Some prompts are stricter and offer no `a`. If the prompt says `y allow once (then Enter)`, press `y`, then `Enter` to confirm.
+
+### The diff of an edit
+
+When the agent edits or writes a file (`Edit`, `MultiEdit` and `Write` on Claude, `edit` and `write` on pi), the prompt shows a coloured diff of what the tool will write instead of the raw tool input. A header row says the tool, `new file` when the file does not exist yet, the added and removed lines (`+3 −1`), `CRLF` when the file keeps its Windows line endings, and the absolute path of the file the tool writes, on one row (a line break or another control character in the path is shown as an escape such as `\n`, never as a new row). When the path, or a folder above it, is a symlink, the header shows the path the agent gave, an arrow, the real file and `(symlink)` (`innocent.txt → /elsewhere/secret.txt (symlink)`), because the tool writes the real file; a symlink that points nowhere has no diff. Under it each row has the old and the new line number, a `-` (red) or `+` (green) sign and the text, with three lines of context around each change and a dim `@@ … @@` row between changes. Every row of the diff starts with the `┊` mark, like all text the agent supplies, so a line of the file can never pass for one of the prompt's own rows, such as the keys.
+
+A long diff is cut to the rows that fit above the keys, and ends with `… N more lines` counting the rows left out. The `+` and `−` counts in the header are for the whole change.
+
+The diff is computed from the file as it was when the prompt opened. The file can change before the tool runs (another program, or an earlier tool call), and the tool then works on the new content. Until the diff is ready the prompt says `preparing diff…` above the raw input, and the keys work as usual.
+
+When the diff cannot be exact, the prompt shows the raw tool input as for any other tool, with a dim line saying why, for example `diff unavailable: old text not found exactly (the tool may match it loosely)`. This happens, among other cases, when the text to replace is not in the file or matches more than once, when the file is binary, not UTF-8 or over 1 MB, when the file has CRLF or a BOM and the tool is Claude's (how it writes them is not known), when the path starts with `~`, when the file is a notebook (`.ipynb`), and when a later edit of a `MultiEdit` looks for text an earlier edit wrote (the tool refuses that). An `Edit` that deletes text (an empty new text) from a file where that text is followed by a line break removes the line break too, as the tool does, and the diff shows it. Read the raw input then: the tool may still do what it says.
 
 The prompt waits until you stop typing, so a message you are writing cannot answer it by accident. See [Typing protection](#typing-protection).
 

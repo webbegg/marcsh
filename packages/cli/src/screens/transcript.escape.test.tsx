@@ -123,7 +123,7 @@ describe("the transcript shows model, tool and MCP text as visible escapes", () 
     expect(all).toContain("pasted \\u001b[2J \\u202ex");
   });
 
-  test("ordinary text keeps its look: markdown characters, tabs, newlines and wide characters", async () => {
+  test("ordinary text shows as markdown: no markup characters, tabs, newlines and wide characters kept", async () => {
     const text = "# Title\n\n- item `code` **bold**\n\tindented 日本語 🙂";
     screen = await testRender(
       <ThemeProvider>
@@ -134,10 +134,15 @@ describe("the transcript shows model, tool and MCP text as visible escapes", () 
     await settle();
     await screen.renderOnce();
     const frame = screen.captureCharFrame();
-    expect(frame).toContain("# Title");
-    expect(frame).toContain("- item `code` **bold**");
+    // The reply's text is markdown (S8): the heading, code and bold markers are drawn as styling, not as characters.
+    expect(frame).toContain("Title");
+    expect(frame).not.toContain("# Title");
+    expect(frame).toContain("item code bold");
+    expect(frame).not.toContain("`");
+    expect(frame).not.toContain("**");
     expect(frame).toContain("indented 日本語 🙂");
-    expect(frame).toContain("Thinking: plain thought");
+    // The label of the reasoning part belongs to that part: only its text is checked here.
+    expect(frame).toContain("plain thought");
     expect(frame).toContain("Read: /tmp/日本.txt");
     expect(frame).not.toContain("\\");
   });

@@ -270,6 +270,7 @@ The `marcsh` command starts Bun so that it does **not** read a `.env` file or a 
 - **A trusted project that you changed yourself.** Trust follows the files you reviewed. If you review carelessly, marcsh cannot help.
 - **The git guard on indirect commands.** It reads the command text. It cannot see what a script does.
 - **The permission modes.** In `auto` and `yolo`, on a feature branch, a command that the classifier takes for ordinary runs without a prompt. The classifier is not a sandbox, and a branch is not a container: a command can still change files in your folder.
+- **Secrets in saved tool output.** The output of a tool call that worked (the last 200 lines or 16 KB) is saved in the session in `~/.marcsh/marcsh.db`, and so is the text of a failed call. marcsh hides what it recognises as a secret first: `Bearer` tokens, `sk-` API keys, JWTs and other long token-like strings. A secret in any other form, such as a short password, is saved as it is. The edit or write patch is saved as it is, not redacted. The file is readable only by your user account, and `marcsh session delete <id>` (or `Ctrl+D` in `/sessions`) removes a session and everything saved in it.
 - **Your data going to the model provider.** What you and the model read and write is sent to the provider of the model you use.
 - **Other software on your computer.** marcsh does not defend against a program that already runs as you.
 

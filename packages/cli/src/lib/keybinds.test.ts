@@ -86,6 +86,29 @@ describe("the defaults", () => {
     expect(hints[0]!.length).toBeGreaterThan(hints.at(-1)!.length);
     expect(hints.at(-1)).toContain("ctrl+x");
   });
+  test("after the leader, o shows or hides tool details and h the thinking", () => {
+    const withView = defaultKeybinds([...COMMANDS, "details", "thinking"]);
+    expect(resolveKey(withView, key("o"), true)).toEqual({ action: "command", name: "details" });
+    expect(resolveKey(withView, key("h"), true)).toEqual({ action: "command", name: "thinking" });
+    // Not in a list that lacks the commands.
+    expect(resolveKey(kb, key("o"), true)).toBeUndefined();
+  });
+  test("a key the user gave beats the details and thinking defaults", () => {
+    const names = [...COMMANDS, "details", "thinking"];
+    const { keybinds, warnings } = parseKeybinds(JSON.stringify({ models: ["<leader>o"], theme: ["<leader>h"] }), names);
+    expect(warnings).toEqual([]);
+    expect(resolveKey(keybinds, key("o"), true)).toEqual({ action: "command", name: "models" });
+    expect(resolveKey(keybinds, key("h"), true)).toEqual({ action: "command", name: "theme" });
+    expect(keybinds.commands.details).toBeUndefined();
+    expect(keybinds.commands.thinking).toBeUndefined();
+  });
+  test("details and thinking can be moved or unbound", () => {
+    const names = [...COMMANDS, "details", "thinking"];
+    const { keybinds } = parseKeybinds(JSON.stringify({ details: ["alt+o"], thinking: [] }), names);
+    expect(resolveKey(keybinds, key("o", { meta: true }), false)).toEqual({ action: "command", name: "details" });
+    expect(resolveKey(keybinds, key("o"), true)).toBeUndefined();
+    expect(resolveKey(keybinds, key("h"), true)).toBeUndefined();
+  });
   test("ctrl+v pastes from the clipboard", () => {
     expect(resolveKey(kb, key("v", { ctrl: true }), false)).toEqual({ action: "paste" });
     expect(resolveKey(kb, key("v"), true)).toBeUndefined();
