@@ -59,7 +59,10 @@ async function row(width: number) {
 
 for (const [width, rowCells] of [[80, 68], [120, 92]] as const) {
   test(`at ${width} columns the row fits its ${rowCells} cells with the title start and the whole time`, async () => {
-    const line = (await row(width)).replace(/│/g, "").trim();
+    // The suite shares one storage, so other files' sessions can add a scrollbar column after the row.
+    const frameLine = (await row(width)).replace(/│/g, "");
+    const end = frameLine.indexOf("12 messages · just now") + "12 messages · just now".length;
+    const line = frameLine.slice(0, end).trim();
     expect(Bun.stringWidth(line)).toBeLessThanOrEqual(rowCells);
     expect(line.startsWith("Fix the login f")).toBe(true);
     expect(line.endsWith("12 messages · just now")).toBe(true);
