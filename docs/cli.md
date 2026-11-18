@@ -1,6 +1,6 @@
 # Command line
 
-marcsh starts the interface, runs one turn without it, or does one job and exits. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`. `marcsh <command> --help` prints the help of one command.
+marcsh starts the interface, runs one turn without it, or does one job and exits. `marcsh --version` prints the version and `marcsh --help` lists the commands and options. Neither starts marcsh or touches `~/.marcsh`. `marcsh <command> --help` prints the help of one command, `marcsh run --help` included.
 
 ```
 marcsh [dir] [options]
@@ -12,7 +12,7 @@ marcsh stats [--days N] [--json]
 marcsh upgrade [--version vX]
 ```
 
-A wrong option or value prints the error with the usage and exits with code `2`. `run`, `session`, `models`, `mcp`, `stats` and `upgrade` are commands only as the first word; to start the interface in a folder with one of these names, write `marcsh ./models`. `--` ends the options, so what follows is plain words.
+A usage mistake (a wrong option or value, no message for `run`, an unknown session, a folder that is not there) prints the error and `see marcsh --help` on standard error, and exits with code `2`. `run`, `session`, `models`, `mcp`, `stats` and `upgrade` are commands only as the first word; to start the interface in a folder with one of these names, write `marcsh ./models`. `--` ends the options, so what follows is plain words.
 
 ## Start the interface
 
@@ -28,7 +28,7 @@ A wrong option or value prints the error with the usage and exits with code `2`.
 
 ## Run one turn: `marcsh run`
 
-`marcsh run [message...]` sends the message, waits for the turn to end, and prints the reply. The words after `run` are the message. They are joined with spaces, so quote anything the shell would change.
+`marcsh run [message...]` sends the message, waits for the turn to end, and prints the reply. `marcsh run --help` lists its options and says that approval requests are denied (see [below](#permissions-nobody-to-approve)). The words after `run` are the message. They are joined with spaces, so quote anything the shell would change.
 
 ```
 marcsh run explain the failing test
@@ -102,7 +102,7 @@ marcsh session delete <id>
 marcsh session export <id> [--format md|json] [-o file] [--force]
 ```
 
-- **`list`** prints one line per session, newest first: the id, the time of the last update, the project folder and the title. `--json` prints an array of `{ id, title, cwd, createdAt, updatedAt }` with ISO dates instead. With no session it prints `No sessions.` (or `[]`).
+- **`list`** prints one line per session, newest first, its columns two spaces apart: the id, when it was last updated, the engine and the model of the last turn (`—` before any), the message count (`1 msg`, `12 msgs`), the project folder and the title. For example `0b6f…  3h ago  claude/sonnet  12 msgs  /work/app  Fix the login flow`. The time reads as in `/sessions`: `just now`, `5m ago`, `3h ago`, `yesterday`, `4d ago`, then the date from a week on. The id is always the first column. `--json` prints an array of `{ id, title, cwd, createdAt, updatedAt, engine, model, messageCount }` with ISO dates instead (`model` is `null` before the first turn). With no session it prints `No sessions.` (or `[]`).
 - **`delete <id>`** deletes that one session for good, without asking. Its trust decisions and permission rules stay. An id nobody has prints `marcsh: no session with id "<id>"` and exits with `1`.
 - **`export <id>`** prints the session as a transcript on standard output: markdown by default, or `--format json`. It is the same transcript as `/export`: thinking is left out and tool calls are summarized. An unknown id exits with `1`.
   - `-o <file>`, `--output <file>` writes it to a file and prints `Wrote <file>` instead. If the file exists, marcsh refuses and exits with `1`; `--force` replaces it. If `-o` names a folder, the file inside it is called `marcsh-<first 8 characters of the id>-<date>.<md|json>`.

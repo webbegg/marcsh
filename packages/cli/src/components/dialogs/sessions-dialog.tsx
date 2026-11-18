@@ -1,24 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { format } from "date-fns";
 import { useMatch, useNavigate } from "react-router";
 import { useDialog } from "../../providers/dialog";
 import { useKeyboardLayer } from "../../providers/keyboard-layer";
 import { useToast } from "../../providers/toast";
 import { escapeTranscriptText } from "../../lib/display-text";
-import { getStorage, type SessionSummary } from "../../lib/storage";
+import { fitText } from "../../lib/fit-text";
+import { formatRelativeTime } from "../../lib/relative-time";
+import { printable } from "../../lib/safe-text";
+import { getStorage, type SessionListEntry } from "../../lib/storage";
 import { DialogSearchList } from "../dialog-search-list";
 import { ConfirmDialogContent } from "./confirm-dialog";
+
+type SessionSummary = SessionListEntry;
+
+/**
+ * A row's details (S18): `claude · sonnet · 4 messages · 3h ago`, with the time said as `marcsh session list` says it. The model is
+ * cut to `modelCells` when given: it is the one part that can be long (a pi `provider/id`).
+ */
+export function sessionMeta(session: SessionListEntry, now: Date, modelCells = Number.POSITIVE_INFINITY): string {
+  const model = session.model === null ? "—" : fitText(printable(session.model), Math.max(1, modelCells));
+  const messages = `${session.messageCount} ${session.messageCount === 1 ? "message" : "messages"}`;
+  return [printable(session.engine), model, messages, formatRelativeTime(session.updatedAt, now)].join(" · ");
+}
+
+const GAP = 2;
+const MIN_TITLE = 16;
 
 type RowProps = {
   session: SessionSummary;
   isSelected: boolean;
   /** The highlighted row, or none once it is gone (the filter matches nothing): delete acts on this and nothing else. */
   highlighted: { current: SessionSummary | null };
+  /** The row's width in cells: the title is cut to leave the details whole. */
+  width: number;
+  now: Date;
 };
 
-function SessionRow({ session, isSelected, highlighted }: RowProps) {
+export function SessionRow({ session, isSelected, highlighted, width, now }: RowProps) {
   // The list does not say which row is highlighted; the row itself does, and clears it when it unmounts or loses the highlight.
   useEffect(() => {
     if (!isSelected) return;
@@ -28,14 +48,20 @@ function SessionRow({ session, isSelected, highlighted }: RowProps) {
     };
   }, [isSelected, session, highlighted]);
 
+  // Two cells keep the title off the details. The title keeps its first MIN_TITLE cells; a long model gives way first.
+  const fullTitle = printable(session.title);
+  const withoutModel = Bun.stringWidth(sessionMeta({ ...session, model: "" }, now));
+  const keptTitle = Math.min(Bun.stringWidth(fullTitle), MIN_TITLE);
+  const meta = sessionMeta(session, now, width - GAP - keptTitle - withoutModel);
+  const title = fitText(fullTitle, Math.max(1, width - Bun.stringWidth(meta) - GAP));
   return (
     <>
-      <text selectable={false} fg={isSelected ? "black" : "white"}>
-        {session.title}
+      <text selectable={false} wrapMode="none" fg={isSelected ? "black" : "white"}>
+        {title}
       </text>
       <box flexGrow={1} />
-      <text selectable={false} fg={isSelected ? "black" : undefined} attributes={TextAttributes.DIM}>
-        {format(session.updatedAt, "hh:mm a")}
+      <text selectable={false} wrapMode="none" flexShrink={0} fg={isSelected ? "black" : undefined} attributes={TextAttributes.DIM}>
+        {meta}
       </text>
     </>
   );
@@ -45,7 +71,7 @@ function SessionRow({ session, isSelected, highlighted }: RowProps) {
 export const SessionsDialogContent = () => {
   const { sessions, loadError } = useMemo(() => {
     try {
-      return { sessions: getStorage().listSessions(), loadError: null };
+      return { sessions: getStorage().listSessionEntries(), loadError: null };
     } catch (err) {
       return { sessions: [], loadError: err instanceof Error ? err.message : String(err) };
     }
@@ -57,6 +83,8 @@ export const SessionsDialogContent = () => {
   const { isTopLayer } = useKeyboardLayer();
   const openId = useMatch("/sessions/:id")?.params.id;
   const highlighted = useRef<SessionSummary | null>(null);
+  // One "now" for the whole list, so every row's time is said against the same moment.
+  const now = useMemo(() => new Date(), []);
 
   useEffect(() => {
     if (!loadError) return;
@@ -75,7 +103,7 @@ export const SessionsDialogContent = () => {
 
   const askDelete = useCallback(
     (session: SessionSummary) => {
-      const backToList = () => dialog.open({ title: "Sessions", children: <SessionsDialogContent /> });
+      const backToList = () => dialog.open({ title: "Sessions", width: "wide", children: <SessionsDialogContent /> });
       const remove = () => {
         try {
           if (!getStorage().deleteSession(session.id)) {
@@ -118,8 +146,10 @@ export const SessionsDialogContent = () => {
     <DialogSearchList
       items={sessions}
       onSelect={handleSelect}
-      filterFn={(s, query) => s.title.toLowerCase().includes(query.toLowerCase())}
-      renderItem={(session, isSelected) => <SessionRow session={session} isSelected={isSelected} highlighted={highlighted} />}
+      filterFn={(s, query) => printable(s.title).toLowerCase().includes(query.toLowerCase())}
+      renderItem={(session, isSelected, width) => (
+        <SessionRow session={session} isSelected={isSelected} highlighted={highlighted} width={width} now={now} />
+      )}
       getKey={(s) => s.id}
       placeholder="Search sessions · ctrl+d deletes"
       emptyText="No matching sessions"

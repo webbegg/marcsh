@@ -12,7 +12,7 @@ Type `/new`, or start marcsh. Both bring you to the home screen. Your first mess
 
 ## Find and resume a session
 
-Type `/sessions`. The list shows your sessions, the most recently used first. Each row has the title and the clock time of the last activity. It shows no date.
+Type `/sessions`. The list shows your sessions, the most recently used first. Each row has the title, then the session's engine, the model of its last turn (`—` before any), its message count and when it was last used: `claude · sonnet · 4 messages · 3h ago`. The time reads `just now`, `5m ago`, `3h ago`, `yesterday`, `4d ago`, then the date (`2026-11-02`) from a week on; `marcsh session list` says it the same way. On a narrow screen a long model name and title are cut with `…`; the title always keeps its first 16 characters, and the model gives way before that.
 
 - Type to search. The search matches the title.
 - Use `Up` and `Down`, then `Enter` to open a session. You can also click one.
@@ -23,7 +23,7 @@ The list holds all your sessions, whatever folder they belong to.
 
 Opening a session shows the whole conversation. When you send a message, marcsh continues it with the same engine and in the same folder it was started in, even if you launched marcsh somewhere else. The `@` file picker and the agent work in that folder.
 
-The agent and the model are not saved with the session. A resumed session uses the agent and the model you have selected now.
+The agent is not saved with the session: a resumed session uses the agent you have selected now. The model is taken from the session's last turn when it fits the engine (a `provider/id` on pi, a Claude alias on Claude); otherwise the session uses the model you have selected now. Leaving the session puts your own choice back.
 
 If a session cannot be opened, marcsh shows `Could not load session: …` and takes you home. See [Troubleshooting](troubleshooting.md).
 

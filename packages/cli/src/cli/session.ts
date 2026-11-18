@@ -1,15 +1,14 @@
 import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionArgs } from "../cli-args";
+import { formatRelativeTime } from "../lib/relative-time";
 import { printable } from "../lib/safe-text";
 import { getStorage, type Storage } from "../lib/storage";
 import { defaultExportPath, renderTranscript } from "../lib/transcript";
 import { EXIT, processIo, type Io } from "./io";
 
-export type SessionDeps = { storage?: Pick<Storage, "listSessions" | "getSession" | "deleteSession">; io?: Io; now?: () => Date };
+export type SessionDeps = { storage?: Pick<Storage, "listSessionEntries" | "getSession" | "deleteSession">; io?: Io; now?: () => Date };
 
-const pad = (n: number) => String(n).padStart(2, "0");
-const minute = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
 const isFolder = (path: string) => {
   try {
@@ -36,11 +35,20 @@ export async function sessionCommand(args: SessionArgs, deps: SessionDeps = {}):
 
   switch (args.action) {
     case "list": {
-      const sessions = storage.listSessions();
+      const sessions = storage.listSessionEntries();
       if (args.json) {
         io.stdout(
           `${JSON.stringify(
-            sessions.map(({ id, title, cwd, createdAt, updatedAt }) => ({ id, title, cwd, createdAt: createdAt.toISOString(), updatedAt: updatedAt.toISOString() })),
+            sessions.map(({ id, title, cwd, createdAt, updatedAt, engine, model, messageCount }) => ({
+              id,
+              title,
+              cwd,
+              createdAt: createdAt.toISOString(),
+              updatedAt: updatedAt.toISOString(),
+              engine,
+              model,
+              messageCount,
+            })),
             null,
             2,
           )}\n`,
@@ -49,7 +57,12 @@ export async function sessionCommand(args: SessionArgs, deps: SessionDeps = {}):
         io.stdout("No sessions.\n");
       } else {
         // Titles and folders come from the model and the file system: nothing in them may reach the terminal as a control sequence.
-        for (const { id, title, cwd, updatedAt } of sessions) io.stdout(`${id}  ${minute(updatedAt)}  ${printable(cwd)}  ${printable(title)}\n`);
+        // The id stays the first column, so scripts that take it with `awk '{print $1}'` keep working.
+        const at = now();
+        for (const { id, title, cwd, updatedAt, engine, model, messageCount } of sessions) {
+          const route = `${printable(engine)}/${model === null ? "—" : printable(model)}`;
+          io.stdout(`${id}  ${formatRelativeTime(updatedAt, at)}  ${route}  ${messageCount} ${messageCount === 1 ? "msg" : "msgs"}  ${printable(cwd)}  ${printable(title)}\n`);
+        }
       }
       return EXIT.ok;
     }

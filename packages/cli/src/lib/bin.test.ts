@@ -88,13 +88,12 @@ describe("bin/marcsh", () => {
       expect(readdirSync(home)).not.toContain(".marcsh");
     });
 
-    test("an unknown option prints the error and the usage and exits 2", () => {
+    test("an unknown option prints the error and a pointer to the help and exits 2", () => {
       const { run, stdout, stderr, home } = launch("--bogus");
 
       expect(run.exitCode).toBe(2);
       expect(stdout).toBe("");
-      expect(stderr).toContain('marcsh: unknown option "--bogus"');
-      expect(stderr).toContain("Usage: marcsh");
+      expect(stderr).toBe('marcsh: unknown option "--bogus"\nsee marcsh --help\n');
       expect(readdirSync(home)).not.toContain(".marcsh");
     });
   });

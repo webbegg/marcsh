@@ -241,6 +241,7 @@ export const COMMANDS: Command[] = [
     action: (ctx) => {
       ctx.dialog.open({
         title: "Sessions",
+        width: "wide",
         children: <SessionsDialogContent />,
       })
     },

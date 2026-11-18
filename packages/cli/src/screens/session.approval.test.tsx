@@ -155,7 +155,7 @@ describe("session hardening (S8)", () => {
   test("a storage error while listing sessions shows a toast and closes the dialog", async () => {
     await openIdle("/tmp/marcsh-cwd");
     spies.push(
-      spyOn(getStorage(), "listSessions").mockImplementation(() => {
+      spyOn(getStorage(), "listSessionEntries").mockImplementation(() => {
         throw new Error("database is locked");
       }),
     );
