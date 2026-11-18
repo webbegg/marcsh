@@ -2,6 +2,14 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.7.1
+
+Cleaner text in the `/` menu.
+
+### Fixes
+- **The `/` menu and the palette clean the commands an engine or a project supplies.** A description or argument hint shows on one line, with control and format characters removed. This covers Claude's and pi's commands and skills, marcsh's bundled ones and a project's custom commands. An engine command whose name has such a character, or a space other than the ordinary one, is left out of the menu, because the name you would read is not the one that would run. Typing it still works: marcsh says it is not a known command, and a second `Enter` sends it. See [docs/commands.md](docs/commands.md#other-name-input).
+- **The `/permissions` toast escapes the branch name** and the reason auto and yolo are paused, as the dialog row does.
+
 ## 0.7.0
 
 The interface gets easier to use: no lost prompts or sessions, replies in markdown, diffs in the approval prompt, a help dialog, and session lists that say what each session is.
