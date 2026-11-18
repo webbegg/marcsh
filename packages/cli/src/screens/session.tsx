@@ -88,6 +88,7 @@ function ChatMessage(
       mode={msg.metadata?.mode ?? "BUILD"}
       agentName={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
+      interrupted={msg.metadata?.interrupted}
       streaming={false}
     />
   );
@@ -134,7 +135,11 @@ function SessionChat({
   session: StoredSession,
   initialPrompt?: { message: string; mode: ModeType; model: string; agentId?: string; agentModel?: string; agentDeny?: string[] };
 }) {
-  const { agents, agent, model, setModel, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  const { agents, agent, model, setModel, adoptSessionModel, piModel, setPiModel, refreshPiModel } = usePromptConfig();
+  // A resumed session goes on with the model its last turn used (this run only; the saved choice stays). It runs before
+  // the first pi check below, and reads the messages as loaded, so the session's own new turns do not trigger it again.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => adoptSessionModel(session.engine, session.messages), [session.id]);
   // The agent selected now, for what runs later than a render: background results' turns and background subagents' plan mode.
   const agentRef = useRef(agent);
   agentRef.current = agent;
@@ -427,6 +432,7 @@ function SessionChat({
         messages={messages}
         onSubmit={sendTyped}
         inputDisabled={(busy && !typingDuringTurn && !piSession) || pendingRequest !== null || compacting}
+        replyRunning={busy && !compacting}
         loading={busy}
         interruptible={busy}
       >

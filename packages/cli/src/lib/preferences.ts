@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from "./approval-policy";
 import { DEFAULT_ENGINE_ID, isEngineId, type EngineId } from "./engine";
 import { pushRecent } from "./model-picks";
+import { DEFAULT_CHAT_MODEL_ID, isChatModelId, type SupportedChatModelId } from "./models";
 
 /** What marcsh does when a turn finishes: ring the terminal bell, show a system notification, or nothing. */
 export type NotifyMode = "bell" | "system" | "off";
@@ -23,6 +24,8 @@ export type Preferences = {
   defaultEngine?: string;
   /** The pi model ("provider/id") new pi turns use. */
   piModel?: string;
+  /** The Claude model (an alias) the user last chose; new Claude sessions start on it. */
+  claudeModel?: string;
   /** The ID of the selected agent (see lib/agents). */
   agent?: string;
   /** The approval mode new sessions start in (normal, auto or yolo; see lib/approval-policy). */
@@ -97,6 +100,16 @@ export function getPiModel(path = preferencesPath()): string | undefined {
 
 export function setPiModel(model: string, path = preferencesPath()) {
   updatePreferences({ piModel: model }, path);
+}
+
+/** The Claude model the user last chose; the default when none is stored or the value is not one of the aliases. */
+export function getClaudeModel(path = preferencesPath()): SupportedChatModelId {
+  const { claudeModel } = readPreferences(path);
+  return isChatModelId(claudeModel) ? claudeModel : DEFAULT_CHAT_MODEL_ID;
+}
+
+export function setClaudeModel(model: SupportedChatModelId, path = preferencesPath()) {
+  updatePreferences({ claudeModel: model }, path);
 }
 
 /** The stored agent ID, or undefined when none is stored; whether that agent still exists is the caller's check. */

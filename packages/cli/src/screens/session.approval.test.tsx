@@ -390,7 +390,9 @@ describe("session approvals (S7)", () => {
     await type("ay");
     await showPrompt();
     expect(results).toEqual([]);
-    expect(screen!.captureCharFrame()).toContain("Ask anything");
+    // The input is off while the turn runs (S7): the placeholder says why instead of inviting a prompt.
+    expect(screen!.captureCharFrame()).toContain("reply running · esc to stop");
+    expect(screen!.captureCharFrame()).not.toContain("Ask anything");
     await press("n");
     expect(results[0]?.behavior).toBe("deny");
   });

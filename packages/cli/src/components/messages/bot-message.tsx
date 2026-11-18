@@ -19,6 +19,8 @@ type Props = {
   /** The name of the agent that answered; without it, the mode's name. */
   agentName?: string;
   durationMs?: number;
+  /** The turn was cancelled with Esc: the footer says so. */
+  interrupted?: boolean;
   streaming?: boolean;
 };
 
@@ -90,6 +92,7 @@ export function BotMessage({
   mode,
   agentName,
   durationMs,
+  interrupted = false,
   streaming = false,
 }: Props) {
   const { colors } = useTheme();
@@ -194,6 +197,14 @@ export function BotMessage({
                 <text attributes={TextAttributes.DIM}>
                   {prettyMs(durationMs)}
                 </text>
+              </>
+            )}
+            {interrupted && (
+              <>
+                <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
+                  ›
+                </text>
+                <text attributes={TextAttributes.DIM}>interrupted</text>
               </>
             )}
           </box>

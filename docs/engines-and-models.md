@@ -40,15 +40,17 @@ On both engines, the list shows your favorite models first, then your recent mod
 - **Recent models:** marcsh keeps the last 5 models of each engine. A model becomes the most recent one when you pick it in `/models` and when a message is sent with it.
 - **`F2`:** in a session, switches to the next recent model of the session's engine and shows `Model: <model>`. Press it again for the one after, and so on around the list. It says `No other recent model` when there is none. On pi it skips models whose provider you are no longer signed in to. `F2` does nothing while a dialog, an approval or a question is open.
 
-Favorites and recent models are kept in `preferences.json` ([Configuration](configuration.md#preferences)), for each engine apart. This also applies to Claude: the favorites and the recent models are kept between launches, although the model in use is not.
+Favorites and recent models are kept in `preferences.json` ([Configuration](configuration.md#preferences)), for each engine apart. This also applies to Claude: the favorites and the recent models are kept between launches, and so is the model in use.
+
+A session you open again (`marcsh -c`, `marcsh -s <id>` or the session list) starts on the model it used last, when that model is still available. Otherwise it starts on the model you chose last. That model applies only while the session is open: when you leave it (to the home screen, another session or a new one), marcsh goes back to the model you chose last. Opening an old session does not change the model marcsh keeps for new sessions. A model you pick inside the old session is a new choice, so it is kept.
 
 ### Claude
 
-The list has `opus`, `sonnet` and `haiku`. The pick applies to your next messages. marcsh does not remember it between launches: every start begins on `opus`.
+The list has `opus`, `sonnet` and `haiku`. The pick applies to your next messages. marcsh remembers it between launches, so the next start begins on the model you picked last. Before you pick one, every start begins on `opus`. If the saved value is not one of these three, marcsh starts on `opus`.
 
 ### pi
 
-The list shows the models of the providers you have signed in to, as `provider/model-id` with the model's name next to it. After you pick one, marcsh says `pi will use provider/model-id`, and uses it for the following turns and for new pi sessions. It remembers the choice between launches.
+The list shows the models of the providers you have signed in to, as `provider/model-id` with the model's name next to it. After you pick one, marcsh says `pi will use provider/model-id`, and uses it for the following turns and for new pi sessions. It remembers the choice between launches. A session you open again starts on the pi model it used last while its provider has a sign-in, and otherwise on the model you picked last.
 
 If no provider is signed in, `/models` says `No pi model is available yet. Run /login to sign in to a provider.`
 

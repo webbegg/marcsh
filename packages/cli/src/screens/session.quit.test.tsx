@@ -75,12 +75,22 @@ async function openSession(initialPrompt?: { message: string; mode: "BUILD"; mod
     [{ path: "/", element: <RootLayout />, children: [{ path: "sessions/:id", element: <Session /> }] }],
     { initialEntries: [{ pathname: `/sessions/${session.id}`, state: initialPrompt ? { initialPrompt } : undefined }] },
   );
-  screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30 });
+  // Like the app (index.tsx), the renderer leaves Ctrl+C to marcsh instead of exiting on it.
+  screen = await testRender(<RouterProvider router={router} />, { width: 100, height: 30, exitOnCtrlC: false });
   await settle();
   return session;
 }
 
 const ctrlC = async () => act(async () => screen!.mockInput.pressKey("c" as never, { ctrl: true }));
+// The first Ctrl+C nothing handles only asks for a second one (S5 of the usability work); the second quits.
+const armedCtrlC = async () => {
+  await ctrlC();
+  expect((screen!.renderer as any).isDestroyed).toBe(false);
+  expect(exits).toEqual([]);
+  await settle(20);
+  expect(screen!.captureCharFrame()).toContain("ctrl+c again to quit");
+  await ctrlC();
+};
 
 describe("quitting from the session screen (S20)", () => {
   test("Ctrl+C during a turn aborts it, declines the pending approval, waits for the turn, then exits with 0", async () => {
@@ -89,7 +99,7 @@ describe("quitting from the session screen (S20)", () => {
     expect(screen!.captureCharFrame()).toContain("Allow Bash?");
     expect(seen.signal!.aborted).toBe(false);
 
-    await ctrlC();
+    await armedCtrlC();
     expect(seen.signal!.aborted).toBe(true);
     expect((screen!.renderer as any).isDestroyed).toBe(true);
     await settle(20);
@@ -105,16 +115,16 @@ describe("quitting from the session screen (S20)", () => {
   test("a second Ctrl+C while the turn is cleaning up exits at once", async () => {
     await openSession({ message: "go", mode: "BUILD", model: "opus" });
     await settle(50);
-    await ctrlC();
+    await armedCtrlC();
     expect(exits).toEqual([]);
-    // The renderer is gone after the first Ctrl+C, so the second request comes from a signal or `/exit`.
+    // The renderer is gone after the quitting Ctrl+C, so the second request comes from a signal or `/exit`.
     void quitApp({ destroy() {} });
     expect(exits).toEqual([0]);
   });
 
-  test("Ctrl+C with no turn running exits at once", async () => {
+  test("Ctrl+C twice with no turn running exits", async () => {
     await openSession();
-    await ctrlC();
+    await armedCtrlC();
     expect(exits).toEqual([0]);
     expect((screen!.renderer as any).isDestroyed).toBe(true);
   });

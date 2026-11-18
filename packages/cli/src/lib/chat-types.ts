@@ -69,6 +69,8 @@ export type ChatMessageMetadata = {
   agent?: string;
   model?: string;
   durationMs?: number;
+  /** Set on the reply of a turn the user cancelled with Esc (not on one that failed, was left, or quit); older messages have none. */
+  interrupted?: boolean;
   costUsd?: number;
   usage?: ChatUsage;
   /** The files attached to a user message. */

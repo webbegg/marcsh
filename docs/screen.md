@@ -14,6 +14,7 @@ This page describes what you see in marcsh and what each part does: the two scre
 | --- | --- |
 | `Enter` | Sends your message. In a menu, it picks the highlighted item. |
 | `Shift+Enter` | Adds a new line. |
+| `Ctrl+J` | Adds a new line too. It works in every terminal, including inside tmux, with or without the kitty keyboard protocol. See [New lines in tmux](#new-lines-in-tmux). |
 | `/` | Opens the command menu. Keep typing to filter it. |
 | `@` | Opens the file picker. |
 | `Ctrl+V` | Pastes what the clipboard holds. See [Pasting](#pasting). |
@@ -55,7 +56,19 @@ On a pi session you can keep typing while a reply runs. Say the agent is rewriti
 
 The hint next to the status line tells you what the keys do right now, for example `enter steers · alt+enter queues`. If the turn is starting or ending, the hint says so and nothing is sent. The text stays in the input. Press `Enter` again when the hint is gone.
 
-On a Claude session the input is off while a reply runs. Wait for the reply, or press `Esc` to stop it.
+On a Claude session the input is off while a reply runs, and the placeholder says `reply running · esc to stop`. Wait for the reply, or press `Esc` to stop it.
+
+## New lines in tmux
+
+Inside tmux, `Shift+Enter` reaches marcsh as a plain `Enter` unless tmux passes extended keys on, so it sends a half-written message instead of adding a line. Use `Ctrl+J` to add a new line. It always works.
+
+When marcsh sees it runs inside tmux with `extended-keys off`, the dim hint under the input shows `ctrl+j new line`, always. It is not shown once and then hidden. If tmux does not answer, no hint is shown.
+
+To make `Shift+Enter` work in tmux (tmux 3.2 or later), add this to `~/.tmux.conf` and restart tmux. Your terminal must also send extended keys:
+
+```
+set -g extended-keys on
+```
 
 ## Background results
 
@@ -73,7 +86,7 @@ A background subagent's tool calls still ask for approval in the normal approval
 ## Stopping and quitting
 
 - `Esc` stops a running reply. It also declines an approval prompt or a question that is waiting. Two cases differ. In a question's free-text field, `Esc` only closes the field. On the project-trust question, `Esc` means "not now": the turn goes on without the project's files.
-- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish. When the input is off, `Ctrl+C` quits at once, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
+- `Ctrl+C` clears the input if it holds text, and closes a menu or dialog if one is open. On an empty input it shows "ctrl+c again to quit" in the dim hint line under the input (in a toast when no input is on screen), and a second `Ctrl+C` within about 1.5 seconds quits marcsh. marcsh stops any running reply first and waits a few seconds for it to finish, then prints the session's ID and `marcsh -c` to open it again, in plain text on the screen you started from. If the reply did not finish stopping in time, the line says `(the last reply may not be saved)` instead of "saved". When the input is off, the same two presses quit, even if text is typed. The input is off while a prompt waits, and on a Claude session while a reply runs.
 - `/exit` also quits.
 
 ## The status line

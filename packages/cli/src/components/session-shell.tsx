@@ -21,6 +21,8 @@ type Props = {
   draftKey?: string;
   /** The session's messages, for the usage in the status line. */
   messages?: ChatMessage[];
+  /** A reply is running (see InputBar). */
+  replyRunning?: boolean;
 };
 
 export function SessionShell({
@@ -34,6 +36,7 @@ export function SessionShell({
   inputTypeOnly = false,
   draftKey,
   messages,
+  replyRunning = false,
 }: Props) {
   const { mode } = usePromptConfig();
 
@@ -54,6 +57,7 @@ export function SessionShell({
         <InputBar
           onSubmit={onSubmit}
           disabled={inputDisabled}
+          replyRunning={replyRunning}
           cwd={cwd}
           engine={engine}
           typeOnly={inputTypeOnly}

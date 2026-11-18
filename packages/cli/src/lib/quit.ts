@@ -18,7 +18,30 @@ export type QuitEnv = {
   clearTimeout: (handle: unknown) => void;
   /** The longest quit waits for the running turns in total (pi's own shutdown is bounded to 3 s). */
   graceMs: number;
+  /**
+   * Runs once, just before `exit`: the renderer is gone. `settled` is false when quit gave up waiting (the bound passed, or a
+   * second quit request came) before every running turn finished its cleanup, so its last save may be missing.
+   */
+  afterQuit?: (result: { settled: boolean }) => void;
 };
+
+/** The line printed after quitting from an open session; it says "saved" only when the turns settled. */
+export function resumeNotice(sessionId: string, settled = true): string {
+  return settled
+    ? `marcsh: session ${sessionId} saved · marcsh -c to resume`
+    : `marcsh: session ${sessionId} · marcsh -c to resume (the last reply may not be saved)`;
+}
+
+/** The id of the session a router path shows, or null on any other screen (`/sessions/new` is not a session). */
+export function sessionIdFromPath(pathname: string): string | null {
+  const match = /^\/sessions\/([^/]+)$/.exec(pathname);
+  if (!match || match[1] === "new") return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+}
 
 export function createQuit(env: QuitEnv) {
   const turns = new Set<QuitTurn>();
@@ -26,10 +49,15 @@ export function createQuit(env: QuitEnv) {
   let exited = false;
   // `reset` starts a new generation: a quit still waiting from before it must never exit the process.
   let generation = 0;
+  // Turns that were stopped and have not finished their cleanup yet.
+  let waiting = false;
 
   const finish = (code: number, startedIn = generation) => {
     if (exited || startedIn !== generation) return;
     exited = true;
+    try {
+      env.afterQuit?.({ settled: !waiting });
+    } catch {}
     env.exit(code);
   };
 
@@ -69,6 +97,7 @@ export function createQuit(env: QuitEnv) {
       finish(code);
       return Promise.resolve();
     }
+    waiting = true;
     return new Promise<void>((resolve) => {
       const timer = env.setTimeout(() => {
         finish(code, startedIn);
@@ -76,6 +105,7 @@ export function createQuit(env: QuitEnv) {
       }, env.graceMs);
       void Promise.allSettled(running.map((turn) => turn.done)).then(() => {
         env.clearTimeout(timer);
+        if (startedIn === generation) waiting = false;
         finish(code, startedIn);
         resolve();
       });
@@ -87,6 +117,7 @@ export function createQuit(env: QuitEnv) {
     turns.clear();
     quitting = false;
     exited = false;
+    waiting = false;
     generation++;
   }
 
