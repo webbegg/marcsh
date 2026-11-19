@@ -2,8 +2,10 @@
 # feature chain are checked too) and on every push to main. release.yml does not run the tests: a release is cut from a
 # commit on main that has passed this workflow.
 #
-# macOS only for now: it is the platform the installer supports and the one the suite is known to pass on. Linux
-# (the leftover-process /proc reader, the native clipboard) has never run and would be a separate job.
+# The full suite runs on macOS, the one platform it is known to pass on. Linux (the leftover-process /proc reader, the
+# native clipboard) has never run the full suite; that would be a separate job. The installer job runs on both: on Linux
+# it runs the installer's own tests, and on both it installs a release built from this commit with `curl | bash`, the way
+# a user does, and runs the installed `marcsh --version`.
 name: ci
 
 on:
@@ -46,3 +48,53 @@ jobs:
           GIT_COMMITTER_NAME: marcsh-ci
           GIT_COMMITTER_EMAIL: ci@marcsh.invalid
         run: bun run test
+
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - run: bun install --frozen-lockfile
+
+      # macOS already runs these in the test job, with the rest of the suite.
+      - name: Test the installer on Linux
+        if: runner.os == 'Linux'
+        run: cd packages/cli && bun test --timeout 60000 src/install/install-sh.test.ts
+
+      - name: Build the release assets
+        run: bun run release:build -- --out dist
+
+      # A release server on 127.0.0.1 laid out as GitHub's (latest/download/...), and the script piped into bash from it.
+      - name: Install with curl | bash and run the installed marcsh
+        run: |
+          set -euo pipefail
+          site="$(mktemp -d)"
+          mkdir -p "$site/latest/download"
+          cp dist/marcsh.tar.gz dist/marcsh.tar.gz.sha256 "$site/latest/download/"
+          cp install.sh "$site/install.sh"
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory "$site" >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for _ in $(seq 1 50); do
+            if curl -fs -o /dev/null http://127.0.0.1:8765/install.sh; then break; fi
+            sleep 0.2
+          done
+          curl -fsSL http://127.0.0.1:8765/install.sh | MARCSH_INSTALL_BASE_URL=http://127.0.0.1:8765 bash
+          version="$(bun -e 'console.log(JSON.parse(await Bun.file("packages/cli/package.json").text()).version)')"
+          reported="$("$HOME/.local/bin/marcsh" --version)"
+          if [ "$reported" != "marcsh $version" ]; then
+            echo "::error::the installed marcsh reports \"$reported\", expected \"marcsh $version\""
+            exit 1
+          fi
+          echo "$reported"
