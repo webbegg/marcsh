@@ -75,8 +75,11 @@ export function groupParts(parts: MessagePart[], thinking = false): PartGroup[] 
   return groups;
 };
 
-/** What a group draws: a part as it is, or a run of lookups folded into one line. */
-export type GroupItem = { part: MessagePart } | { explore: ToolPartData[] };
+/**
+ * What a group draws: a part as it is, with its index in the group (which stays the same while a run before it grows, so it keys the
+ * part), or a run of lookups folded into one line.
+ */
+export type GroupItem = { part: MessagePart; index: number } | { explore: ToolPartData[] };
 
 const isLookup = (part: MessagePart): part is ToolPartData => isToolPart(part) && isExploration(toolKind(part.toolName));
 
@@ -86,20 +89,20 @@ const isLookup = (part: MessagePart): part is ToolPartData => isToolPart(part) &
  */
 export function foldLookups(parts: MessagePart[], details = false): GroupItem[] {
   const items: GroupItem[] = [];
-  let run: ToolPartData[] = [];
+  let run: { part: ToolPartData; index: number }[] = [];
   const flush = () => {
-    if (run.length >= 2) items.push({ explore: run });
-    else items.push(...run.map((part) => ({ part })));
+    if (run.length >= 2) items.push({ explore: run.map(({ part }) => part) });
+    else items.push(...run);
     run = [];
   };
-  for (const part of parts) {
+  parts.forEach((part, index) => {
     if (!details && isLookup(part)) {
-      run.push(part);
-      continue;
+      run.push({ part, index });
+      return;
     }
     flush();
-    items.push({ part });
-  }
+    items.push({ part, index });
+  });
   flush();
   return items;
 }
@@ -124,9 +127,9 @@ export function BotMessage({
     <box width="100%" alignItems="center">
       {groupParts(parts, thinking).map((group, i) => (
         <box key={group.key} width="100%" paddingTop={i === 0 ? 0 : 1}>
-          {foldLookups(group.parts, details).map((item, j) => {
+          {foldLookups(group.parts, details).map((item) => {
             if ("explore" in item) return <ExploreGroup key={`explore-${item.explore[0]!.toolCallId}`} parts={item.explore} cwd={cwd} />;
-            const { part } = item;
+            const { part, index: j } = item;
             if (part.type === "reasoning") return <ReasoningPart key={`reasoning-${j}`} part={part} live={streaming && part === lastPart} />;
             if (isToolPart(part)) return <ToolPart key={part.toolCallId} part={part} cwd={cwd} syntaxStyle={syntaxStyle} />;
             if (part.type === "task") return <TaskPart key={`task-${part.taskId}`} part={part} />;

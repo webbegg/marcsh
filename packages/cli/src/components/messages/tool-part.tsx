@@ -318,7 +318,14 @@ function PatchStats({ patch, colors }: { patch: string; colors: ThemeColors }) {
  * other panel (and a todo or plan that is not) shows a diff or the end of its output; a shell command is titled by the command
  * itself, after its `$`, headed by the description the model gave.
  */
-function panelOf(part: ToolPartData, kind: ToolKind, title: ToolTitle, details: boolean, colors: ThemeColors, syntaxStyle?: SyntaxStyle): Panel {
+function panelOf({ part, kind, title, details, colors, syntaxStyle }: {
+  part: ToolPartData;
+  kind: ToolKind;
+  title: ToolTitle;
+  details: boolean;
+  colors: ThemeColors;
+  syntaxStyle?: SyntaxStyle;
+}): Panel {
   if (kind === "todo") {
     const items = todoItems(part);
     if (items) {
@@ -337,9 +344,9 @@ function panelOf(part: ToolPartData, kind: ToolKind, title: ToolTitle, details: 
   const output = finished && patch === undefined && part.output ? part.output : undefined;
   const description = kind === "bash" && typeof part.input.description === "string" && part.input.description.trim() !== "" ? part.input.description : undefined;
   return {
-    head: description && <text attributes={TextAttributes.DIM}>{`# ${safe(description)}`}</text>,
+    head: description !== undefined ? <text attributes={TextAttributes.DIM}>{`# ${safe(description)}`}</text> : undefined,
     title: kind === "bash" ? { ...title, verb: "" } : title,
-    extra: patch !== undefined && <PatchStats patch={patch} colors={colors} />,
+    extra: patch !== undefined ? <PatchStats patch={patch} colors={colors} /> : undefined,
     body:
       patch !== undefined ? (
         <PatchView patch={patch} details={details} colors={colors} base={colors.surface} />
@@ -376,7 +383,7 @@ export function ToolPart({ part, cwd, syntaxStyle }: ToolPartProps) {
   const error = state === "error" ? <ErrorText text={part.errorText} colors={colors} /> : null;
 
   if (toolStyle(kind) === "block") {
-    const panel = panelOf(part, kind, title, details, colors, syntaxStyle);
+    const panel = panelOf({ part, kind, title, details, colors, syntaxStyle });
     return (
       <Block colors={colors}>
         {panel.head && <Body>{panel.head}</Body>}
@@ -406,24 +413,39 @@ export function ToolPart({ part, cwd, syntaxStyle }: ToolPartProps) {
   );
 }
 
+/** The glyph of a folded run of lookups, as a read's. */
+const EXPLORE_ICON = "→";
+
+/** How many of a run's calls failed and how many the user refused (a lookup is refused at the approval prompt): `1 failed, 1 denied`; "" for none. */
+function failureCount(parts: ToolPartData[]): string {
+  const states = parts.map(rowState);
+  const failed = states.filter((state) => state === "error").length;
+  const refused = states.filter((state) => state === "denied").length;
+  return [failed > 0 ? `${failed} failed` : "", refused > 0 ? `${refused} denied` : ""]
+    .filter(Boolean)
+    .join(", ");
+}
+
 /**
  * A run of lookups folded to one line that counts them: `→ Explored: 3 reads, 1 search`, behind a spinner and as `Exploring` while
- * one still runs. A call that failed or was refused stays out of the fold, on its own line below it with its error, so nothing
- * that went wrong is hidden; when none is left to fold, each call shows as it is.
+ * one still runs. A call that failed or was refused stays out of the fold: the line counts it (`· 1 failed`) and it follows on its
+ * own line with its error, so nothing that went wrong is hidden. When none is left to fold, each call shows as it is.
  */
 export function ExploreGroup({ parts, cwd }: { parts: ToolPartData[]; cwd?: string }) {
   const { colors } = useTheme();
-  const folded = parts.filter((part) => part.state !== "error");
-  const apart = parts.filter((part) => part.state === "error");
-  const running = folded.some((part) => part.state === "running");
+  const states = parts.map(rowState);
+  const folded = parts.filter((_, i) => states[i] === "done" || states[i] === "running");
+  const apart = parts.filter((_, i) => states[i] === "error" || states[i] === "denied");
+  const running = states.includes("running");
+  const failures = failureCount(apart);
   return (
     <>
       {folded.length > 0 && (
         <Inline>
           <TitleRow
-            icon={TOOL_ICON.read}
+            icon={EXPLORE_ICON}
             state={running ? "running" : "done"}
-            title={{ verb: running ? "Exploring:" : "Explored:", subject: exploreSummary(folded) }}
+            title={{ verb: running ? "Exploring:" : "Explored:", subject: exploreSummary(folded), ...(failures ? { suffix: failures } : {}) }}
             colors={colors}
             extra={detailsHint()}
           />

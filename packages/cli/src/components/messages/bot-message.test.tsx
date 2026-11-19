@@ -203,6 +203,32 @@ describe("the layout of a reply", () => {
 
 const { TranscriptViewProvider, createTranscriptViewStore } = await import("../../providers/transcript-view");
 
+describe("foldLookups", () => {
+  const call = (toolName: string, id: string) => ({ type: "tool" as const, toolCallId: id, toolName, input: {}, state: "done" as const });
+  const shape = (items: ReturnType<typeof import("./bot-message").foldLookups>) =>
+    items.map((item) => ("explore" in item ? `explore:${item.explore.map((p) => p.toolCallId).join(",")}` : `part:${item.index}`));
+
+  test("folds every run of two or more lookups, and keeps each part's place in the group", async () => {
+    const { foldLookups } = await import("./bot-message");
+    const parts = [call("Read", "r1"), call("Grep", "g1"), { type: "reasoning" as const, text: "hm" }, call("LS", "l1"), call("Skill", "s1"), call("WebFetch", "f1"), call("WebSearch", "w1")];
+    expect(shape(foldLookups(parts))).toEqual(["explore:r1,g1", "part:2", "part:3", "part:4", "explore:f1,w1"]);
+  });
+
+  test("folds nothing with details on", async () => {
+    const { foldLookups } = await import("./bot-message");
+    expect(shape(foldLookups([call("Read", "r1"), call("Read", "r2")], true))).toEqual(["part:0", "part:1"]);
+  });
+
+  test("gives a thought the same index while a run before it grows", async () => {
+    const { foldLookups } = await import("./bot-message");
+    const thought = { type: "reasoning" as const, text: "hm" };
+    const before = foldLookups([thought, call("Read", "r1")]);
+    const after = foldLookups([thought, call("Read", "r1"), call("Read", "r2")]);
+    expect(shape(before)[0]).toBe("part:0");
+    expect(shape(after)[0]).toBe("part:0");
+  });
+});
+
 describe("a run of lookups", () => {
   type Part = Parameters<typeof BotMessage>[0]["parts"][number];
   const lookup = (toolName: string, id: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Part =>
@@ -255,7 +281,7 @@ describe("a run of lookups", () => {
     expect(rows[0]).toMatch(/^ {3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Exploring: 2 reads \(ctrl\+x o\)$/);
   });
 
-  test("keeps a failed or refused call out of the fold, with its error", async () => {
+  test("keeps a failed or refused call out of the fold, counted in it and shown under it with its error", async () => {
     const rows = await render([
       read("/a.ts", "r1"),
       read("/missing.ts", "r2", { state: "error", errorText: "File does not exist." }),
@@ -263,7 +289,7 @@ describe("a run of lookups", () => {
       read("/secret", "r4", { state: "error", errorText: "The user denied this tool call." }),
     ]);
     expect(rows.slice(0, 4)).toEqual([
-      "   → Explored: 2 reads (ctrl+x o)",
+      "   → Explored: 2 reads · 1 failed, 1 denied (ctrl+x o)",
       "   ✗ Read /missing.ts",
       "     File does not exist.",
       "   ⊘ Read /secret · denied",

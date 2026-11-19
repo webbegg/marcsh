@@ -176,6 +176,23 @@ describe("a todo list", () => {
     const part = tool({ output: "✓ a One [done]\n✕ b Two — not needed [dropped]" }, "todo", { action: "list" });
     expect(rows(await render(part))).toEqual(["  ≡ Todos · 1/2 done", "    ✓ One", "    ✕ Two — not needed"]);
   });
+
+  // A list that is not known yet, or not shaped as expected, is still a panel, so the call does not jump from a row to a panel.
+  test("still running, or in a shape marcsh does not read, is a panel with its title and output", async () => {
+    expect(await render(tool({ state: "running" }, "todo", { action: "list" }))).toMatch(/^┃\n┃  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Todos\n┃$/);
+    await act(async () => screen!.renderer.destroy());
+    expect(rows(await render(tool({ output: "something else" }, "todo", { action: "list" })))).toEqual(["  ≡ Todos", "    something else"]);
+  });
+});
+
+describe("a plan", () => {
+  test("is a panel with the plan under its title", async () => {
+    expect(rows(await render(tool({}, "ExitPlanMode", { plan: "Step one" })))).toEqual(["  ▣ Plan", "    Step one"]);
+  });
+
+  test("without a plan in its input is a panel with only its title", async () => {
+    expect(await render(tool({}, "ExitPlanMode", {}))).toBe("┃\n┃  ▣ Plan\n┃");
+  });
 });
 
 describe("a subagent call", () => {
