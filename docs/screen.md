@@ -6,9 +6,41 @@ This page describes what you see in marcsh and what each part does: the two scre
 
 **Home.** The first screen. It shows the marcsh logo, the input and a hint with the keys for the palette and for agents: `ctrl+p commands` and `tab agents`. The session screen shows the same hint at the bottom right. The palette's key is the one in your [keybinds](keybinds.md#the-help-dialog), and the hint is left out if you unbound it. Type `/help` to see all the keys and commands. Your first message starts a new session and opens the session screen.
 
-**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes. Thinking is folded to one line (`Thinking · 2.3s` on pi) and `ctrl+x h` unfolds it; a tool call shows the last lines of its output, an edit shows its diff, and `ctrl+x o` shows them in full (see [/details](commands.md#details) and [/thinking](commands.md#thinking)). While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
+**Session.** The conversation. Your messages and the agent's replies scroll above the input. The agent's replies show its thinking, the tools it calls and the text it writes (see [The transcript](#the-transcript)). While a reply runs, the bottom line shows a spinner and `esc to interrupt`. Type `/new` to go back to the home screen, or `/sessions` to open an earlier conversation. See [Sessions](sessions.md).
 
 The text of a reply is shown as markdown: headings, bold and italic, lists, quotes, links and tables are drawn without their markers, and code in a fenced block is shown as monospace text with its own colours. Only TypeScript, TSX, JavaScript, Markdown and Zig code is coloured; code in any other language, or in a block with no language, is shown as plain text. While a reply is still being written, a half-written marker is drawn as if it were closed, and a coloured block may appear a moment after its text. Control characters in a reply are shown as `\u001b` and the like, never sent to your terminal. Your own messages are shown as you typed them.
+
+## The transcript
+
+Each part of a reply is drawn for what it is. Lookups are one dim line each, and changes and commands are panels.
+
+```
+   ◇ Thought: Planning the change · 2.3s (ctrl+x h)
+   → Read src/app.ts:10-59
+   ✱ Grep "useTheme" in src · 3 files
+
+┃  # Run the tests
+┃  $ bun test
+┃    … 4 more lines (ctrl+x o)
+┃    120 pass
+
+┃  ← Edit src/app.ts  +3 −1
+┃    (the diff)
+
+   ◉  Build › opus › 12.3s
+```
+
+- **Lookups** are one line: a glyph, the tool and what it acts on. Read, ls and skill use `→`, grep and glob use `✱`, a fetch uses `%`, a web search uses `◈` and a question uses `?`. A file under the session's folder is shown relative to it, and a read shows the lines it asked for (`:10-59`). A search that finished says what it found (`3 files`, `12 matches`, `no results`); a search saved before marcsh kept output says nothing. What a lookup read is shown only with [/details](commands.md#details).
+- **Shell commands** are a panel with the command after a `$` (its first line, with `…` when more follow, as in a heredoc), headed by the description the model gave (Claude gives one). The last 10 lines of the output follow. A command started in the background carries `[background]`.
+- **Edits and writes** are a panel with the file, how many lines were added and removed (`+3 −1`), and the first 12 lines of the diff.
+- **Subagents** are a panel named for the subagent, with the end of what it reported.
+- **Todo lists** (Claude's `TodoWrite`, pi's `todo`) are a checklist with how much is done: `✓` done, `◐` in progress, `○` pending, `⊘` blocked, `✕` dropped (struck through).
+- **A plan** that Claude proposes at the end of plan mode is a panel with the plan as markdown.
+- **Any other tool**, such as an MCP tool (`github › create_issue`) or a background-process tool, is a line with `⚙`, the tool's name, a summary of its input and the last 4 lines of its output.
+- **States.** While a call runs, a spinner takes the place of its glyph. A call that failed shows `✗` and its whole error in red. A call you refused at the approval prompt, or a question you declined, is struck through and says `denied` or `declined`.
+- **Thinking** is folded to one line, `◇ Thinking · 2.3s` (the duration on pi only), and a long title is cut to keep it one line. `ctrl+x h` unfolds it (see [/thinking](commands.md#thinking)). `ctrl+x o` shows every output and diff in full (see [/details](commands.md#details)).
+
+All this text comes from the model or a tool. Control characters in it are shown as escapes such as `\u001b`, never sent to your terminal.
 
 ## The input
 

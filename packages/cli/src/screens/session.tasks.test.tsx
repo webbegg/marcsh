@@ -78,10 +78,10 @@ describe("subagent task progress (S11b)", () => {
       (text) => text.includes("Found three modules"),
     );
 
-    expect(frame).toContain("Task: Searching · completed · Grep · 4 tools · 1500 tok");
+    expect(frame).toContain("Task Searching · completed · Grep · 4 tools · 1500 tok");
     expect(frame).toContain("Found three modules");
     expect(frame).not.toContain("inner-secret-pattern");
-    expect(frame.match(/Task:/g)).toHaveLength(1);
+    expect(frame.match(/» Task /g)).toHaveLength(1);
   });
 
   test("persists the task part with the saved message", async () => {

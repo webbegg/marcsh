@@ -66,8 +66,10 @@ const isChatModel = (value: string): value is (typeof SUPPORTED_CHAT_MODELS)[num
 const isPiRef = (value: string) => /^[^/\s]+\/\S+$/.test(value);
 
 function ChatMessage(
-  { msg, streaming = false }: {
+  { msg, cwd, streaming = false }: {
     msg: ChatMessageData;
+    /** The session's folder: tool calls show the paths under it relative. */
+    cwd?: string;
     /** True for the reply a running turn is writing: its text is markdown still being written. */
     streaming?: boolean;
   }
@@ -90,6 +92,7 @@ function ChatMessage(
       mode={msg.metadata?.mode ?? "BUILD"}
       agentName={msg.metadata?.agent}
       durationMs={msg.metadata?.durationMs}
+      cwd={cwd}
       interrupted={msg.metadata?.interrupted}
       streaming={streaming}
     />
@@ -441,7 +444,7 @@ function SessionChat({
         {messages.map((msg, index) => (
           <Fragment key={msg.id}>
             {noticesAt(index, index + 1)}
-            <ChatMessage msg={msg} streaming={busy && !compacting && index === messages.length - 1} />
+            <ChatMessage msg={msg} cwd={session.cwd} streaming={busy && !compacting && index === messages.length - 1} />
           </Fragment>
         ))}
         {noticesAt(messages.length, Infinity)}

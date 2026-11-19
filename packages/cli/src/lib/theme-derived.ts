@@ -51,15 +51,18 @@ function tint(fg: string, bg: string, share: number): string {
   }
 }
 
-/** The colours of a diff, from the theme's own: tinted backgrounds for added and removed lines (plain when a colour cannot be blended). */
-export function deriveDiffColors(colors: ThemeColors): DiffColors {
+/**
+ * The colours of a diff, from the theme's own: tinted backgrounds for added and removed lines (plain when a colour cannot be blended).
+ * `base` is what the diff is drawn on: the screen's background, or the surface of a panel.
+ */
+export function deriveDiffColors(colors: ThemeColors, base: string = colors.background): DiffColors {
   return {
-    addedBg: tint(colors.success, colors.background, 0.2),
-    removedBg: tint(colors.error, colors.background, 0.2),
+    addedBg: tint(colors.success, base, 0.2),
+    removedBg: tint(colors.error, base, 0.2),
     addedSign: colors.success,
     removedSign: colors.error,
     lineNumber: colors.dimSeparator,
-    contextBg: colors.background,
+    contextBg: base,
   };
 }
 

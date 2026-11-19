@@ -136,8 +136,8 @@ describe("S13 verifier: subagent approvals on screen", () => {
     }));
     const first = await frameContaining("Allow bash?");
     expect(count(first, "Allow bash?")).toBe(1);
-    expect(first).toContain("Task: First job · running");
-    expect(first).toContain("Task: Second job · running");
+    expect(first).toContain("Task First job · running");
+    expect(first).toContain("Task Second job · running");
     const firstIsA = first.includes("a.txt");
     await press("y");
     // Wait for the other child's prompt itself, not just any "Allow bash?" (the first one can still be on screen).
@@ -151,8 +151,8 @@ describe("S13 verifier: subagent approvals on screen", () => {
     await press("n");
     const finished = await frameContaining("parent done");
     expect(existsSync(firstIsA ? b : a)).toBe(false);
-    expect(finished).toContain("Task: First job · completed");
-    expect(finished).toContain("Task: Second job · completed");
+    expect(finished).toContain("Task First job · completed");
+    expect(finished).toContain("Task Second job · completed");
     expect(finished).not.toContain("touch ");
   }, 30000);
 
@@ -175,7 +175,7 @@ describe("S13 verifier: subagent approvals on screen", () => {
     const end = await frameContaining("stopped", 5000);
     console.log("ESC frame", end.slice(0, 600));
     expect(existsSync(a)).toBe(false);
-    expect(end).toContain("Task: Esc job · stopped");
+    expect(end).toContain("Task Esc job · stopped");
     expect(end).not.toContain("Allow bash?");
   }, 30000);
 });
