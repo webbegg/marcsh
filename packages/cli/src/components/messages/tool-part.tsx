@@ -22,7 +22,7 @@ import {
 import { EmptyBorder } from "../border";
 import "../spinner";
 
-export { formatToolName, summarizeToolInput } from "../../lib/tool-display";
+export { summarizeToolInput } from "../../lib/tool-display";
 
 type ToolPartData = Extract<MessagePart, { type: "tool" }>;
 type TaskPartData = Extract<MessagePart, { type: "task" }>;

@@ -109,17 +109,18 @@ export function summarizeToolInput(input: Record<string, unknown>): string {
   return typeof summary === "string" && summary.length > MAX_SUMMARY_LENGTH ? `${summary.slice(0, MAX_SUMMARY_LENGTH - 1)}…` : String(summary);
 }
 
-/** `fooBar` as `Foo Bar`, for a tool the transcript does not know. */
-export function formatToolName(name: string): string {
-  return name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
-}
-
 const pathOf = (input: Record<string, unknown>) => str(input.file_path) ?? str(input.path) ?? str(input.notebook_path);
 
-/** `a.ts:10-59` for a read with an offset and a limit, `a.ts:10+` with an offset only. */
+/**
+ * `a.ts:10-59` for a read with an offset and a limit, `a.ts:10+` with an offset only. A limit below one is left out, and an
+ * offset of zero is read as the first line, as both engines do; a negative offset says nothing.
+ */
 function readRange(input: Record<string, unknown>): string {
-  const offset = num(input.offset);
-  const limit = num(input.limit);
+  const rawOffset = num(input.offset);
+  const rawLimit = num(input.limit);
+  if (rawOffset !== undefined && rawOffset < 0) return "";
+  const limit = rawLimit !== undefined && rawLimit >= 1 ? rawLimit : undefined;
+  const offset = rawOffset === undefined ? undefined : Math.max(1, rawOffset);
   if (offset === undefined) return limit === undefined ? "" : `:1-${limit}`;
   return limit === undefined ? `:${offset}+` : `:${offset}-${offset + limit - 1}`;
 }
@@ -127,17 +128,33 @@ function readRange(input: Record<string, unknown>): string {
 const NOTHING_FOUND = /^no (files|matches|results)\b/i;
 const FOUND = /^Found (\d+) (\w+)/;
 
-/** What a finished search found, from its output: `3 files`, `12 matches`, `no results` (`2+` when the stored output was cut). */
+/**
+ * What a finished search found, from its output: `3 files`, `12 matches`, `no results` (`2+` when the stored output was cut).
+ * Undefined without output, as for a call saved before output was kept: the count is not known then.
+ */
 export function resultCount(kind: ToolKind, part: ToolPart): string | undefined {
   if (part.state !== "done") return undefined;
   const output = part.output?.trim() ?? "";
-  if (output === "" || NOTHING_FOUND.test(output)) return "no results";
+  if (output === "") return undefined;
+  if (NOTHING_FOUND.test(output)) return "no results";
   const found = FOUND.exec(output);
   if (found) return `${found[1]} ${found[2]}`;
   const lines = output.split("\n").filter((line) => line.trim() !== "").length;
   const more = part.outputTruncated ? "+" : "";
   const [one, many] = kind === "grep" ? ["match", "matches"] : kind === "list" ? ["entry", "entries"] : ["file", "files"];
   return `${lines}${more} ${lines === 1 && !more ? one : many}`;
+}
+
+const MAX_COMMAND_LENGTH = 160;
+
+/**
+ * A command as its title shows it: the first line, with `…` when more lines follow (a heredoc, a script), cut to 160 columns.
+ * The whole command is in the approval prompt and the session file.
+ */
+function commandLine(command: string): string {
+  const [first = "", ...rest] = command.trim().split("\n");
+  const line = rest.some((l) => l.trim() !== "") ? `${first.trimEnd()} …` : first;
+  return line.length > MAX_COMMAND_LENGTH ? `${line.slice(0, MAX_COMMAND_LENGTH - 1)}…` : line;
 }
 
 /** The server and tool of an MCP tool's name (`mcp__server__tool`). */
@@ -170,7 +187,7 @@ export function toolTitle(part: ToolPart, cwd?: string): ToolTitle {
     case "write":
       return { verb: "Write", subject: path(pathOf(input)) };
     case "bash":
-      return withBadge({ verb: "Shell", subject: str(input.command) ?? "" });
+      return withBadge({ verb: "Shell", subject: commandLine(str(input.command) ?? "") });
     case "webfetch":
       return { verb: "Fetch", subject: str(input.url) ?? "" };
     case "websearch":
@@ -206,15 +223,18 @@ export function refusalOf(errorText: string | undefined): "denied" | "declined" 
   return undefined;
 }
 
-export const isDenied = (errorText: string | undefined): boolean => refusalOf(errorText) !== undefined;
-
-/** Lines a unified diff adds and removes (its `+++`/`---` file headers left out). */
+/**
+ * Lines a unified diff adds and removes. Only lines inside a hunk count, so the `---`/`+++` file headers before the first `@@`
+ * are left out while a changed line that itself starts with `--` or `++` is not.
+ */
 export function patchStats(patch: string): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
+  let inHunk = false;
   for (const line of patch.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) added++;
+    if (line.startsWith("@@")) inHunk = true;
+    else if (!inHunk) continue;
+    else if (line.startsWith("+")) added++;
     else if (line.startsWith("-")) removed++;
   }
   return { added, removed };

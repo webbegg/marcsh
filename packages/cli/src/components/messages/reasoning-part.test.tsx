@@ -91,6 +91,19 @@ describe("a titled thought", () => {
     expect(frame).toBe("   ◇ Thought: Planning the change · 1.2s (ctrl+x h)");
   });
 
+  test("shows a control character in its title as an escape", async () => {
+    const frame = await render({ text: "**Plan\u001b]0;x\u0007**\n\nBody." });
+    expect(frame).toContain("Thought: Plan\\u001b]0;x\\u0007");
+    expect(frame).not.toContain("\u001b");
+  });
+
+  test("collapsed, cuts a long title to stay on one line", async () => {
+    const frame = await render({ text: `**${"Planning ".repeat(20).trim()}**\n\nBody.`, durationMs: 1200 }, { width: 50 });
+    expect(frame.split("\n")).toHaveLength(1);
+    expect(frame).toContain("Thought: Planning");
+    expect(frame).toContain("… · 1.2s");
+  });
+
   test("expanded, shows the rest under the title", async () => {
     const frame = await render({ text: "**Planning**\n\nFirst the files." }, { thinking: true });
     expect(frame.split("\n")).toEqual(["   ◇ Thought: Planning", "   │ First the files."]);

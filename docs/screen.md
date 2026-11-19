@@ -30,15 +30,15 @@ Each part of a reply is drawn for what it is. Lookups are one dim line each, and
    ◉  Build › opus › 12.3s
 ```
 
-- **Lookups** are one line: a glyph, the tool and what it acts on. Read, ls and skill use `→`, grep and glob use `✱`, a fetch uses `%`, a web search uses `◈` and a question uses `?`. A file under the session's folder is shown relative to it, and a read shows the lines it asked for (`:10-59`). A search that finished says what it found (`3 files`, `12 matches`, `no results`). What a lookup read is shown only with [/details](commands.md#details).
-- **Shell commands** are a panel with the command after a `$`, headed by the description the model gave (Claude gives one). The last 10 lines of the output follow. A command started in the background carries `[background]`.
+- **Lookups** are one line: a glyph, the tool and what it acts on. Read, ls and skill use `→`, grep and glob use `✱`, a fetch uses `%`, a web search uses `◈` and a question uses `?`. A file under the session's folder is shown relative to it, and a read shows the lines it asked for (`:10-59`). A search that finished says what it found (`3 files`, `12 matches`, `no results`); a search saved before marcsh kept output says nothing. What a lookup read is shown only with [/details](commands.md#details).
+- **Shell commands** are a panel with the command after a `$` (its first line, with `…` when more follow, as in a heredoc), headed by the description the model gave (Claude gives one). The last 10 lines of the output follow. A command started in the background carries `[background]`.
 - **Edits and writes** are a panel with the file, how many lines were added and removed (`+3 −1`), and the first 12 lines of the diff.
 - **Subagents** are a panel named for the subagent, with the end of what it reported.
 - **Todo lists** (Claude's `TodoWrite`, pi's `todo`) are a checklist with how much is done: `✓` done, `◐` in progress, `○` pending, `⊘` blocked, `✕` dropped (struck through).
 - **A plan** that Claude proposes at the end of plan mode is a panel with the plan as markdown.
 - **Any other tool**, such as an MCP tool (`github › create_issue`) or a background-process tool, is a line with `⚙`, the tool's name, a summary of its input and the last 4 lines of its output.
 - **States.** While a call runs, a spinner takes the place of its glyph. A call that failed shows `✗` and its whole error in red. A call you refused at the approval prompt, or a question you declined, is struck through and says `denied` or `declined`.
-- **Thinking** is folded to one line, `◇ Thinking · 2.3s` (the duration on pi only), and `ctrl+x h` unfolds it (see [/thinking](commands.md#thinking)). `ctrl+x o` shows every output and diff in full (see [/details](commands.md#details)).
+- **Thinking** is folded to one line, `◇ Thinking · 2.3s` (the duration on pi only), and a long title is cut to keep it one line. `ctrl+x h` unfolds it (see [/thinking](commands.md#thinking)). `ctrl+x o` shows every output and diff in full (see [/details](commands.md#details)).
 
 All this text comes from the model or a tool. Control characters in it are shown as escapes such as `\u001b`, never sent to your terminal.
 

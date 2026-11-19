@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   displayPath,
-  isDenied,
+  refusalOf,
   patchStats,
   resultCount,
   todoItems,
@@ -64,6 +64,12 @@ describe("toolTitle", () => {
     expect(toolTitle(part("read", { path: "a.ts", offset: 5 }), cwd).subject).toBe("a.ts:5+");
   });
 
+  test("a read range the model got wrong is left out instead of printed as asked", () => {
+    expect(toolTitle(part("Read", { file_path: "/p/a.ts", offset: 10, limit: 0 }), cwd).subject).toBe("a.ts:10+");
+    expect(toolTitle(part("Read", { file_path: "/p/a.ts", offset: 0, limit: 5 }), cwd).subject).toBe("a.ts:1-5");
+    expect(toolTitle(part("Read", { file_path: "/p/a.ts", offset: -3 }), cwd).subject).toBe("a.ts");
+  });
+
   test("a search quotes its pattern and says where", () => {
     expect(toolTitle(part("Grep", { pattern: "foo", path: "/p/src" }), cwd).subject).toBe('"foo" in src');
     expect(toolTitle(part("Glob", { pattern: "**/*.ts" }), cwd).subject).toBe('"**/*.ts"');
@@ -75,13 +81,17 @@ describe("toolTitle", () => {
     expect(toolTitle(part("Glob", { pattern: "x" }, { output: "a.ts\nb.ts" }), cwd).suffix).toBe("2 files");
     expect(toolTitle(part("grep", { pattern: "x" }, { output: "a:1:x" }), cwd).suffix).toBe("1 match");
     expect(toolTitle(part("Glob", { pattern: "x" }, { output: "No files found" }), cwd).suffix).toBe("no results");
-    expect(toolTitle(part("Grep", { pattern: "x" }), cwd).suffix).toBe("no results");
+    // No stored output (a call saved before output was kept) says nothing, rather than claiming nothing was found.
+    expect(toolTitle(part("Grep", { pattern: "x" }), cwd).suffix).toBeUndefined();
+    expect(toolTitle(part("Glob", { pattern: "x" }, { output: "  \n" }), cwd).suffix).toBeUndefined();
     expect(toolTitle(part("Grep", { pattern: "x" }, { state: "running" }), cwd).suffix).toBeUndefined();
     expect(toolTitle(part("Grep", { pattern: "x" }, { output: "a\nb", outputTruncated: true }), cwd).suffix).toBe("2+ matches");
   });
 
   test("commands, edits and the rest", () => {
     expect(toolTitle(part("Bash", { command: "npm test", description: "Run tests" }), cwd)).toEqual({ verb: "Shell", subject: "npm test" });
+    expect(toolTitle(part("Bash", { command: "cat <<EOF > a.txt\nline\nEOF" }), cwd).subject).toBe("cat <<EOF > a.txt …");
+    expect(toolTitle(part("Bash", { command: `echo ${"x".repeat(300)}` }), cwd).subject).toHaveLength(160);
     expect(toolTitle(part("bg_start", { command: "bun dev" }), cwd)).toMatchObject({ subject: "bun dev", badge: "background" });
     expect(toolTitle(part("Bash", { command: "sleep 9", run_in_background: true }), cwd).badge).toBe("background");
     expect(toolTitle(part("Edit", { file_path: "/p/a.ts" }), cwd)).toEqual({ verb: "Edit", subject: "a.ts" });
@@ -101,12 +111,12 @@ describe("toolTitle", () => {
   });
 });
 
-describe("isDenied", () => {
-  test("tells a refusal from a failure", () => {
-    expect(isDenied("The user denied this tool call.")).toBe(true);
-    expect(isDenied("The user declined to answer.")).toBe(true);
-    expect(isDenied("exit code 1")).toBe(false);
-    expect(isDenied(undefined)).toBe(false);
+describe("refusalOf", () => {
+  test("tells a refusal from a failure, and an approval's from a question's", () => {
+    expect(refusalOf("The user denied this tool call.")).toBe("denied");
+    expect(refusalOf("The user declined to answer.")).toBe("declined");
+    expect(refusalOf("exit code 1")).toBeUndefined();
+    expect(refusalOf(undefined)).toBeUndefined();
   });
 });
 
@@ -114,6 +124,11 @@ describe("patchStats", () => {
   test("counts added and removed lines, not the headers", () => {
     expect(patchStats("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n a\n-b\n+c\n+d")).toEqual({ added: 2, removed: 1 });
     expect(patchStats("")).toEqual({ added: 0, removed: 0 });
+  });
+
+  test("counts a changed line that itself starts with -- or ++", () => {
+    expect(patchStats("@@ -1 +1 @@\n--- a comment\n+++x")).toEqual({ added: 1, removed: 1 });
+    expect(patchStats("--- a/x\n+++ b/x\n@@ -1 +1 @@\n---- rule")).toEqual({ added: 0, removed: 1 });
   });
 });
 

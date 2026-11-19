@@ -4,7 +4,7 @@ import { useTerminalDimensions } from "@opentui/react";
 import { useTheme } from "../../providers/theme";
 import { transcriptViewKey, useTranscriptView } from "../../providers/transcript-view";
 import type { MessagePart } from "../../lib/chat-types";
-import { escapeTranscriptText as safe } from "../../lib/display-text";
+import { escapeTranscriptText as safe, wrapByWidth } from "../../lib/display-text";
 import { EmptyBorder } from "../border";
 import { GUTTER, ICON_WIDTH } from "./tool-part";
 import "../spinner";
@@ -51,6 +51,13 @@ export const thinkingLabel = (durationMs?: number, title?: string): string => {
   return durationMs != null && durationMs >= 0 ? `${name} · ${prettyMs(durationMs)}` : name;
 };
 
+/** The text cut to `room` columns, ending in `…` when it was cut (at a space when there is one late enough); "" when nothing fits. */
+function cutToWidth(text: string, room: number): string {
+  if (Bun.stringWidth(text) <= room) return text;
+  if (room < 2) return "";
+  return `${wrapByWidth(text, room - 1)[0]!.trimEnd()}…`;
+}
+
 /**
  * The model's reasoning, a row at the gutter like a tool call's. An empty block shows nothing. Collapsed (the default) it is one
  * line that never grows: the label with the title and duration, the first words of the thought when they fit, and the key that
@@ -65,7 +72,10 @@ export function ReasoningPart({ part, live = false }: { part: ReasoningPartData;
 
   const { title, rest } = thoughtTitle(part.text);
   const key = transcriptViewKey("thinking");
-  const label = thinkingLabel(part.durationMs, title ? safe(title) : undefined);
+  // Collapsed, a long title is cut so the line stays one line; the columns left for it are the line's less the label around it.
+  const titleRoom = width - CHROME_COLUMNS - (Bun.stringWidth(thinkingLabel(part.durationMs, "…")) - 1);
+  const shownTitle = title === undefined ? undefined : thinking ? safe(title) : cutToWidth(safe(title), titleRoom) || "…";
+  const label = thinkingLabel(part.durationMs, shownTitle);
   // On a line too narrow for the label and the key, the key goes: the line must stay one line.
   const room = width - CHROME_COLUMNS - Bun.stringWidth(label);
   const keyHint = key ? ` (${key})` : "";

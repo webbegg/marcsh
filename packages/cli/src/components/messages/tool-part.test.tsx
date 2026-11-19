@@ -259,4 +259,41 @@ describe("a part saved before these fields existed", () => {
     const frame = await render({ type: "tool", toolCallId: "t9", toolName: "Read", input: { file_path: "/tmp/x.ts" }, state: "done" });
     expect(frame).toBe("   → Read /tmp/x.ts");
   });
+
+  test("a search without its output claims no count", async () => {
+    expect(await render(tool({}, "Grep", { pattern: "x" }))).toBe('   ✱ Grep "x"');
+  });
+});
+
+describe("a long shell command", () => {
+  test("shows its first line, so a heredoc does not fill the screen", async () => {
+    const frame = await render(tool({}, "Bash", { command: `cat <<EOF > a.txt\n${numbered(40)}\nEOF` }));
+    expect(rows(frame)).toEqual(["  $ cat <<EOF > a.txt …"]);
+  });
+});
+
+// Control characters from the model, a tool or an MCP server in the new title paths show as visible escapes.
+describe("hostile text in a title, a todo or a plan", () => {
+  const ESC = "\u001b[2J";
+  const visible = "\\u001b[2J";
+
+  test("an MCP tool's server and tool names, and its search count", async () => {
+    const mcp = await render(tool({}, `mcp__ev${ESC}il__to${ESC}ol`, { title: `t${ESC}` }));
+    expect(mcp).toContain(`ev${visible}il › to${visible}ol t${visible}`);
+    expect(mcp).not.toContain("\u001b");
+    await act(async () => screen!.renderer.destroy());
+    const grep = await render(tool({ output: `Found 2 fi${ESC}les` }, "Grep", { pattern: `p${ESC}` }));
+    expect(grep).toContain(`"p${visible}" · 2 fi`);
+    expect(grep).not.toContain("\u001b");
+  });
+
+  test("a todo item and a plan", async () => {
+    const todo = await render(tool({}, "TodoWrite", { todos: [{ content: `do${ESC}it`, status: "pending" }] }));
+    expect(todo).toContain(`do${visible}it`);
+    expect(todo).not.toContain("\u001b");
+    await act(async () => screen!.renderer.destroy());
+    const plan = await render(tool({}, "ExitPlanMode", { plan: `Step${ESC}one` }));
+    expect(plan).toContain(`Step${visible}one`);
+    expect(plan).not.toContain("\u001b");
+  });
 });
