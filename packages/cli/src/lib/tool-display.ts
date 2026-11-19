@@ -64,6 +64,30 @@ export type ToolStyle = "inline" | "block";
 const BLOCKS = new Set<ToolKind>(["bash", "edit", "write", "task", "todo", "plan"]);
 export const toolStyle = (kind: ToolKind): ToolStyle => (BLOCKS.has(kind) ? "block" : "inline");
 
+/** The words an exploration summary counts each kind in, in the order it lists them. */
+const EXPLORE_WORDS: [ToolKind[], string, string][] = [
+  [["read"], "read", "reads"],
+  [["grep", "glob"], "search", "searches"],
+  [["list"], "list", "lists"],
+  [["webfetch"], "fetch", "fetches"],
+  [["websearch"], "web search", "web searches"],
+];
+const EXPLORATION = new Set(EXPLORE_WORDS.flatMap(([kinds]) => kinds));
+
+/** A call that only looks at something (a read, a search, a list, a fetch): a run of them folds into one line. */
+export const isExploration = (kind: ToolKind): boolean => EXPLORATION.has(kind);
+
+/** What a run of lookups looked at, by kind: `2 reads, 1 search, 1 fetch`; "" for none. */
+export function exploreSummary(parts: ToolPart[]): string {
+  const kinds = parts.map((part) => toolKind(part.toolName));
+  return EXPLORE_WORDS.map(([group, one, many]) => {
+    const count = kinds.filter((kind) => group.includes(kind)).length;
+    return count === 0 ? "" : `${count} ${count === 1 ? one : many}`;
+  })
+    .filter(Boolean)
+    .join(", ");
+}
+
 /** One column each, so a row's title always starts in the same place. */
 export const TOOL_ICON: Record<ToolKind, string> = {
   read: "→",

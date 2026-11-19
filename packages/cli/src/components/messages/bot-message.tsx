@@ -6,9 +6,9 @@ import { Mode, type ModeType } from "../../lib/modes";
 import { escapeTranscriptText as safe } from "../../lib/display-text";
 import { TextAttributes } from "@opentui/core";
 import { useTranscriptView } from "../../providers/transcript-view";
-import { toolKind, toolStyle } from "../../lib/tool-display";
+import { isExploration, toolKind, toolStyle } from "../../lib/tool-display";
 import { ReasoningPart } from "./reasoning-part";
-import { TaskPart, ToolPart } from "./tool-part";
+import { ExploreGroup, TaskPart, ToolPart } from "./tool-part";
 import { TextPart } from "./text-part";
 
 export { formatTaskLine, summarizeToolInput } from "./tool-part";
@@ -75,6 +75,35 @@ export function groupParts(parts: MessagePart[], thinking = false): PartGroup[] 
   return groups;
 };
 
+/** What a group draws: a part as it is, or a run of lookups folded into one line. */
+export type GroupItem = { part: MessagePart } | { explore: ToolPartData[] };
+
+const isLookup = (part: MessagePart): part is ToolPartData => isToolPart(part) && isExploration(toolKind(part.toolName));
+
+/**
+ * A group's parts with every run of two or more lookups in a row (reads, searches, lists, fetches) folded into one item; with
+ * details on nothing is folded, so each call shows on its own line with what it read.
+ */
+export function foldLookups(parts: MessagePart[], details = false): GroupItem[] {
+  const items: GroupItem[] = [];
+  let run: ToolPartData[] = [];
+  const flush = () => {
+    if (run.length >= 2) items.push({ explore: run });
+    else items.push(...run.map((part) => ({ part })));
+    run = [];
+  };
+  for (const part of parts) {
+    if (!details && isLookup(part)) {
+      run.push(part);
+      continue;
+    }
+    flush();
+    items.push({ part });
+  }
+  flush();
+  return items;
+}
+
 export function BotMessage({ 
   parts,
   model,
@@ -86,7 +115,7 @@ export function BotMessage({
   streaming = false,
 }: Props) {
   const { colors } = useTheme();
-  const { thinking } = useTranscriptView();
+  const { thinking, details } = useTranscriptView();
   // One style for every text part of the message.
   const syntaxStyle = useSyntaxStyle();
   // Only the last part of a message still being written can be unfinished.
@@ -95,7 +124,9 @@ export function BotMessage({
     <box width="100%" alignItems="center">
       {groupParts(parts, thinking).map((group, i) => (
         <box key={group.key} width="100%" paddingTop={i === 0 ? 0 : 1}>
-          {group.parts.map((part, j) => {
+          {foldLookups(group.parts, details).map((item, j) => {
+            if ("explore" in item) return <ExploreGroup key={`explore-${item.explore[0]!.toolCallId}`} parts={item.explore} cwd={cwd} />;
+            const { part } = item;
             if (part.type === "reasoning") return <ReasoningPart key={`reasoning-${j}`} part={part} live={streaming && part === lastPart} />;
             if (isToolPart(part)) return <ToolPart key={part.toolCallId} part={part} cwd={cwd} syntaxStyle={syntaxStyle} />;
             if (part.type === "task") return <TaskPart key={`task-${part.taskId}`} part={part} />;

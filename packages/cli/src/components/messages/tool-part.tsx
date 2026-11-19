@@ -8,6 +8,7 @@ import type { MessagePart } from "../../lib/chat-types";
 import { escapeTranscriptText as safe } from "../../lib/display-text";
 import { TODO_GLYPH } from "../../lib/todo";
 import {
+  exploreSummary,
   patchStats,
   refusalOf,
   TOOL_ICON,
@@ -295,6 +296,59 @@ function TodoList({ items, colors }: { items: TodoItem[]; colors: ThemeColors })
   );
 }
 
+/** The parts of a panel around its title: a line above it, words after it, and what it shows under it. */
+type Panel = { head?: ReactNode; title: ToolTitle; extra?: ReactNode; body?: ReactNode };
+
+/** An edit's `+3 −1`, after its title; nothing when the diff changes no line. */
+function PatchStats({ patch, colors }: { patch: string; colors: ThemeColors }) {
+  const { added, removed } = patchStats(patch);
+  if (added === 0 && removed === 0) return null;
+  return (
+    <>
+      {"  "}
+      {added > 0 ? <span fg={colors.success}>{`+${added}`}</span> : null}
+      {added > 0 && removed > 0 ? " " : null}
+      {removed > 0 ? <span fg={colors.error}>{`−${removed}`}</span> : null}
+    </>
+  );
+}
+
+/**
+ * What a panel shows for its kind. A todo list is a checklist and a plan is markdown, when their input is shaped as expected. Any
+ * other panel (and a todo or plan that is not) shows a diff or the end of its output; a shell command is titled by the command
+ * itself, after its `$`, headed by the description the model gave.
+ */
+function panelOf(part: ToolPartData, kind: ToolKind, title: ToolTitle, details: boolean, colors: ThemeColors, syntaxStyle?: SyntaxStyle): Panel {
+  if (kind === "todo") {
+    const items = todoItems(part);
+    if (items) {
+      const done = items.filter((item) => item.status === "done").length;
+      return { title: items.length > 0 ? { ...title, suffix: `${done}/${items.length} done` } : title, body: <TodoList items={items} colors={colors} /> };
+    }
+  }
+
+  if (kind === "plan" && typeof part.input.plan === "string") {
+    const plan = safe(part.input.plan);
+    return { title, body: syntaxStyle ? <markdown content={plan} syntaxStyle={syntaxStyle} /> : <text>{plan}</text> };
+  }
+
+  const finished = part.state === "done";
+  const patch = finished && part.patch ? part.patch : undefined;
+  const output = finished && patch === undefined && part.output ? part.output : undefined;
+  const description = kind === "bash" && typeof part.input.description === "string" && part.input.description.trim() !== "" ? part.input.description : undefined;
+  return {
+    head: description && <text attributes={TextAttributes.DIM}>{`# ${safe(description)}`}</text>,
+    title: kind === "bash" ? { ...title, verb: "" } : title,
+    extra: patch !== undefined && <PatchStats patch={patch} colors={colors} />,
+    body:
+      patch !== undefined ? (
+        <PatchView patch={patch} details={details} colors={colors} base={colors.surface} />
+      ) : output !== undefined ? (
+        <OutputView output={output} truncated={part.outputTruncated === true} details={details} preview={kind === "bash" ? SHELL_PREVIEW_LINES : OUTPUT_PREVIEW_LINES} />
+      ) : undefined,
+  };
+}
+
 type ToolPartProps = {
   part: ToolPartData;
   /** The session's folder: paths under it are shown relative. */
@@ -321,72 +375,15 @@ export function ToolPart({ part, cwd, syntaxStyle }: ToolPartProps) {
   const finished = part.state === "done";
   const error = state === "error" ? <ErrorText text={part.errorText} colors={colors} /> : null;
 
-  if (kind === "todo") {
-    const items = todoItems(part);
-    if (items) {
-      const done = items.filter((item) => item.status === "done").length;
-      return (
-        <Block colors={colors}>
-          <TitleRow icon={icon} state={state} refusal={refusal} title={{ ...title, ...(items.length > 0 ? { suffix: `${done}/${items.length} done` } : {}) }} colors={colors} strong />
-          <Body>
-            <TodoList items={items} colors={colors} />
-            {error}
-          </Body>
-        </Block>
-      );
-    }
-  }
-
-  if (kind === "plan" && typeof part.input.plan === "string") {
+  if (toolStyle(kind) === "block") {
+    const panel = panelOf(part, kind, title, details, colors, syntaxStyle);
     return (
       <Block colors={colors}>
-        <TitleRow icon={icon} state={state} refusal={refusal} title={title} colors={colors} strong />
-        <Body>
-          {syntaxStyle ? <markdown content={safe(part.input.plan)} syntaxStyle={syntaxStyle} /> : <text>{safe(part.input.plan)}</text>}
-          {error}
-        </Body>
-      </Block>
-    );
-  }
-
-  if (toolStyle(kind) === "block" && kind !== "todo" && kind !== "plan") {
-    const patch = finished && part.patch ? part.patch : undefined;
-    const output = finished && patch === undefined && part.output ? part.output : undefined;
-    const stats = patch !== undefined ? patchStats(patch) : undefined;
-    const description = kind === "bash" && typeof part.input.description === "string" && part.input.description.trim() !== "" ? part.input.description : undefined;
-    // A shell block's title is the command itself, after its `$`; the description, when the model gave one, heads it.
-    const row = kind === "bash" ? { ...title, verb: "" } : title;
-    return (
-      <Block colors={colors}>
-        {description && (
+        {panel.head && <Body>{panel.head}</Body>}
+        <TitleRow icon={icon} state={state} refusal={refusal} title={panel.title} colors={colors} strong extra={panel.extra} />
+        {(panel.body || error) && (
           <Body>
-            <text attributes={TextAttributes.DIM}>{`# ${safe(description)}`}</text>
-          </Body>
-        )}
-        <TitleRow
-          icon={icon}
-          state={state}
-          refusal={refusal}
-          title={row}
-          colors={colors}
-          strong
-          extra={
-            stats && (stats.added > 0 || stats.removed > 0) ? (
-              <>
-                {"  "}
-                {stats.added > 0 ? <span fg={colors.success}>{`+${stats.added}`}</span> : null}
-                {stats.added > 0 && stats.removed > 0 ? " " : null}
-                {stats.removed > 0 ? <span fg={colors.error}>{`−${stats.removed}`}</span> : null}
-              </>
-            ) : null
-          }
-        />
-        {(patch !== undefined || output !== undefined || error) && (
-          <Body>
-            {patch !== undefined && <PatchView patch={patch} details={details} colors={colors} base={colors.surface} />}
-            {output !== undefined && (
-              <OutputView output={output} truncated={part.outputTruncated === true} details={details} preview={kind === "bash" ? SHELL_PREVIEW_LINES : OUTPUT_PREVIEW_LINES} />
-            )}
+            {panel.body}
             {error}
           </Body>
         )}
@@ -406,6 +403,36 @@ export function ToolPart({ part, cwd, syntaxStyle }: ToolPartProps) {
         </Body>
       )}
     </Inline>
+  );
+}
+
+/**
+ * A run of lookups folded to one line that counts them: `→ Explored: 3 reads, 1 search`, behind a spinner and as `Exploring` while
+ * one still runs. A call that failed or was refused stays out of the fold, on its own line below it with its error, so nothing
+ * that went wrong is hidden; when none is left to fold, each call shows as it is.
+ */
+export function ExploreGroup({ parts, cwd }: { parts: ToolPartData[]; cwd?: string }) {
+  const { colors } = useTheme();
+  const folded = parts.filter((part) => part.state !== "error");
+  const apart = parts.filter((part) => part.state === "error");
+  const running = folded.some((part) => part.state === "running");
+  return (
+    <>
+      {folded.length > 0 && (
+        <Inline>
+          <TitleRow
+            icon={TOOL_ICON.read}
+            state={running ? "running" : "done"}
+            title={{ verb: running ? "Exploring:" : "Explored:", subject: exploreSummary(folded) }}
+            colors={colors}
+            extra={detailsHint()}
+          />
+        </Inline>
+      )}
+      {apart.map((part) => (
+        <ToolPart key={part.toolCallId} part={part} cwd={cwd} />
+      ))}
+    </>
   );
 }
 
