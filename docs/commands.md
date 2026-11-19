@@ -337,7 +337,7 @@ Show or collapse the full tool output and diffs in the transcript.
 /details
 ```
 
-- By default a finished tool call shows a short preview. A shell command shows the last 10 lines of its output, and an edit or write shows the first 12 lines of its diff. A subagent call or a tool marcsh does not know shows the last 4 lines. `… 6 more lines (ctrl+x o)` says how many lines are left out. A lookup (read, grep, glob, ls, fetch, web search, skill) is one line with nothing under it. A failed call always shows its whole error. See [The transcript](screen.md#the-transcript).
+- By default a finished tool call shows a short preview. A shell command shows the last 10 lines of its output, and an edit or write shows the first 12 lines of its diff. A subagent call or a tool marcsh does not know shows the last 4 lines. `… 6 more lines (ctrl+x o)` says how many lines are left out. A lookup (read, grep, glob, ls, fetch, web search, skill) is one line with nothing under it, and two or more in a row fold into one line (`→ Explored: 3 reads, 2 searches`). `/details` unfolds them. A failed call always shows its whole error. See [The transcript](screen.md#the-transcript).
 - `/details` shows everything marcsh kept of each call: up to the last 200 lines or 16 KB of the output, and the whole diff. Run it again to collapse. A toast says which it is now. `Ctrl+X` then `o` does the same.
 - It applies to the whole transcript at once, and only until you quit: the choice is not saved, and every start is collapsed.
 - Only calls made after this version kept their output and diff; older messages show the one-line call, as before.

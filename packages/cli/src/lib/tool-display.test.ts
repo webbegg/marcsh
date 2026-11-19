@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   displayPath,
+  exploreSummary,
+  isExploration,
   refusalOf,
   patchStats,
   resultCount,
@@ -108,6 +110,20 @@ describe("toolTitle", () => {
   test("an MCP tool names its server and tool; another tool keeps its name and a summary of its input", () => {
     expect(toolTitle(part("mcp__github__create_issue", { title: "Bug" }), cwd)).toEqual({ verb: "github › create_issue", subject: "Bug" });
     expect(toolTitle(part("bg_status", { id: "bg-1" }), cwd)).toEqual({ verb: "bg_status", subject: "bg-1" });
+  });
+});
+
+describe("exploration", () => {
+  test("is the calls that only look: reads, searches, lists and fetches", () => {
+    expect(["read", "grep", "glob", "list", "webfetch", "websearch"].every((kind) => isExploration(kind as never))).toBe(true);
+    expect(["bash", "edit", "write", "task", "todo", "skill", "question", "plan", "generic"].some((kind) => isExploration(kind as never))).toBe(false);
+  });
+
+  test("is summed up by kind, in a fixed order, singular for one", () => {
+    const calls = [part("Grep", {}), part("Read", {}), part("find", {}), part("read", {}), part("WebFetch", {}), part("LS", {}), part("WebSearch", {})];
+    expect(exploreSummary(calls)).toBe("2 reads, 2 searches, 1 list, 1 fetch, 1 web search");
+    expect(exploreSummary([part("Read", {})])).toBe("1 read");
+    expect(exploreSummary([])).toBe("");
   });
 });
 

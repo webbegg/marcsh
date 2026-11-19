@@ -200,3 +200,108 @@ describe("the layout of a reply", () => {
     expect(groups.map((group) => group.layout)).toEqual(["block", "row"]);
   });
 });
+
+const { TranscriptViewProvider, createTranscriptViewStore } = await import("../../providers/transcript-view");
+
+describe("foldLookups", () => {
+  const call = (toolName: string, id: string) => ({ type: "tool" as const, toolCallId: id, toolName, input: {}, state: "done" as const });
+  const shape = (items: ReturnType<typeof import("./bot-message").foldLookups>) =>
+    items.map((item) => ("explore" in item ? `explore:${item.explore.map((p) => p.toolCallId).join(",")}` : `part:${item.index}`));
+
+  test("folds every run of two or more lookups, and keeps each part's place in the group", async () => {
+    const { foldLookups } = await import("./bot-message");
+    const parts = [call("Read", "r1"), call("Grep", "g1"), { type: "reasoning" as const, text: "hm" }, call("LS", "l1"), call("Skill", "s1"), call("WebFetch", "f1"), call("WebSearch", "w1")];
+    expect(shape(foldLookups(parts))).toEqual(["explore:r1,g1", "part:2", "part:3", "part:4", "explore:f1,w1"]);
+  });
+
+  test("folds nothing with details on", async () => {
+    const { foldLookups } = await import("./bot-message");
+    expect(shape(foldLookups([call("Read", "r1"), call("Read", "r2")], true))).toEqual(["part:0", "part:1"]);
+  });
+
+  test("gives a thought the same index while a run before it grows", async () => {
+    const { foldLookups } = await import("./bot-message");
+    const thought = { type: "reasoning" as const, text: "hm" };
+    const before = foldLookups([thought, call("Read", "r1")]);
+    const after = foldLookups([thought, call("Read", "r1"), call("Read", "r2")]);
+    expect(shape(before)[0]).toBe("part:0");
+    expect(shape(after)[0]).toBe("part:0");
+  });
+});
+
+describe("a run of lookups", () => {
+  type Part = Parameters<typeof BotMessage>[0]["parts"][number];
+  const lookup = (toolName: string, id: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Part =>
+    ({ type: "tool", toolCallId: id, toolName, input, state: "done", ...extra }) as Part;
+  const read = (path: string, id: string, extra: Record<string, unknown> = {}) => lookup("Read", id, { file_path: path }, extra);
+  const grep = (pattern: string, id: string) => lookup("Grep", id, { pattern }, { output: "Found 2 files\na\nb" });
+
+  async function render(parts: Part[], options: { details?: boolean; streaming?: boolean } = {}) {
+    const store = createTranscriptViewStore();
+    if (options.details) store.toggle("details");
+    screen = await testRender(
+      <ThemeProvider>
+        <TranscriptViewProvider store={store}>
+          <BotMessage parts={parts} model="opus" mode="BUILD" streaming={options.streaming} />
+        </TranscriptViewProvider>
+      </ThemeProvider>,
+      { width: 80, height: 16 },
+    );
+    await settle();
+    return screen.captureCharFrame().replace(/[ \t]+$/gm, "").split("\n").filter((row) => row.trim() !== "");
+  }
+
+  test("is folded to one line that counts what was looked at", async () => {
+    const rows = await render([read("/a.ts", "r1"), read("/b.ts", "r2"), grep("foo", "g1"), { type: "text", text: "Found it." }]);
+    expect(rows[0]).toBe("   → Explored: 2 reads, 1 search (ctrl+x o)");
+    expect(rows.join("\n")).not.toContain("/a.ts");
+    expect(rows[1]).toContain("Found it.");
+  });
+
+  test("with details on shows every call on its own line", async () => {
+    const rows = await render([read("/a.ts", "r1"), read("/b.ts", "r2")], { details: true });
+    expect(rows.slice(0, 2)).toEqual(["   → Read /a.ts", "   → Read /b.ts"]);
+    expect(rows.join("\n")).not.toContain("Explored");
+  });
+
+  test("of one call is that call's own line", async () => {
+    const rows = await render([read("/a.ts", "r1"), { type: "text", text: "ok" }]);
+    expect(rows[0]).toBe("   → Read /a.ts");
+  });
+
+  test("is broken by a thought, so each side folds on its own", async () => {
+    const rows = await render([read("/a.ts", "r1"), read("/b.ts", "r2"), { type: "reasoning", text: "hmm" }, read("/c.ts", "r3")]);
+    expect(rows[0]).toBe("   → Explored: 2 reads (ctrl+x o)");
+    expect(rows[1]).toContain("◇ Thinking");
+    expect(rows[2]).toBe("   → Read /c.ts");
+  });
+
+  test("still running says Exploring behind a spinner", async () => {
+    const rows = await render([read("/a.ts", "r1"), read("/b.ts", "r2", { state: "running" })], { streaming: true });
+    expect(rows[0]).toMatch(/^ {3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Exploring: 2 reads \(ctrl\+x o\)$/);
+  });
+
+  test("keeps a failed or refused call out of the fold, counted in it and shown under it with its error", async () => {
+    const rows = await render([
+      read("/a.ts", "r1"),
+      read("/missing.ts", "r2", { state: "error", errorText: "File does not exist." }),
+      read("/b.ts", "r3"),
+      read("/secret", "r4", { state: "error", errorText: "The user denied this tool call." }),
+    ]);
+    expect(rows.slice(0, 4)).toEqual([
+      "   → Explored: 2 reads · 1 failed, 1 denied (ctrl+x o)",
+      "   ✗ Read /missing.ts",
+      "     File does not exist.",
+      "   ⊘ Read /secret · denied",
+    ]);
+  });
+
+  test("of calls that all failed shows each of them, with no fold", async () => {
+    const rows = await render([
+      read("/x", "r1", { state: "error", errorText: "nope" }),
+      read("/y", "r2", { state: "error", errorText: "nope" }),
+    ]);
+    expect(rows.join("\n")).not.toContain("Explored");
+    expect(rows[0]).toBe("   ✗ Read /x");
+  });
+});

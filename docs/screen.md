@@ -16,8 +16,9 @@ Each part of a reply is drawn for what it is. Lookups are one dim line each, and
 
 ```
    ◇ Thought: Planning the change · 2.3s (ctrl+x h)
-   → Read src/app.ts:10-59
-   ✱ Grep "useTheme" in src · 3 files
+   → Explored: 3 reads, 2 searches · 1 failed (ctrl+x o)
+   ✗ Read src/old.ts
+     File does not exist.
 
 ┃  # Run the tests
 ┃  $ bun test
@@ -31,6 +32,7 @@ Each part of a reply is drawn for what it is. Lookups are one dim line each, and
 ```
 
 - **Lookups** are one line: a glyph, the tool and what it acts on. Read, ls and skill use `→`, grep and glob use `✱`, a fetch uses `%`, a web search uses `◈` and a question uses `?`. A file under the session's folder is shown relative to it, and a read shows the lines it asked for (`:10-59`). A search that finished says what it found (`3 files`, `12 matches`, `no results`); a search saved before marcsh kept output says nothing. What a lookup read is shown only with [/details](commands.md#details).
+- **A run of lookups** (two or more reads, searches, lists, fetches or web searches in a row) is folded to one line that counts them: `→ Explored: 3 reads, 2 searches`, or `Exploring:` behind a spinner while one still runs. A lookup that failed or that you refused stays out of the fold: the line counts it (`· 1 failed`, `· 1 denied`), and it follows on its own line with its error. A thought or any other call between two lookups ends the run. With [/details](commands.md#details) (`ctrl+x o`) nothing is folded, and each call shows on its own line.
 - **Shell commands** are a panel with the command after a `$` (its first line, with `…` when more follow, as in a heredoc), headed by the description the model gave (Claude gives one). The last 10 lines of the output follow. A command started in the background carries `[background]`.
 - **Edits and writes** are a panel with the file, how many lines were added and removed (`+3 −1`), and the first 12 lines of the diff.
 - **Subagents** are a panel named for the subagent, with the end of what it reported.
