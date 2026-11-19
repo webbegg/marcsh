@@ -172,7 +172,8 @@ describe("the branch/ship guard on a pi session (S10)", () => {
     expect(existsSync(ran)).toBe(false);
     expect(toolResults[0]).toContain(REASON_COMMIT);
     // The frame wraps long lines.
-    expect(done.replace(/\s/g, "")).toContain(REASON_COMMIT.replace(/\s/g, ""));
+    // The panel's notch starts each wrapped row.
+    expect(done.replace(/[\s┃]/g, "")).toContain(REASON_COMMIT.replace(/\s/g, ""));
   }, 30000);
 
   test("an ordinary command gets the normal prompt: no guard reason, and the always key is offered", async () => {

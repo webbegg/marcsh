@@ -24,13 +24,13 @@ const settle = async (ms = 60) => {
   if (screen && !screen.renderer.isDestroyed) await screen.renderOnce();
 };
 
-async function render(part: { text: string; durationMs?: number }, options: { thinking?: boolean; width?: number } = {}) {
+async function render(part: { text: string; durationMs?: number }, options: { thinking?: boolean; width?: number; live?: boolean } = {}) {
   const store = createTranscriptViewStore();
   if (options.thinking) store.toggle("thinking");
   screen = await testRender(
     <ThemeProvider>
       <TranscriptViewProvider store={store}>
-        <ReasoningPart part={{ type: "reasoning", ...part }} />
+        <ReasoningPart part={{ type: "reasoning", ...part }} live={options.live} />
       </TranscriptViewProvider>
     </ThemeProvider>,
     { width: options.width ?? 80, height: 12 },
@@ -61,7 +61,7 @@ describe("a collapsed thinking block", () => {
 
   test("without a duration (Claude) is just `Thinking`", async () => {
     const frame = await render({ text: "Considering the options" });
-    expect(frame).toMatch(/^│ {2}Thinking · Considering the options/);
+    expect(frame).toMatch(/^ {3}◇ Thinking · Considering the options/);
     expect(frame).not.toMatch(/\ds/);
   });
 
@@ -85,10 +85,28 @@ describe("a collapsed thinking block", () => {
   });
 });
 
+describe("a titled thought", () => {
+  test("shows its title instead of its first words", async () => {
+    const frame = await render({ text: "**Planning the change**\n\nFirst the files, then the edit.", durationMs: 1200 });
+    expect(frame).toBe("   ◇ Thought: Planning the change · 1.2s (ctrl+x h)");
+  });
+
+  test("expanded, shows the rest under the title", async () => {
+    const frame = await render({ text: "**Planning**\n\nFirst the files." }, { thinking: true });
+    expect(frame.split("\n")).toEqual(["   ◇ Thought: Planning", "   │ First the files."]);
+  });
+});
+
+describe("a thought still being written", () => {
+  test("has a spinner in the place of its glyph", async () => {
+    const frame = await render({ text: "Considering" }, { live: true });
+    expect(frame).toMatch(/^ {3}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking/);
+  });
+});
+
 describe("an expanded thinking block", () => {
-  test("shows the whole text, as before", async () => {
+  test("shows the whole text behind a rule, under the label", async () => {
     const frame = await render({ text: "first thought\nsecond thought", durationMs: 2300 }, { thinking: true });
-    expect(frame).toContain("Thinking: first thought");
-    expect(frame).toContain("second thought");
+    expect(frame.split("\n")).toEqual(["   ◇ Thinking · 2.3s", "   │ first thought", "   │ second thought"]);
   });
 });

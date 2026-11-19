@@ -164,14 +164,14 @@ describe("AskUserQuestion on a pi session (S9)", () => {
   }, 30000);
 
   // Esc is the session's interrupt: it ends the turn, which declines the open question, so the model is not asked again.
-  test("Esc interrupts the turn and declines the question: the prompt goes away and the tool shows The user declined to answer.", async () => {
+  test("Esc interrupts the turn and declines the question: the prompt goes away and the tool shows it was declined", async () => {
     await openPiSession([askCall([COLOR]), afterTool]);
     await frameContaining("Question 1/1");
 
     await press("ESCAPE");
 
-    const after = await frameContaining("The user declined to answer.");
-    expect(after).toContain("The user declined to answer.");
+    const after = await frameContaining("Asked 1 question · declined");
+    expect(after).toContain("⊘ Asked 1 question · declined");
     expect(after).not.toContain("Question 1/1");
     await settle(300);
     expect(toolResults).toEqual([]);

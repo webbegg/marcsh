@@ -177,3 +177,26 @@ describe("the text of a reply is markdown (S8)", () => {
     expect(frame()).toContain("so bo");
   });
 });
+
+describe("the layout of a reply", () => {
+  const call = (toolName: string, id: string) => ({ type: "tool" as const, toolCallId: id, toolName, input: {}, state: "done" as const });
+
+  test("keeps a run of lookups together and sets every panel apart", async () => {
+    const { groupParts } = await import("./bot-message");
+    const groups = groupParts([
+      { type: "reasoning", text: "hm" },
+      call("Read", "r1"),
+      call("Grep", "g1"),
+      call("Bash", "b1"),
+      call("Edit", "e1"),
+      { type: "text", text: "done" },
+    ]);
+    expect(groups.map((group) => [group.layout, group.parts.length])).toEqual([["row", 3], ["block", 1], ["block", 1], ["text", 1]]);
+  });
+
+  test("puts an expanded thought in a group of its own", async () => {
+    const { groupParts } = await import("./bot-message");
+    const groups = groupParts([{ type: "reasoning", text: "hm" }, call("Read", "r1")], true);
+    expect(groups.map((group) => group.layout)).toEqual(["block", "row"]);
+  });
+});

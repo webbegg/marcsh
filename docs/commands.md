@@ -337,7 +337,7 @@ Show or collapse the full tool output and diffs in the transcript.
 /details
 ```
 
-- By default a finished tool call shows a short preview under its line: the last 4 lines of its output (`… 6 more lines (ctrl+x o)` says how many are left out), and for an edit or write the first 12 lines of its diff. A failed call always shows its whole error.
+- By default a finished tool call shows a short preview. A shell command shows the last 10 lines of its output, and an edit or write shows the first 12 lines of its diff. A subagent call or a tool marcsh does not know shows the last 4 lines. `… 6 more lines (ctrl+x o)` says how many lines are left out. A lookup (read, grep, glob, ls, fetch, web search, skill) is one line with nothing under it. A failed call always shows its whole error. See [The transcript](screen.md#the-transcript).
 - `/details` shows everything marcsh kept of each call: up to the last 200 lines or 16 KB of the output, and the whole diff. Run it again to collapse. A toast says which it is now. `Ctrl+X` then `o` does the same.
 - It applies to the whole transcript at once, and only until you quit: the choice is not saved, and every start is collapsed.
 - Only calls made after this version kept their output and diff; older messages show the one-line call, as before.
@@ -351,7 +351,7 @@ Show or collapse the model's thinking in the transcript.
 /thinking
 ```
 
-- A thinking block is one dim line: `Thinking · 2.3s`, then the first words of the thought when they fit, then the key that expands it. The duration is shown when the engine reports it (pi does; Claude does not, so the line is `Thinking`). A block with no text shows nothing.
+- A thinking block is one dim line: `◇ Thinking · 2.3s`, then the first words of the thought when they fit, then the key that expands it. A thought that starts with a bold title on its own line (as OpenAI's and Gemini's models write them) shows `◇ Thought: <title> · 2.3s` instead. The duration is shown when the engine reports it (pi does; Claude does not, so the line is `Thinking`). While the thought is still being written, a spinner replaces the `◇`. A block with no text shows nothing.
 - `/thinking` shows the whole thought of every block. Run it again to collapse. A toast says which it is now. `Ctrl+X` then `h` does the same.
 - Like `/details`, it lasts until you quit and is not saved.
 

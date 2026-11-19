@@ -112,13 +112,13 @@ describe("subagent task line on a pi session (S13)", () => {
     await openPiSession([calling(taskCall("Survey the code", "go")), child.step, fauxAssistantMessage([fauxText("parent done")])]);
 
     const running = await frameContaining("Survey the code · running");
-    expect(running).toContain("Task: Survey the code · running");
+    expect(running).toContain("Task Survey the code · running");
     expect(running).not.toContain("completed");
 
     child.open();
     const finished = await frameContaining("parent done");
 
-    expect(finished).toContain("Task: Survey the code · completed");
+    expect(finished).toContain("Task Survey the code · completed");
     expect(finished).toContain("Found three modules");
     expect(finished).not.toContain("running");
   }, 30000);
@@ -130,9 +130,9 @@ describe("subagent task line on a pi session (S13)", () => {
 
     const finished = await frameContaining("parent done");
 
-    expect(finished).toMatch(/Task: Read the notes · completed · read · 1 tool · \d+ tok/);
+    expect(finished).toMatch(/Task Read the notes · completed · read · 1 tool · \d+ tok/);
     expect(finished).not.toContain("inner-secret-notes");
-    expect(finished).not.toContain("Read:");
+    expect(finished).not.toContain("→ Read");
   }, 30000);
 
   test("parallel tasks each get a task line", async () => {
@@ -150,8 +150,8 @@ describe("subagent task line on a pi session (S13)", () => {
 
     const finished = await frameContaining("parent done");
 
-    expect(finished).toContain("Task: First job · completed");
-    expect(finished).toContain("Task: Second job · completed");
+    expect(finished).toContain("Task First job · completed");
+    expect(finished).toContain("Task Second job · completed");
     expect(finished).toContain("result of one");
     expect(finished).toContain("result of two");
   }, 30000);
@@ -163,13 +163,13 @@ describe("subagent task line on a pi session (S13)", () => {
 
     const prompt = await frameContaining("Allow bash?");
     expect(prompt).toContain("Allow bash?");
-    expect(prompt).toContain("Task: Make a file · running");
+    expect(prompt).toContain("Task Make a file · running");
     expect(existsSync(ran)).toBe(false);
     await press("y");
 
     const finished = await frameContaining("parent done");
     expect(existsSync(ran)).toBe(true);
-    expect(finished).toContain("Task: Make a file · completed");
+    expect(finished).toContain("Task Make a file · completed");
   }, 30000);
 
   test("a failed child shows the task as failed with its error", async () => {
@@ -178,7 +178,7 @@ describe("subagent task line on a pi session (S13)", () => {
 
     const finished = await frameContaining("parent done");
 
-    expect(finished).toContain("Task: Doomed work · failed");
+    expect(finished).toContain("Task Doomed work · failed");
     expect(finished).toContain("child exploded");
   }, 30000);
 });

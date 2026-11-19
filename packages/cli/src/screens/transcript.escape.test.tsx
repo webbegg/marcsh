@@ -85,7 +85,7 @@ describe("the transcript shows model, tool and MCP text as visible escapes", () 
     expect(hasRaw(all)).toBe(false);
     const flat = collapse(all);
     expect(flat).toContain("think\\u001b[2Jhard");
-    expect(flat).toContain("Bash:echo\\u001b]0;pwned\\u0007\\u001b]52;c;ZXZpbA==\\u0007\\u001b[2J");
+    expect(flat).toContain("✗echo\\u001b]0;pwned\\u0007\\u001b]52;c;ZXZpbA==\\u0007\\u001b[2J");
     expect(flat).toContain("boom\\u001b]52;c;AAAA\\u0007\\u202edone");
     expect(flat).toContain("task\\u001b[H");
     expect(flat).toContain("Edit\\u001b[2J");
@@ -143,7 +143,7 @@ describe("the transcript shows model, tool and MCP text as visible escapes", () 
     expect(frame).toContain("indented 日本語 🙂");
     // The label of the reasoning part belongs to that part: only its text is checked here.
     expect(frame).toContain("plain thought");
-    expect(frame).toContain("Read: /tmp/日本.txt");
+    expect(frame).toContain("Read /tmp/日本.txt");
     expect(frame).not.toContain("\\");
   });
 });
