@@ -2,6 +2,19 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.8.0
+
+A clearer transcript: each tool call is drawn for what it is, and a run of lookups folds into one line.
+
+### The transcript
+- **Each tool call is drawn for what it is.** A lookup (read, search, list, fetch, web search, skill) is one dim line with a glyph and what it acts on. A path inside the session's folder is shown relative to it, a read shows the lines it asked for (`:10-59`), and a finished search says what it found (`3 files`, `no results`). Shell commands, edits, writes, subagent tasks, todo lists and plans are panels. See [docs/screen.md](docs/screen.md#the-transcript).
+- **Shell commands** show the command after a `$`, cut to its first line, headed by the description the model gave, with the last 10 lines of output. A command started in the background carries `[background]`.
+- **Edits and writes** show how many lines were added and removed (`+3 −1`) next to the file, then the diff.
+- **Todo lists are a checklist** with how much is done (`≡ Todos · 1/3 done`), and a plan is shown as markdown.
+- **A run of lookups folds into one line** that counts them: `→ Explored: 3 reads, 2 searches`, or `Exploring:` behind a spinner while one runs. A lookup that failed or that you refused is counted (`· 1 failed`) and shown on its own line with its error. `/details` (`ctrl+x o`) unfolds every run.
+- **A refused call is struck through** and says `denied`, or `declined` for a question you dismissed, instead of looking like a failure.
+- **A folded thought** shows its title and duration on one line (`◇ Thought: Planning the change · 2.3s`). `/thinking` (`ctrl+x h`) shows the whole thought.
+
 ## 0.7.1
 
 Cleaner text in the `/` menu.
