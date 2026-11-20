@@ -82,6 +82,19 @@ afterEach(async () => {
 });
 
 describe("home with no model (S3)", () => {
+  test("the card leads with /login and /models, and offers the Claude engine after them", async () => {
+    await openHome(80);
+
+    const text = frame();
+    const login = text.indexOf("/login sign in to a provider");
+    const models = text.indexOf("/models then pick a model");
+    const claude = text.indexOf("Using Claude Code? /engine switches to the Claude engine.");
+    expect(login).toBeGreaterThan(-1);
+    expect(models).toBeGreaterThan(login);
+    expect(claude).toBeGreaterThan(models);
+    expect(text).not.toContain("Two ways to start");
+  });
+
   test("Enter creates no session and starts no turn; the message says what to do and the text stays in the input", async () => {
     const router = await openHome();
     const before = sessionTitles().length;
@@ -94,7 +107,7 @@ describe("home with no model (S3)", () => {
     expect(sessionTitles().length).toBe(before);
     expect(turns).toBe(0);
     const text = frame();
-    expect(text).toContain("No model yet: /login (pi) or /engine (Claude)");
+    expect(text).toContain("No model yet: type /login to sign in to a provider");
     expect(text).toContain("hi there");
   });
 
@@ -105,7 +118,7 @@ describe("home with no model (S3)", () => {
     await settle(300);
 
     const rows = screen!.captureCharFrame().split("\n");
-    expect(rows.some((row) => row.includes("No model yet: /login (pi) or /engine (Claude)"))).toBe(true);
+    expect(rows.some((row) => row.includes("No model yet: type /login to sign in to a provider"))).toBe(true);
   });
 
   test("the message goes away once the input changes, and comes back on the next Enter", async () => {
@@ -113,18 +126,18 @@ describe("home with no model (S3)", () => {
     await type("hi there");
     await press("RETURN");
     await settle(150);
-    expect(frame()).toContain("No model yet: /login (pi)");
+    expect(frame()).toContain("No model yet: type /login");
 
     await type("!");
-    expect(frame()).not.toContain("No model yet: /login (pi)");
+    expect(frame()).not.toContain("No model yet: type /login");
     expect(frame()).toContain("hi there!");
 
     await press("RETURN");
     await settle(150);
-    expect(frame()).toContain("No model yet: /login (pi)");
+    expect(frame()).toContain("No model yet: type /login");
 
     await press("BACKSPACE");
-    expect(frame()).not.toContain("No model yet: /login (pi)");
+    expect(frame()).not.toContain("No model yet: type /login");
   });
 
   test("a slash command still runs: /engine opens its dialog", async () => {
@@ -134,7 +147,7 @@ describe("home with no model (S3)", () => {
     await press("RETURN");
     await settle(150);
 
-    expect(frame()).not.toContain("No model yet: /login (pi)");
+    expect(frame()).not.toContain("No model yet: type /login");
     expect(frame()).toContain("Claude");
   });
 

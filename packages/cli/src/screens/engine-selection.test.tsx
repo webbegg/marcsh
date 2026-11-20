@@ -202,9 +202,9 @@ describe("/engine (S2)", () => {
     await press("RETURN");
     const listed = frame();
     expect(listed).toContain("Claude (Agent SDK)");
-    expect(listed).toContain("pi");
+    // pi, the default engine, is listed first.
+    expect(listed).toMatch(/Search engines (• )?pi Claude \(Agent SDK\)/);
 
-    await pressDown();
     await press("RETURN");
 
     expect(savedPreferences().defaultEngine).toBe("pi");
@@ -228,6 +228,7 @@ describe("/engine (S2)", () => {
 
     await type("/engine");
     await press("RETURN");
+    await pressDown();
     await press("RETURN");
 
     expect(savedPreferences().defaultEngine).toBe("claude");

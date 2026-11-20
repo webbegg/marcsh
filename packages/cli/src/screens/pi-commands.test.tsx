@@ -312,9 +312,9 @@ describe("pi's command list is warmed up only when pi is in play (S11)", () => {
     warmList = PI_LIST;
     await open("/");
 
+    // pi is the first row of /engine, Claude the second.
     await type("/engine");
     await press("RETURN");
-    await pressDown();
     await press("RETURN");
     await settle(100);
 
@@ -324,6 +324,7 @@ describe("pi's command list is warmed up only when pi is in play (S11)", () => {
     warmUps = [];
     await type("/engine");
     await press("RETURN");
+    await pressDown();
     await press("RETURN");
     await settle(100);
 

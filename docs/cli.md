@@ -6,7 +6,7 @@ marcsh starts the interface, runs one turn without it, or does one job and exits
 marcsh [dir] [options]
 marcsh run [message...] [options]
 marcsh session list|delete|export ...
-marcsh models [--engine claude|pi]
+marcsh models [--engine pi|claude]
 marcsh mcp list|add ...
 marcsh stats [--days N] [--json]
 marcsh upgrade [--version vX]
@@ -22,7 +22,7 @@ A usage mistake (a wrong option or value, no message for `run`, an unknown sessi
 | --- | --- |
 | `-c`, `--continue` | Opens the most recent session of this folder (the one updated last). A folder with no session opens the home screen. |
 | `-s <id>`, `--session <id>` | Opens the session with this id. An id nobody has prints `marcsh: no session with id "<id>"` and exits with `2`. |
-| `--engine claude\|pi` | The engine new sessions use on this launch. It is not saved: the engine you chose with `/engine` stays as it was. Choosing an engine in the interface replaces it. An opened session keeps its own engine. |
+| `--engine pi\|claude` | The engine new sessions use on this launch. It is not saved: the engine you chose with `/engine` stays as it was. Choosing an engine in the interface replaces it. An opened session keeps its own engine. |
 
 `--continue` and `--session` cannot be used together. A session opened this way has the home screen behind it, so leaving it takes you home.
 
@@ -49,7 +49,7 @@ The session is saved like an interface session: it has a title (the first 100 ch
 | `-s <id>`, `--session <id>` | Continues the session with this id. An id nobody has is a usage error (exit `2`). |
 | `-m <model>`, `--model <model>` | The model for this turn. Without it, the agent's own model is used when the engine can use it, else the model new sessions use (see [Engines and models](engines-and-models.md)). |
 | `--agent <name>` | The agent, by its id or its name. Without it, the agent you selected in the interface. An unknown name is a usage error (exit `2`). |
-| `--engine claude\|pi` | The engine of a new session; the default is the engine new sessions use. A session you continue keeps its own engine, and marcsh says on stderr that `--engine` was ignored. |
+| `--engine pi\|claude` | The engine of a new session; the default is the engine new sessions use. A session you continue keeps its own engine, and marcsh says on stderr that `--engine` was ignored. |
 | `--format text\|json` | `text` (default) or `json`, below. |
 
 ### Output
@@ -114,7 +114,7 @@ Ids must be written in full, as `list` prints them.
 `marcsh models` lists the models you can choose, by engine.
 
 ```
-marcsh models [--engine claude|pi]
+marcsh models [--engine pi|claude]
 ```
 
 - **pi** has the models of its catalogue and your `models.json`, as `provider/id` followed by the name. A `*` marks the models whose provider has credentials (a login made with `/login`, or an environment variable); the model dialog in the interface lists only those. See [Engines and models](engines-and-models.md).

@@ -75,10 +75,10 @@ describe("parseCliArgs: launching the TUI", () => {
     expect(parseCliArgs(["--session=abc"])).toEqual(tui({ session: "abc" }));
   });
 
-  test("--engine takes claude or pi and nothing else", () => {
+  test("--engine takes pi or claude and nothing else", () => {
     expect(parseCliArgs(["--engine", "claude"])).toEqual(tui({ engine: "claude" }));
     expect(parseCliArgs(["--engine=pi"])).toEqual(tui({ engine: "pi" }));
-    expect(parseCliArgs(["--engine", "gpt"])).toEqual({ kind: "error", message: 'invalid --engine "gpt" (expected claude or pi)' });
+    expect(parseCliArgs(["--engine", "gpt"])).toEqual({ kind: "error", message: 'invalid --engine "gpt" (expected pi or claude)' });
   });
 
   test("an option without its value is an error", () => {
@@ -134,7 +134,7 @@ describe("parseCliArgs: marcsh run", () => {
   });
 
   test("errors of the shared options apply", () => {
-    expect(parseCliArgs(["run", "--engine", "x"])).toEqual({ kind: "error", message: 'invalid --engine "x" (expected claude or pi)' });
+    expect(parseCliArgs(["run", "--engine", "x"])).toEqual({ kind: "error", message: 'invalid --engine "x" (expected pi or claude)' });
     expect(parseCliArgs(["run", "--model"])).toEqual({ kind: "error", message: 'option "--model" needs a value' });
     expect(parseCliArgs(["run", "-c", "-s", "a"])).toEqual({ kind: "error", message: "--continue and --session cannot be used together" });
     expect(parseCliArgs(["run", "--bogus"])).toEqual({ kind: "error", message: 'unknown option "--bogus"' });
@@ -197,7 +197,7 @@ describe("parseCliArgs: marcsh models", () => {
     expect(parseCliArgs(["models"])).toEqual({ kind: "models" });
     expect(parseCliArgs(["models", "--engine", "pi"])).toEqual({ kind: "models", engine: "pi" });
     expect(parseCliArgs(["models", "--engine=claude"])).toEqual({ kind: "models", engine: "claude" });
-    expect(parseCliArgs(["models", "--engine", "x"])).toEqual(bad('invalid --engine "x" (expected claude or pi)'));
+    expect(parseCliArgs(["models", "--engine", "x"])).toEqual(bad('invalid --engine "x" (expected pi or claude)'));
     expect(parseCliArgs(["models", "extra"])).toEqual(bad('unexpected argument "extra"'));
     expect(parseCliArgs(["models", "--help"])).toEqual({ kind: "help", command: "models" });
   });
