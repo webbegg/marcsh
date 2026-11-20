@@ -81,7 +81,7 @@ const router = createMemoryRouter(
       path: "/",
       element: <RootLayout />,
       children: [
-        { index: true, element: <Home /> },
+        { index: true, element: <Home dashboard /> },
         { path: "sessions/new", element: <NewSession /> },
         { path: "sessions/:id", element: <Session /> },
       ]

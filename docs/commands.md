@@ -646,13 +646,13 @@ See [Agents](agents.md) and [Building a pack](building-a-pack.md) for the detail
 | `Shift+Enter` | Add a new line. |
 | `Alt+Enter` (`Option+Enter` on a Mac) | During a pi turn, queue the message. Same as `/queue`. |
 | `Tab` | Switch to the next agent: Build, Plan, your own agents, then agents from installed packs, then back to Build. When the mode changes between Build and Plan, a toast says what the new mode does. |
-| `Esc` | Close a menu or dialog. Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
+| `Esc` | Close a menu or dialog (on the home screen, the menu of daily options, to show the input). Stop a running reply. This also declines an approval prompt or question that is waiting, except in a question's free-text field (it only closes the field) and on the project-trust question (it means "not now"). |
 | `Ctrl+C` | Close the open menu or dialog. If there is none, clear the text in the prompt. If the prompt is empty, the first press shows "ctrl+c again to quit" and a second press within about 1.5 seconds quits: marcsh stops any running reply first and waits a few seconds for it to finish. |
 | `Ctrl+P` | Open the command palette. See [Keybinds](keybinds.md). |
 | `Ctrl+V` | Paste what the clipboard holds: an image is attached, text is pasted. See [Pasting](screen.md#pasting). |
 | `Ctrl+X`, then a key | Run a command (`Ctrl+X` `n` is `/new`). The status line shows the leader is waiting; it ends after 2 seconds. See [Keybinds](keybinds.md). |
 | `@` | Mention a file or folder. See below. |
-| `Up` / `Down` | Move the highlight in the command menu, the `@` menu and dialogs. |
+| `Up` / `Down` | Move the highlight in the home screen's menu, the command menu, the `@` menu and dialogs. |
 | `Ctrl+D` | In the `/sessions` dialog, delete the highlighted session after a confirmation. |
 
 The keys for approval prompts (`y`, `a`, `n`) are in [The screen](screen.md#approving-tool-calls). The keys for the trust list (`t`, `d`) are in [Security](security.md#project-trust).
