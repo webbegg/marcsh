@@ -62,15 +62,14 @@ afterEach(async () => {
 });
 
 describe("first-run card on the home screen (S4)", () => {
-  test("with no pi model it names /login for pi and /engine → Claude with the user's Claude sign-in", async () => {
+  test("with no pi model it names /login and /models, then /engine for the Claude engine", async () => {
     await openHome({ defaultEngine: "pi" });
 
     const text = frame();
     expect(text).toContain("No model yet");
     expect(text).toContain("/login");
-    expect(text).toContain("pi");
-    expect(text).toContain("/engine → Claude");
-    expect(text).toContain("Claude sign-in");
+    expect(text).toContain("/models");
+    expect(text).toContain("/engine switches to the Claude engine");
   });
 
   test("it is gone when a model is available", async () => {

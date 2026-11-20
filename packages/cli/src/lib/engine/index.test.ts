@@ -20,8 +20,8 @@ const fakeEngine = (id: string): Engine => ({
 });
 
 describe("engine registry", () => {
-  test("lists claude and pi, with pi as the default and a label for each", () => {
-    expect([...ENGINE_IDS]).toEqual(["claude", "pi"]);
+  test("lists pi first, then claude, with pi as the default and a label for each", () => {
+    expect([...ENGINE_IDS]).toEqual(["pi", "claude"]);
     expect(DEFAULT_ENGINE_ID).toBe("pi");
     expect(ENGINE_LABELS).toEqual({ claude: "Claude (Agent SDK)", pi: "pi" });
   });

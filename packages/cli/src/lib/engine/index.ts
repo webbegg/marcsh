@@ -5,7 +5,8 @@ import { getStorage } from "../storage";
 import type { PiEngine } from "./pi";
 import type { Engine } from "./types";
 
-export const ENGINE_IDS = ["claude", "pi"] as const;
+// pi, the default and the engine marcsh is tested on first, comes first wherever the engines are listed.
+export const ENGINE_IDS = ["pi", "claude"] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
 export const DEFAULT_ENGINE_ID: EngineId = "pi";

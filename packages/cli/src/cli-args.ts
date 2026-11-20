@@ -4,7 +4,7 @@
 export const USAGE = `Usage: marcsh [dir] [options]
        marcsh run [message...] [options]
        marcsh session list|delete|export ...
-       marcsh models [--engine claude|pi]
+       marcsh models [--engine pi|claude]
        marcsh mcp list|add ...
        marcsh stats [--days N] [--json]
        marcsh upgrade [--version vX]
@@ -20,7 +20,7 @@ export const USAGE = `Usage: marcsh [dir] [options]
 Options for the interface:
   -c, --continue          Open the most recent session of this folder
   -s, --session <id>      Open the session with this id
-      --engine <engine>   The engine new sessions use on this launch: claude or pi
+      --engine <engine>   The engine new sessions use on this launch: pi or claude
 
 Run options are in marcsh run --help.
 
@@ -50,7 +50,7 @@ goes on without it. Reads, and tools you chose to always allow, still run. run a
   -s, --session <id>      Continue the session with this id
   -m, --model <model>     The model to use
       --agent <name>      The agent to use (its id or name)
-      --engine <engine>   The engine of a new session: claude or pi
+      --engine <engine>   The engine of a new session: pi or claude
       --format <format>   text (the final reply, default) or json (one JSON object per line)
 
 Exit codes: 0 done, 1 the turn failed, 2 wrong usage, 130 interrupted.
@@ -66,12 +66,12 @@ Exit codes: 0 done, 1 the turn failed, 2 wrong usage, 130 interrupted.
   -o, --output <file>  Write to this file (a folder gets marcsh-<id>-<date>.<fmt>). It refuses to replace a file
       --force          Replace the file that -o names
 `,
-  models: `Usage: marcsh models [--engine claude|pi]
+  models: `Usage: marcsh models [--engine pi|claude]
 
 Lists the models the engines offer: the Claude aliases, and pi's models (marked * when their provider has credentials).
 Without --engine both engines are listed.
 
-      --engine <engine>   Only this engine: claude or pi
+      --engine <engine>   Only this engine: pi or claude
 `,
   mcp: `Usage: marcsh mcp list
        marcsh mcp add <name> [--force] -- <command...>
@@ -96,7 +96,7 @@ Downloads the official installer (install.sh), prints where it came from and run
 };
 
 /** The engines the options accept. Kept here (not read from lib/engine, which loads the app); a test keeps the two lists equal. */
-export const LAUNCH_ENGINE_IDS = ["claude", "pi"] as const;
+export const LAUNCH_ENGINE_IDS = ["pi", "claude"] as const;
 export type LaunchEngineId = (typeof LAUNCH_ENGINE_IDS)[number];
 
 const FORMATS = ["text", "json"] as const;
