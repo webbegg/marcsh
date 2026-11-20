@@ -1,6 +1,6 @@
 {
   "name": "@marcsh/cli",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "license": "MIT",
   "module": "src/index.tsx",
   "type": "module",

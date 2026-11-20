@@ -1,5 +1,5 @@
 {
   "name": "marcsh",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "marcsh workflow: small changes inline, large ones behind a feature doc, with branch and ship guards."
 }
