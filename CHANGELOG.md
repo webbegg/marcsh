@@ -2,6 +2,19 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.10.0
+
+The home screen opens on a menu of daily options, and the same options are in the command palette.
+
+### The home screen
+- **marcsh opens on a menu of daily options**: **New feature**, **Fix a bug**, **Work on a ticket** and **Review a PR**. `Up` and `Down` move, `Enter` chooses. An option runs the loaded command of the same kind, such as the brigadev pack's `/feature`, `/bug-fix`, `/ticket` and `/review-branch`. With no such command, the prompt opens with a starter text, like `Fix a bug: `, for you to finish. See [docs/screen.md](docs/screen.md).
+- **`Esc` closes the menu** and shows the prompt. **`Ctrl+X` `b`** (or `/dashboard`) opens it again; in a session it goes back to the home screen. Rebind it as `"dashboard"` in `keybinds.json`. See [docs/keybinds.md](docs/keybinds.md).
+- **`Ctrl+P` on the menu** closes it and opens the palette.
+
+### The palette
+- **`/new-feature`, `/fix-bug`, `/work-ticket` and `/pr-review`** list the daily options in the palette and the `/` menu. In a session each one runs in that session. It never replaces text already in the prompt, and sends nothing while a reply runs. See [docs/commands.md](docs/commands.md).
+- Five command names are now marcsh's own (`dashboard`, `new-feature`, `fix-bug`, `work-ticket`, `pr-review`): a pack or custom command with one of these names is hidden by marcsh's.
+
 ## 0.9.0
 
 marcsh installs on Linux, and puts pi, the engine it is built and tested on first, ahead of the Claude engine.
