@@ -38,6 +38,22 @@ export type CommandContext = {
   setModel: (model: SupportedChatModelId) => void;
   /** What the open session can do; null outside a session (the home screen). */
   session: SessionCommands | null;
+  /** The prompt the command was run from; unset where a command runs without one. */
+  prompt?: PromptControl;
+};
+
+/** What a command can do with the prompt it was run from. */
+export type PromptControl = {
+  /** The prompt holds text or attachments. */
+  hasText: () => boolean;
+  /** Nothing can be sent now: a reply runs, or the session is starting. */
+  busy: () => boolean;
+  /** Whether a user's or a pack's command by this name is loaded here. */
+  hasUserCommand: (name: string) => boolean;
+  /** Sends `text` as if it was typed and sent with Enter. */
+  send: (text: string) => void;
+  /** Puts `text` in the prompt, the cursor at its end. */
+  fill: (text: string) => void;
 };
 
 export type Command = {

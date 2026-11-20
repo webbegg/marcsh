@@ -44,6 +44,52 @@ Start a new conversation.
 - Goes back to the home screen. Your next message starts a new session.
 - The conversation you left is kept. Open it again with [/sessions](#sessions).
 
+### /dashboard
+
+Open the home screen's menu of daily options.
+
+```
+/dashboard
+```
+
+- On the home screen, it opens the menu again after `Esc` closed it. In a session, it goes back to the home screen, which opens on the menu. The session you left is kept.
+- Key: `Ctrl+X` `b`. See [Keybinds](keybinds.md).
+
+### /new-feature
+
+Start a new feature.
+
+```
+/new-feature
+```
+
+- With a `/feature` command loaded (a pack's, such as brigadev's, or your own), it runs `/feature` in the prompt you picked it from, and asks its questions first. Without one, the prompt gets `New feature: ` for you to finish.
+- Like the other daily actions below, it is in the [home screen's menu](screen.md#the-screens) and the palette (`Ctrl+P`). Inside a session it runs in that session. It replaces no text: with text in the prompt, a toast says to clear it first. While a reply runs, nothing is sent.
+
+### /fix-bug
+
+Fix a bug: runs `/bug-fix` when it is loaded, else the prompt gets `Fix a bug: `. See [/new-feature](#new-feature).
+
+```
+/fix-bug
+```
+
+### /work-ticket
+
+Work on a ticket: runs `/ticket` when it is loaded, else the prompt gets `Work on ticket: `. See [/new-feature](#new-feature).
+
+```
+/work-ticket
+```
+
+### /pr-review
+
+Review a PR: runs `/review-branch` when it is loaded, else the prompt gets `Review PR: `. See [/new-feature](#new-feature).
+
+```
+/pr-review
+```
+
 ### /agents
 
 Switch agents, and install, update or remove packs.

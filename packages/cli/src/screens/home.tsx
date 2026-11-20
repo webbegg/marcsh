@@ -15,6 +15,7 @@ import { TextAttributes } from "@opentui/core";
 import { FirstRunCard, NO_MODEL_MESSAGE } from "../components/first-run-card";
 import { giveBackText, handOffDraft } from "../lib/prompt-lock";
 import { HomeDashboard, type DashboardOption } from "../components/home-dashboard";
+import { onDashboardRequest } from "../lib/daily-options";
 
 type Props = {
   /** Opens on the menu of daily options instead of the input; Esc closes it. The app's route turns it on. */
@@ -31,6 +32,17 @@ export function Home({ dashboard = false }: Props) {
   // model, so Enter keeps working as before and the turn reports what is missing.
   const noModel = defaultEngine === "pi" && piModelStatus === "none";
   const [showDashboard, setShowDashboard] = useState(dashboard);
+  // The palette key on the menu closes it and opens the palette from the input that replaces it.
+  const [paletteOnMount, setPaletteOnMount] = useState(false);
+  // `/dashboard` and its key open the menu again.
+  useEffect(
+    () =>
+      onDashboardRequest(() => {
+        setPaletteOnMount(false);
+        setShowDashboard(true);
+      }),
+    [],
+  );
   const [blocked, setBlocked] = useState(false);
   useEffect(() => {
     if (!noModel) setBlocked(false);
@@ -85,6 +97,7 @@ export function Home({ dashboard = false }: Props) {
       const turn = commandTurn(invocation);
       if (turn && !noModel) return startTurn(invocation, turn);
       handOffDraft(renderer, turn ? invocation : option.starter);
+      setPaletteOnMount(false);
       setShowDashboard(false);
     },
     [commandTurn, startTurn, noModel, renderer],
@@ -117,7 +130,17 @@ export function Home({ dashboard = false }: Props) {
         <Header />
         <box width="100%" maxWidth={78} paddingX={2} flexDirection="column" gap={1}>
           {noModel ? <FirstRunCard /> : null}
-          <HomeDashboard onChoose={chooseOption} onClose={() => setShowDashboard(false)} />
+          <HomeDashboard
+            onChoose={chooseOption}
+            onClose={() => {
+              setPaletteOnMount(false);
+              setShowDashboard(false);
+            }}
+            onPalette={() => {
+              setPaletteOnMount(true);
+              setShowDashboard(false);
+            }}
+          />
         </box>
       </box>
     );
@@ -136,7 +159,7 @@ export function Home({ dashboard = false }: Props) {
       <Header />
       <box width="100%" maxWidth={78} paddingX={2} flexDirection="column" gap={1}>
         {noModel ? <FirstRunCard /> : null}
-        <InputBar onSubmit={handleSubmit} onTextChange={handleTextChange} />
+        <InputBar onSubmit={handleSubmit} onTextChange={handleTextChange} openPaletteOnMount={paletteOnMount} />
         {noModel && blocked ? <text>{NO_MODEL_MESSAGE}</text> : null}
         <box flexDirection="row" gap={2} flexShrink={0} marginLeft="auto">
           <PaletteHint />

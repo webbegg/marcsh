@@ -14,10 +14,10 @@ import { StatusBar } from "./status-bar";
 import { CommandMenu } from "./command-menu";
 import type { Command, CommandContext } from "./command-menu/types";
 import { COMMANDS, COMMAND_NAMES } from "./command-menu/commands";
-import { loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
+import { engineCommandNames, loadMenuCommands, useCommandMenu } from "./command-menu/use-command-menu";
 import { typedCommand } from "./command-menu/typed-command";
 import { openHelp } from "./dialogs/help-dialog";
-import { takePackCommandNotices } from "../lib/user-commands";
+import { loadCommandSet, takePackCommandNotices } from "../lib/user-commands";
 import { CommandPalette } from "./command-palette";
 import { SessionCommandsContext } from "./command-menu/session-commands";
 import { useBackgroundHub } from "../lib/background/context";
@@ -313,6 +313,8 @@ type Props = {
   messages?: ChatMessage[];
   /** A reply is running: an input that is off says so instead of inviting a prompt. */
   replyRunning?: boolean;
+  /** Opens the command palette once the input is on screen (the palette key pressed on the home screen's menu). */
+  openPaletteOnMount?: boolean;
 };
 
 /**
@@ -563,7 +565,7 @@ type HistoryWalk = {
 
 const idleWalk = (): HistoryWalk => ({ entries: [], index: -1, draft: "", shown: null });
 
-export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages, replyRunning = false }: Props) {
+export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = process.cwd(), engine, typeOnly = false, draftKey, messages, replyRunning = false, openPaletteOnMount = false }: Props) {
   const {
     agent,
     mode,
@@ -648,6 +650,8 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
   // Read once, when the first bar mounts; what was wrong in the file is said once, here, in a single toast.
   const keybinds = useMemo(() => loadKeybinds(COMMAND_NAMES), []);
   const runPaletteCommandRef = useRef<(command: Command) => void>(() => {});
+  // Sends what the prompt holds (see handleSubmit, defined below the command context that uses it).
+  const sendNowRef = useRef<() => void>(() => {});
   const leaderRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [leaderPending, setLeaderPending] = useState(false);
 
@@ -1063,7 +1067,26 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     setApprovalMode,
     defaultApprovalMode,
     setDefaultApprovalMode,
-  }), [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, switchAgent, setModel, session, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode]);
+    prompt: {
+      hasText: () => (textareaRef.current?.plainText.length ?? 0) > 0 || attachmentsRef.current.length > 0,
+      busy: () => disabled || typeOnly || turnInput.active || turnInput.starting === true,
+      hasUserCommand: (name) =>
+        loadCommandSet({ cwd, builtinNames: COMMAND_NAMES, engineNames: engineCommandNames(engineId) }).commands.some((command) => command.name === name),
+      send: (text) => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.setText(text);
+        sendNowRef.current();
+      },
+      fill: (text) => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.setText(text);
+        cursorToEnd(textarea);
+        setDraft(renderer, text.length > 0);
+      },
+    },
+  }), [renderer, dialog, toast, engineId, cwd, defaultEngine, switchDefaultEngine, piModel, setPiModel, refreshPiModel, navigate, agent.id, reloadAgents, selectAgent, switchAgent, setModel, session, approvalMode, setApprovalMode, defaultApprovalMode, setDefaultApprovalMode, disabled, typeOnly, turnInput]);
 
   // `keepText`: the command was not typed (the palette, the leader), so the prompt holds the user's own text and is left alone.
   const handleCommand = useCallback((
@@ -1118,6 +1141,11 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
       ),
     });
   }, [dialog, keybinds, engineId, cwd, session]);
+
+  useEffect(() => {
+    if (openPaletteOnMount) openPalette();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the bar mounts
+  }, []);
 
   const runKeyAction = (action: KeyAction) => {
     if (action.action === "palette") openPalette();
@@ -1240,6 +1268,7 @@ export function InputBar({ onSubmit, onTextChange, disabled = false, cwd = proce
     setAttachments([]);
     onSubmit(text, attached);
   }, [disabled, typeOnly, onSubmit, handleCommand, turnInput, renderer, rememberPrompt, toast])
+  sendNowRef.current = () => handleSubmit();
 
   // Keep the file picker in sync with the current @mention token.
   useEffect(() => {

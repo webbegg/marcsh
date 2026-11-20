@@ -48,6 +48,14 @@ const down = async () => {
   await act(async () => screen!.mockInput.pressArrow("down"));
   await settle(80);
 };
+const ctrl = async (name: string) => {
+  await act(async () => screen!.mockInput.pressKey(name as never, { ctrl: true }));
+  await settle(80);
+};
+const type = async (text: string) => {
+  await act(() => screen!.mockInput.typeText(text));
+  await settle(80);
+};
 const frame = () => screen!.captureCharFrame().replace(/[│\s]+/g, " ");
 
 async function openHome() {
@@ -130,6 +138,87 @@ describe("Esc (S4)", () => {
     expect(text).not.toContain("Work on a ticket");
     expect(text).not.toContain("Review a PR");
     expect(router.state.location.pathname).toBe("/");
+  });
+});
+
+describe("reopening the menu (S5)", () => {
+  test("ctrl+x b opens the menu again", async () => {
+    await openHome();
+    await press("ESCAPE");
+    expect(frame()).not.toContain("Work on a ticket");
+
+    await ctrl("x");
+    await press("b");
+
+    const text = frame();
+    expect(text).toContain("Work on a ticket");
+    expect(text).not.toContain("Ask anything");
+  });
+
+  test("/dashboard opens the menu again", async () => {
+    await openHome();
+    await press("ESCAPE");
+    await type("/dashboard");
+    await press("RETURN");
+
+    expect(frame()).toContain("Work on a ticket");
+  });
+});
+
+describe("the daily actions in ctrl+p (S6)", () => {
+  test("ctrl+p on the menu closes it and opens the palette, which lists the four actions and /dashboard", async () => {
+    await openHome();
+    await ctrl("p");
+    expect(frame()).toContain("Command Palette");
+    expect(frame()).not.toContain("esc prompt");
+
+    for (const name of ["new-feature", "fix-bug", "work-ticket", "pr-review", "dashboard"]) {
+      await type(name);
+      expect(frame()).toContain(`/${name}`);
+      for (let i = 0; i < name.length; i++) await act(async () => screen!.mockInput.pressBackspace());
+      await settle(60);
+    }
+  });
+
+  test("/fix-bug from the palette with no /bug-fix command puts the starter text in the input", async () => {
+    await openHome();
+    await press("ESCAPE");
+    await ctrl("p");
+    await type("fix-bug");
+    await press("RETURN");
+
+    const text = frame();
+    expect(text).not.toContain("Command Palette");
+    expect(text).toContain("Fix a bug:");
+  });
+
+  test("/new-feature from the palette runs /feature when it is loaded: its question form opens", async () => {
+    command(
+      "feature.md",
+      "---\ndescription: Build it\nquestions:\n  - id: what\n    label: What should be built?\n    kind: long\n    required: true\n---\nBuild {{what}}",
+    );
+    await openHome();
+    await press("ESCAPE");
+    await ctrl("p");
+    await type("new-feature");
+    await press("RETURN");
+    await settle(100);
+
+    expect(frame()).toContain("What should be built?");
+  });
+
+  test("with text in the prompt, an action replaces nothing and says to clear it", async () => {
+    await openHome();
+    await press("ESCAPE");
+    await type("my own words");
+    await ctrl("p");
+    await type("fix-bug");
+    await press("RETURN");
+
+    const text = frame();
+    expect(text).toContain("my own words");
+    expect(text).not.toContain("Fix a bug:");
+    expect(text).toContain("Clear the prompt");
   });
 });
 

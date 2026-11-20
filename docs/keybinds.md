@@ -46,6 +46,7 @@ Press `Ctrl+X`, then within 2 seconds press one more key to run its command. The
 | `x` | `/export` (puts `/export ` in the prompt) |
 | `o` | `/details` (full tool output and diffs, on or off) |
 | `h` | `/thinking` (full thinking, on or off) |
+| `b` | `/dashboard` (the home screen's menu) |
 | `q` | `/exit` |
 
 On the home screen, the commands that need a session say "/name works inside a session. Open one first."
