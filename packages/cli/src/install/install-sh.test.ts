@@ -4,6 +4,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -25,7 +26,12 @@ import { join } from "node:path";
 // and nothing leaves the machine (the fake curl answers Bun's installer URL itself).
 // Every test has its own sandbox and its own server, so the tests run concurrently. The script starts a few dozen
 // processes per run; the timeout leaves room for a machine where starting a process is slow.
-// The script's atomic switch uses macOS `mv -h`, so these tests run on macOS only.
+// The fake `uname` reports the machine's own system unless a test says otherwise, so the script uses this system's tools (BSD on
+// macOS, GNU on Linux): the tests run on macOS and on Linux. A test that fakes another system only checks what happens before the
+// install starts, because the other system's tools are not here.
+
+/** The system the tests run on, as `uname -s` names it. */
+const HOST_OS = process.platform === "darwin" ? "Darwin" : "Linux";
 
 setDefaultTimeout(60_000);
 
@@ -167,7 +173,7 @@ exit "\${FAKE_BUN_INSTALL_EXIT:-0}"`,
   script(
     join(fakebin, "uname"),
     `case "\${1:-}" in
-  -s) echo "\${FAKE_UNAME_S:-Darwin}" ;;
+  -s) echo "\${FAKE_UNAME_S:-${HOST_OS}}" ;;
   -m) echo "\${FAKE_UNAME_M:-arm64}" ;;
   *) exec /usr/bin/uname "$@" ;;
 esac`,
@@ -235,6 +241,8 @@ exec /usr/bin/curl "$@"`,
         HOME: home,
         PATH: options.path ?? `${fakebin}:/usr/bin:/bin`,
         TMPDIR: tmp,
+        // The shell picks the file --modify-path writes; zsh unless a test says otherwise, on every system.
+        SHELL: "/bin/zsh",
         MARCSH_INSTALL_BASE_URL: `http://127.0.0.1:${server.port}`,
         FAKE_BUN_LOG: bunLog,
         FAKE_CURL_LOG: curlLog,
@@ -345,7 +353,7 @@ function fakeTool(sb: Sandbox, name: string, body: string): void {
   chmodSync(join(sb.fakebin, name), 0o755);
 }
 
-describe.skipIf(process.platform !== "darwin")("install.sh", () => {
+describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("install.sh", () => {
   describe.concurrent("install", () => {
     test("a fresh install unpacks, runs bun install in the version folder, and links marcsh", async () => {
       const sb = makeSandbox();
@@ -624,6 +632,22 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
       }
     });
 
+    // On Linux the switch is GNU mv's -T: an mv without it must fail the update and leave the version that was there.
+    test.skipIf(HOST_OS !== "Linux")("an mv without -T stops the update and keeps the previous version", async () => {
+      const sb = makeSandbox();
+      expect((await sb.install("0.1.0")).code).toBe(0);
+      fakeTool(sb, "mv", `for arg in "$@"; do case "$arg" in -*T*) echo "mv: invalid option -- 'T'" >&2; exit 1 ;; esac; done\nexec /bin/mv "$@"`);
+
+      const result = await sb.install("0.2.0");
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Could not switch");
+      expect(readlinkSync(currentLink(sb))).toBe("0.1.0");
+      expect(launcherOutput(sb)).toBe("marcsh 0.1.0\n");
+      expect(readdirSync(appDir(sb)).filter((name) => name.includes(".tmp."))).toEqual([]);
+      expect(installed(sb)).toEqual(["0.1.0"]);
+    });
+
     test("a GNU-style mv first on PATH (no -h) does not break the atomic switch", async () => {
       const sb = makeSandbox();
       fakeTool(
@@ -862,6 +886,15 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
         "a symlink",
         (work: string) => {
           symlinkSync("/etc", join(work, "marcsh", "link"));
+          return ["marcsh"];
+        },
+      ],
+      [
+        // GNU tar and BSD tar list a hard link differently; both must be caught.
+        "a hard link",
+        (work: string) => {
+          writeFileSync(join(work, "marcsh", "a"), "x");
+          linkSync(join(work, "marcsh", "a"), join(work, "marcsh", "b"));
           return ["marcsh"];
         },
       ],
@@ -1162,28 +1195,50 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
 
   describe.concurrent("requirements", () => {
     test.concurrent.each([
-      ["Linux", "Linux", "x86_64"],
-      ["an unknown OS", "FreeBSD", "arm64"],
-    ])("%s is refused", async (_name, os, arch) => {
+      ["FreeBSD", "arm64"],
+      ["MINGW64_NT-10.0", "x86_64"],
+    ])("%s is refused", async (os, arch) => {
       const sb = makeSandbox();
       sb.publish(makeRelease("0.1.0"));
 
       const result = await sb.run([], { env: { FAKE_UNAME_S: os, FAKE_UNAME_M: arch } });
 
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain(`macOS only (this is ${os})`);
+      expect(result.stderr).toContain(`macOS and Linux only (this is ${os})`);
       expect(sb.requests).toEqual([]);
       expect(tree(sb.home)).toEqual([]);
     });
 
-    test("an unsupported Mac architecture is refused", async () => {
+    // Without Bun the install stops right after the system check, so this runs on any system: the error is about Bun.
+    test.concurrent.each([
+      ["Darwin", "arm64"],
+      ["Darwin", "x86_64"],
+      ["Linux", "x86_64"],
+      ["Linux", "aarch64"],
+      ["Linux", "arm64"],
+    ])("%s on %s gets past the system check", async (os, arch) => {
+      const sb = makeSandbox({ bun: false });
+      sb.publish(makeRelease("0.1.0"));
+
+      const result = await sb.run([], { env: { FAKE_UNAME_S: os, FAKE_UNAME_M: arch } });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Bun was not found");
+      expect(result.stderr).not.toContain("nsupported");
+    });
+
+    test.concurrent.each([
+      ["Darwin", "ppc", "Unsupported Mac architecture: ppc"],
+      ["Linux", "ppc64le", "Unsupported Linux architecture: ppc64le"],
+      ["Linux", "armv7l", "Unsupported Linux architecture: armv7l"],
+    ])("%s on %s is refused", async (os, arch, message) => {
       const sb = makeSandbox();
       sb.publish(makeRelease("0.1.0"));
 
-      const result = await sb.run([], { env: { FAKE_UNAME_M: "ppc" } });
+      const result = await sb.run([], { env: { FAKE_UNAME_S: os, FAKE_UNAME_M: arch } });
 
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain("Unsupported Mac architecture: ppc");
+      expect(result.stderr).toContain(message);
       expect(tree(sb.home)).toEqual([]);
     });
 
@@ -1358,6 +1413,69 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
       expect(readFileSync(join(sb.home, ".zshrc"), "utf8")).toBe('export PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
     });
 
+    // A bash on Linux reads ~/.bashrc; macOS Terminal starts a login shell, which reads ~/.bash_profile.
+    const BASH_RC = HOST_OS === "Darwin" ? ".bash_profile" : ".bashrc";
+
+    test(`--modify-path in bash adds the line to ~/${BASH_RC}, not ~/.zshrc`, async () => {
+      const sb = makeSandbox();
+      sb.publish(makeRelease("0.1.0"));
+
+      const result = await sb.run(["--modify-path"], { env: { SHELL: "/usr/bin/bash" } });
+
+      expect(result.code).toBe(0);
+      expect(readFileSync(join(sb.home, BASH_RC), "utf8")).toBe('export PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
+      expect(existsSync(join(sb.home, ".zshrc"))).toBe(false);
+      expect(result.stdout).toContain(`Added ~/.local/bin to PATH in ~/${BASH_RC}`);
+    });
+
+    test(`without --modify-path, in bash, the hint names ~/${BASH_RC}`, async () => {
+      const sb = makeSandbox();
+      const result = await sb.install("0.1.0", { env: { SHELL: "/bin/bash" } });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain(`Add this line to ~/${BASH_RC}`);
+    });
+
+    // Login bash, which macOS Terminal starts, reads only the first of these that exists: a new ~/.bash_profile would hide the others.
+    test.skipIf(HOST_OS !== "Darwin").each([[".profile"], [".bash_login"]])(
+      "--modify-path in bash on macOS adds the line to an existing ~/%s and creates no ~/.bash_profile",
+      async (existing) => {
+        const sb = makeSandbox();
+        writeFileSync(join(sb.home, existing), "export MYVAR=1\n");
+        sb.publish(makeRelease("0.1.0"));
+
+        const result = await sb.run(["--modify-path"], { env: { SHELL: "/bin/bash" } });
+
+        expect(result.code).toBe(0);
+        expect(readFileSync(join(sb.home, existing), "utf8")).toBe('export MYVAR=1\nexport PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
+        expect(existsSync(join(sb.home, ".bash_profile"))).toBe(false);
+      },
+    );
+
+    test.skipIf(HOST_OS !== "Darwin")("--modify-path in bash on macOS prefers ~/.bash_profile over ~/.profile, as login bash does", async () => {
+      const sb = makeSandbox();
+      writeFileSync(join(sb.home, ".bash_profile"), "");
+      writeFileSync(join(sb.home, ".profile"), "");
+      sb.publish(makeRelease("0.1.0"));
+
+      expect((await sb.run(["--modify-path"], { env: { SHELL: "/bin/bash" } })).code).toBe(0);
+      expect(readFileSync(join(sb.home, ".bash_profile"), "utf8")).toContain("# marcsh installer");
+      expect(readFileSync(join(sb.home, ".profile"), "utf8")).toBe("");
+    });
+
+    test("--modify-path in a shell it does not know (fish) writes no file and prints the line", async () => {
+      const sb = makeSandbox();
+      sb.publish(makeRelease("0.1.0"));
+
+      const result = await sb.run(["--modify-path"], { env: { SHELL: "/usr/bin/fish" } });
+
+      expect(result.code).toBe(0);
+      expect(tree(sb.home).filter((path) => !path.startsWith(".marcsh") && !path.startsWith(".local"))).toEqual([]);
+      expect(result.stderr).toContain("--modify-path does not know how to edit the startup file of fish");
+      expect(result.stderr).toContain("Add ~/.local/bin to PATH in your shell's startup file");
+      expect(result.stderr).toContain('export PATH="$HOME/.local/bin:$PATH"');
+    });
+
     test("--modify-path does not touch ~/.zshrc when ~/.local/bin is already on PATH", async () => {
       const sb = makeSandbox();
       sb.publish(makeRelease("0.1.0"));
@@ -1432,11 +1550,11 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
       expect(sb.requests).toHaveLength(4); // the two installs, nothing for the uninstall
     });
 
-    test("does not need macOS or Bun", async () => {
+    test("does not need a supported system or Bun", async () => {
       const sb = makeSandbox();
       await sb.install("0.1.0");
 
-      const result = await sb.run(["--uninstall"], { path: "/usr/bin:/bin", env: { FAKE_UNAME_S: "Linux" } });
+      const result = await sb.run(["--uninstall"], { path: "/usr/bin:/bin", env: { FAKE_UNAME_S: "FreeBSD" } });
 
       expect(result.code).toBe(0);
       expect(existsSync(appDir(sb))).toBe(false);
@@ -1463,6 +1581,19 @@ describe.skipIf(process.platform !== "darwin")("install.sh", () => {
       expect(readlinkSync(binLink(sb))).toBe("/usr/bin/true");
       expect(result.stdout).toContain("~/.zshrc still has the PATH line");
       expect(readFileSync(join(sb.home, ".zshrc"), "utf8")).toContain("# marcsh installer");
+    });
+
+    test("names every profile that still has the PATH line, whatever the shell", async () => {
+      const sb = makeSandbox();
+      const profiles = [".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"];
+      for (const rc of profiles) {
+        writeFileSync(join(sb.home, rc), 'export PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
+      }
+
+      const result = await sb.run(["--uninstall"], { env: { SHELL: "/usr/bin/fish" } });
+
+      expect(result.code).toBe(0);
+      for (const rc of profiles) expect(result.stdout).toContain(`~/${rc} still has the PATH line`);
     });
   });
 
@@ -1627,12 +1758,14 @@ if [ -n "$data" ]; then echo "\${0##*/}: $data" >> "$FAKE_STDIN_LOG"; fi`;
         "uname",
         `${swallow}
 case "\${1:-}" in
-  -s) echo "\${FAKE_UNAME_S:-Darwin}" ;;
+  -s) echo "\${FAKE_UNAME_S:-${HOST_OS}}" ;;
   -m) echo "\${FAKE_UNAME_M:-arm64}" ;;
   *) exec /usr/bin/uname "$@" ;;
 esac`,
       );
-      for (const name of ["awk", "sed", "grep", "tail", "tar", "shasum"]) {
+      // Linux checks the download with sha256sum, macOS with shasum; stat is how both read the mode of ~/.marcsh.
+      const tools = ["awk", "sed", "grep", "tail", "tar", "shasum", "sha256sum", "stat"].filter((name) => existsSync(`/usr/bin/${name}`));
+      for (const name of tools) {
         fakeTool(sb, name, `if [ "$#" -gt 0 ] && [ -e "\${!#}" ]; then\n${swallow}\nfi\nexec /usr/bin/${name} "$@"`);
       }
       sb.publish(makeRelease("0.1.0"));

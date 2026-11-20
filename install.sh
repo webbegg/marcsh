@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# marcsh installer for macOS.
+# marcsh installer for macOS and Linux.
 #
 #   curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash -s -- --modify-path
@@ -8,6 +8,9 @@
 # runs `bun install --ignore-scripts` there, moves it to ~/.marcsh/app/<version> and only then switches
 # ~/.marcsh/app/current to it. Links ~/.local/bin/marcsh. The live version folders are never half-installed, even if
 # the installer is killed; the next run clears what a killed one left. No sudo. Run it with --help for the options.
+#
+# macOS has BSD tools and Linux has GNU ones, and a few of their options differ (renaming over a link, reading a mode, the
+# SHA-256 tool): each of those is one function below that asks `uname -s` which to use.
 #
 # Environment:
 #   MARCSH_VERSION            install this version (for example 0.1.0) instead of the latest release
@@ -44,7 +47,9 @@ Installs marcsh to ~/.marcsh/app and links ~/.local/bin/marcsh. Run it again to 
 
 Options:
   --with-bun       install Bun first (its official installer) when no Bun 1.4+ is found
-  --modify-path    add ~/.local/bin to PATH in ~/.zshrc when it is not there yet (one marked line, added once)
+  --modify-path    add ~/.local/bin to PATH in your shell's profile when it is not there yet (one marked line,
+                   added once): ~/.zshrc for zsh; for bash, ~/.bashrc on Linux and on macOS the login profile
+                   (~/.bash_profile, or an existing ~/.bash_login or ~/.profile)
   --uninstall      remove ~/.marcsh/app and the ~/.local/bin/marcsh link; other ~/.marcsh data is kept
                    (cannot be combined with --with-bun or --modify-path)
   -h, --help       show this help
@@ -137,17 +142,47 @@ require_bun() {
   exit 1
 }
 
-require_macos() {
-  local os arch
+# Aborts unless this is macOS or Linux on a processor marcsh's terminal library is built for. Sets os to Darwin or Linux.
+require_supported_os() {
+  local arch
   os=$(uname -s </dev/null)
   arch=$(uname -m </dev/null)
-  if [ "$os" != "Darwin" ]; then
-    die "marcsh installs on macOS only (this is $os). See https://github.com/webbegg/marcsh to run it from source."
-  fi
-  case "$arch" in
-    arm64 | x86_64) ;;
-    *) die "Unsupported Mac architecture: $arch (marcsh supports arm64 and x86_64)." ;;
+  case "$os" in
+    Darwin)
+      case "$arch" in
+        arm64 | x86_64) ;;
+        *) die "Unsupported Mac architecture: $arch (marcsh supports arm64 and x86_64)." ;;
+      esac
+      ;;
+    Linux)
+      case "$arch" in
+        x86_64 | aarch64 | arm64) ;;
+        *) die "Unsupported Linux architecture: $arch (marcsh supports x86_64 and aarch64)." ;;
+      esac
+      ;;
+    *) die "marcsh installs on macOS and Linux only (this is $os). See https://github.com/webbegg/marcsh to run it from source." ;;
   esac
+}
+
+# Prints the SHA-256 of the file $1 in hex: shasum on macOS (always there), sha256sum (coreutils) on Linux, where a minimal
+# system may have no Perl and so no shasum.
+sha256_of() {
+  if [ "$os" = "Linux" ] && command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" </dev/null | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" </dev/null | awk '{ print $1 }'
+  else
+    die "Neither sha256sum nor shasum was found, so the download cannot be checked. Install coreutils, then run the installer again."
+  fi
+}
+
+# Prints the permission bits of $1 in octal (700), or nothing when they cannot be read.
+mode_of() {
+  if [ "$os" = "Darwin" ]; then
+    /usr/bin/stat -f '%Lp' "$1" 2>/dev/null </dev/null || true
+  else
+    stat -c '%a' "$1" 2>/dev/null </dev/null || true
+  fi
 }
 
 # Aborts unless the download base is https://. Plain http is only for a loopback address (tests, a local mirror).
@@ -219,14 +254,46 @@ read_checksum() {
   printf '%s\n' "${BASH_REMATCH[1]}" | tr 'A-F' 'a-f'
 }
 
-# Points the symlink $2 at $1 in one step: a temp link next to it, then rename over it. `-h` is BSD mv only, so this
-# calls /bin/mv: a GNU mv earlier on PATH (Homebrew coreutils) does not know it.
+# Points the symlink $2 at $1 in one step: a temp link next to it, then rename over it. A plain mv would move the temp link
+# into the folder $2 points at, so each system's mv is told to treat $2 as a name: BSD mv's -h (this calls /bin/mv, because a
+# GNU mv earlier on PATH, as Homebrew's coreutils installs, does not know it) and GNU mv's -T.
 link_atomic() {
   pending_link="$2.tmp.$$"
   rm -f "$pending_link"
   ln -s "$1" "$pending_link"
-  /bin/mv -fh "$pending_link" "$2"
+  if [ "$os" = "Darwin" ]; then
+    /bin/mv -fh "$pending_link" "$2"
+  else
+    mv -fT "$pending_link" "$2" || die "Could not switch $2 to $1 (mv -T failed; its error is above. mv -T comes with GNU coreutils)."
+  fi
   pending_link=""
+}
+
+# Sets shell to the name of the user's shell and rc to the profile --modify-path writes, as ~/<name> ("" for a shell it does
+# not know): ~/.zshrc for zsh; for bash, ~/.bashrc on Linux, and on macOS, whose Terminal starts a login shell, the file login
+# bash reads, the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists (~/.bash_profile when none does), so a
+# new file never hides the user's own. Bash sets SHELL from the user's login shell when it is not set.
+profile_for_shell() {
+  local candidate
+  shell=${SHELL:-}
+  shell=${shell##*/}
+  case "$shell" in
+    zsh) rc=".zshrc" ;;
+    bash)
+      if [ "$os" = "Darwin" ]; then
+        rc=".bash_profile"
+        for candidate in .bash_profile .bash_login .profile; do
+          if [ -e "$HOME/$candidate" ]; then
+            rc=$candidate
+            break
+          fi
+        done
+      else
+        rc=".bashrc"
+      fi
+      ;;
+    *) rc="" ;;
+  esac
 }
 
 # 0 when ~/.local/bin is a PATH entry. A trailing slash (~/.local/bin/) is the same directory.
@@ -242,19 +309,28 @@ on_path() {
 }
 
 handle_path() {
-  local rc="$HOME/.zshrc"
+  local file
   if on_path; then return 0; fi
+  profile_for_shell
+  if [ -z "$rc" ]; then
+    # fish, nushell and the like have their own syntax: say what to do instead of writing a line they cannot read.
+    if [ "$modify_path" = 1 ]; then warn "--modify-path does not know how to edit the startup file of ${shell:-this shell}, so it changed nothing."; fi
+    warn "~/.local/bin is not on your PATH. Add ~/.local/bin to PATH in your shell's startup file, then open a new terminal. In a POSIX shell the line is:"
+    printf '\n    export PATH="$HOME/.local/bin:$PATH"\n\n' >&2
+    return 0
+  fi
+  file="$HOME/$rc"
   if [ "$modify_path" = 1 ]; then
-    if [ -f "$rc" ] && grep -qF "$PATH_MARKER" "$rc" </dev/null; then
-      ok "~/.zshrc already has the marcsh PATH line"
+    if [ -f "$file" ] && grep -qF "$PATH_MARKER" "$file" </dev/null; then
+      ok "~/$rc already has the marcsh PATH line"
     else
       # Start on a fresh line when the file does not end with one.
-      if [ -s "$rc" ] && [ -n "$(tail -c 1 "$rc" </dev/null)" ]; then printf '\n' >>"$rc"; fi
-      printf '%s\n' "export PATH=\"\$HOME/.local/bin:\$PATH\" $PATH_MARKER" >>"$rc"
-      ok "Added ~/.local/bin to PATH in ~/.zshrc. Open a new terminal, or run: source ~/.zshrc"
+      if [ -s "$file" ] && [ -n "$(tail -c 1 "$file" </dev/null)" ]; then printf '\n' >>"$file"; fi
+      printf '%s\n' "export PATH=\"\$HOME/.local/bin:\$PATH\" $PATH_MARKER" >>"$file"
+      ok "Added ~/.local/bin to PATH in ~/$rc. Open a new terminal, or run: source ~/$rc"
     fi
   else
-    warn "~/.local/bin is not on your PATH. Add this line to ~/.zshrc, then open a new terminal:"
+    warn "~/.local/bin is not on your PATH. Add this line to ~/$rc, then open a new terminal:"
     printf '\n    export PATH="$HOME/.local/bin:$PATH"\n\n' >&2
     printf '%s\n' "Or run the installer again with --modify-path to let it add the line." >&2
   fi
@@ -353,7 +429,7 @@ install_marcsh() {
     die "MARCSH_VERSION must look like 0.1.0 (or 0.2.0-beta.1), got: $MARCSH_VERSION"
   fi
   check_base_url
-  require_macos
+  require_supported_os
   require_bun
   if [ -e "$app/current" ] && [ ! -L "$app/current" ]; then
     die "$app/current exists and is not a link, so the installer will not touch it. Move it away (for example: mv '$app/current' '$app/current.old'), then run the installer again. Nothing was changed."
@@ -374,7 +450,7 @@ install_marcsh() {
     if [ -n "$(tr -cd '\r' <"$tmp_dir/marcsh.tar.gz.sha256")" ]; then hint=" (Windows line endings are not accepted)"; fi
     die "The checksum file is not a SHA-256 checksum for marcsh.tar.gz: expected one line, <64 hex digits>  marcsh.tar.gz$hint. Nothing was changed."
   fi
-  actual=$(shasum -a 256 "$tmp_dir/marcsh.tar.gz" </dev/null | awk '{ print $1 }')
+  actual=$(sha256_of "$tmp_dir/marcsh.tar.gz")
   if [ "$actual" != "$expected" ]; then
     die "Checksum mismatch for marcsh.tar.gz (expected $expected, got $actual). Nothing was changed. A release published at the same moment can cause this: run the installer again."
   fi
@@ -395,7 +471,7 @@ install_marcsh() {
 
   # Only now does the install touch the user's home.
   if [ ! -d "$home_dir" ]; then mkdir -m 700 "$home_dir"; fi
-  home_mode=$(/usr/bin/stat -f '%Lp' "$home_dir" 2>/dev/null </dev/null || true)
+  home_mode=$(mode_of "$home_dir")
   if [[ $home_mode =~ ^[0-7]+$ ]] && [ $((8#$home_mode & 8#022)) -ne 0 ]; then
     warn "~/.marcsh is writable by group or others (mode $home_mode), so other users could change what marcsh runs. Fix it with:  chmod go-w ~/.marcsh"
   fi
@@ -477,7 +553,7 @@ install_marcsh() {
 }
 
 uninstall_marcsh() {
-  local app="$HOME/.marcsh/app" link="$HOME/.local/bin/marcsh" target removed=0
+  local app="$HOME/.marcsh/app" link="$HOME/.local/bin/marcsh" target removed=0 profile
   if [ -e "$app" ] || [ -L "$app" ]; then
     # Not while an install runs. The lock folder goes away with the app folder.
     if [ -d "$app" ] && [ ! -L "$app" ]; then acquire_lock "$app"; fi
@@ -498,15 +574,18 @@ uninstall_marcsh() {
   else
     info "marcsh is not installed here; nothing to remove."
   fi
-  if [ -f "$HOME/.zshrc" ] && grep -qF "$PATH_MARKER" "$HOME/.zshrc" </dev/null; then
-    info "~/.zshrc still has the PATH line marked '$PATH_MARKER'; delete it if you no longer want it."
-  fi
+  # Any profile an earlier install wrote, whichever shell this is now.
+  for profile in .zshrc .bashrc .bash_profile .bash_login .profile; do
+    if [ -f "$HOME/$profile" ] && grep -qF "$PATH_MARKER" "$HOME/$profile" </dev/null; then
+      info "~/$profile still has the PATH line marked '$PATH_MARKER'; delete it if you no longer want it."
+    fi
+  done
 }
 
 main() {
   with_bun=0 modify_path=0 uninstall=0 show_help=0
   tmp_dir="" pending_stage="" pending_dest="" pending_backup="" pending_restore="" pending_link="" lock_dir=""
-  bun_bin="" bun_old="" curl_proto=()
+  bun_bin="" bun_old="" curl_proto=() os="" rc="" shell=""
   setup_colors
 
   local arg

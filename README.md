@@ -13,11 +13,11 @@ See [Engines and models](docs/engines-and-models.md) to choose one.
 
 - [Bun](https://bun.sh) 1.4 or newer. The installer can install it for you.
 - `git`, to install packs.
-- macOS for the one-line installer. On other systems, install [from source](#from-source).
+- macOS (Apple silicon or Intel) or Linux (x86_64 or arm64) for the one-line installer. On other systems, install [from source](#from-source). On Linux the launcher needs GNU coreutils 8.30 or newer (see [Troubleshooting](docs/troubleshooting.md#an-error-from-env-about-the--s-option)).
 
 ## Install
 
-On macOS, run:
+On macOS or Linux, run:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash
@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | ba
 ```
 
 - `--with-bun` runs Bun's official installer first, if you don't have Bun 1.4 or newer. That installer comes from bun.sh and is not verified, and it may add Bun to your shell profile.
-- `--modify-path` adds `~/.local/bin` to your `PATH` in `~/.zshrc`.
+- `--modify-path` adds `~/.local/bin` to your `PATH` in your shell's profile: `~/.zshrc` for zsh. For bash it uses `~/.bashrc` on Linux. On macOS it uses the profile a login bash reads: `~/.bash_profile`, or your `~/.bash_login` or `~/.profile` when you have one of those and no `~/.bash_profile`. For another shell (fish, for example) it changes nothing and prints the line to add.
 - `--uninstall` removes marcsh's app and the `marcsh` command. Your sessions, agents and packs in `~/.marcsh` stay.
 
 To update, run the same command again. The previous version is kept, so a failed update leaves the version you had working.
