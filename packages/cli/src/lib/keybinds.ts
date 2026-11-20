@@ -55,6 +55,7 @@ const DEFAULT_LEADER_KEYS: readonly (readonly [command: string, key: string])[] 
   ["export", "x"],
   ["details", "o"],
   ["thinking", "h"],
+  ["dashboard", "b"],
   ["exit", "q"],
 ];
 

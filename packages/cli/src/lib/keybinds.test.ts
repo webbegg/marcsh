@@ -76,6 +76,9 @@ describe("the defaults", () => {
     expect(resolveKey(kb, key("m"), true)).toEqual({ action: "command", name: "models" });
     expect(resolveKey(kb, key("z"), true)).toBeUndefined();
   });
+  test("ctrl+x b opens the home screen's menu (/dashboard)", () => {
+    expect(resolveKey(defaultKeybinds([...COMMANDS, "dashboard"]), key("b"), true)).toEqual({ action: "command", name: "dashboard" });
+  });
   test("a default for a command marcsh does not have is left out", () => {
     expect(resolveKey(defaultKeybinds(["new"]), key("m"), true)).toBeUndefined();
   });

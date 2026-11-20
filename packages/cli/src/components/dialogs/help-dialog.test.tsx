@@ -93,7 +93,8 @@ describe("the help dialog (S12)", () => {
 
   test("lists the engine's commands and cuts a long description with …", async () => {
     getStorage().saveClaudeCommands([{ name: "wordy", description: `${"long words ".repeat(30)}END`, argumentHint: "" }]);
-    await open({ width: 100, height: 60 });
+    // Tall enough for every key and marcsh command above the engine's.
+    await open({ width: 100, height: 70 });
     const text = frame();
     expect(text).toContain("/wordy long words");
     expect(text).toContain("…");
@@ -102,7 +103,7 @@ describe("the help dialog (S12)", () => {
 
   test("shows no control character of a command's name or description", async () => {
     getStorage().saveClaudeCommands([{ name: "sneaky", description: "plain \u001b[31mred\u001b[0m‮text", argumentHint: "" }]);
-    await open({ width: 100, height: 60 });
+    await open({ width: 100, height: 70 });
     const raw = screen!.captureCharFrame();
     expect(raw).not.toContain("\u001b");
     expect(raw).not.toContain("‮");

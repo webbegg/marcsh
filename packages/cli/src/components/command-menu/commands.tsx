@@ -25,6 +25,7 @@ import { transcriptView, transcriptViewKey, type TranscriptViewKey } from "../..
 import { defaultModeMessage, parsePermissionsCommand, sessionModeMessage } from "./permissions-command";
 import type { SessionCommands } from "./session-commands";
 import type { Command, CommandContext } from "./types";
+import { DAILY_OPTIONS, requestDashboard, type DailyOption } from "../../lib/daily-options";
 
 const failureText = (error: unknown) => redactSecrets(error instanceof Error ? error.message : String(error));
 
@@ -106,6 +107,20 @@ function toggleTranscriptView(key: TranscriptViewKey, label: string, ctx: Comman
     message: `${label}: ${on ? "shown in full" : "collapsed"} (${keys || `/${key}`} to switch)`,
   });
 }
+
+/**
+ * A daily option run from the prompt (the palette, the leader, or typed): in the prompt it was run from, so inside a session it goes
+ * to that session. It sends the option's command when one is loaded, else puts the option's starter text in the prompt. A prompt
+ * holding text is never replaced, and nothing is sent while a reply runs.
+ */
+const runDailyOption = (option: DailyOption) => (ctx: CommandContext) => {
+  const prompt = ctx.prompt;
+  if (!prompt) return;
+  if (prompt.hasText()) return ctx.toast.show({ variant: "info", message: `Clear the prompt, then pick /${option.name} again.` });
+  if (prompt.busy()) return ctx.toast.show({ variant: "info", message: `A reply is running: pick /${option.name} again when it ends.` });
+  if (prompt.hasUserCommand(option.command)) prompt.send(`/${option.command}`);
+  else prompt.fill(option.starter);
+};
 
 export const COMMANDS: Command[] = [
   {
@@ -370,6 +385,20 @@ export const COMMANDS: Command[] = [
     scope: "session",
     action: onSession("thinking", (_session, ctx) => toggleTranscriptView("thinking", "Thinking", ctx)),
   },
+  // The home screen's menu and its daily options, after the older commands like the ones above.
+  {
+    name: "dashboard",
+    description: "Open the menu of daily options",
+    value: "/dashboard",
+    // The home screen opens on the menu, so from a session going home is enough.
+    action: (ctx) => (ctx.session ? ctx.navigate("/") : requestDashboard()),
+  },
+  ...DAILY_OPTIONS.map((option): Command => ({
+    name: option.name,
+    description: option.description,
+    value: `/${option.name}`,
+    action: runDailyOption(option),
+  })),
   {
     name: "help",
     description: "Show the keys and the commands",

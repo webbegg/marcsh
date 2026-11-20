@@ -11,7 +11,7 @@ cd ~/projects/my-app
 marcsh
 ```
 
-That is your project folder. marcsh opens an assistant (the *agent*) in that folder. You see the home screen with an input box.
+That is your project folder. marcsh opens an assistant (the *agent*) in that folder. You see the home screen with a menu of daily options (New feature, Fix a bug, Work on a ticket, Review a PR). Press `Esc` to close it and get the input box. See [The screens](screen.md#the-screens).
 
 ## 2. Sign in
 
