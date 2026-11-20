@@ -2,12 +2,9 @@
 
 marcsh is a terminal app for working with coding agents. You chat with an agent in your project folder, and it reads files, edits code and runs commands. By default it asks for your approval before it edits files or runs commands.
 
-marcsh talks to AI models through an **engine**. It has two, and you can switch between them:
+marcsh runs the conversation on [pi](https://github.com/earendil-works/pi), an open-source coding agent that works with many model providers (Anthropic, OpenAI, Google, GitHub Copilot, OpenRouter and others). You sign in to the ones you want with `/login`, and pick a model with `/models`. pi is the engine marcsh is built and tested on first.
 
-- **pi** is the default. It works with many model providers. You sign in to the ones you want with `/login`.
-- **Claude** runs Claude through the Claude Agent SDK. It uses the Claude sign-in that is already on your machine.
-
-See [Engines and models](docs/engines-and-models.md) to choose one.
+marcsh can also run Claude through the Claude Agent SDK, using the Claude sign-in already on your machine. This second engine is less used and less tested, and some features are pi-only (typing while a reply runs, background terminals and subagents, MCP servers set up in marcsh). See [Engines and models](docs/engines-and-models.md#the-claude-engine).
 
 ## Requirements
 
@@ -100,7 +97,7 @@ marcsh works on the folder you start it in. `marcsh --version` prints the versio
 ### Customizing it
 
 - [Write an agent](docs/guides/write-an-agent.md): make an agent for a job.
-- [Switch engine or model](docs/guides/switch-engine-or-model.md): use Claude or another model.
+- [Switch model or engine](docs/guides/switch-engine-or-model.md): try another model or provider, or the Claude engine.
 - [Agents](docs/agents.md): an agent is a role with a permission level, such as Build or Plan. Switch agents and write your own.
 - [Configuration](docs/configuration.md): files under `~/.marcsh`, MCP servers and environment variables.
 
@@ -115,7 +112,7 @@ marcsh works on the folder you start it in. `marcsh --version` prints the versio
 - [Commands](docs/commands.md): every `/` command and the key bindings.
 - [The screen](docs/screen.md): the screens, the input, the status line, toasts and approval prompts.
 - [Sessions](docs/sessions.md): a session is one saved conversation. Start, find and resume them.
-- [Engines and models](docs/engines-and-models.md): the engine is what runs the conversation, pi or Claude. Choose a model and sign in.
+- [Engines and models](docs/engines-and-models.md): sign in to a provider, choose a model, and the Claude engine.
 - [Packs](docs/packs.md): a pack is a public GitHub repository that adds agents, skills and commands. Install one from GitHub.
 - [Security](docs/security.md): what marcsh asks about, what it trusts and what it never runs.
 - [Troubleshooting](docs/troubleshooting.md): common problems and their messages.

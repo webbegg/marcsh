@@ -97,12 +97,12 @@ If `/agents hooks owner/repo` cannot enable the hooks, a toast says why:
 
 Only the events that matter for tool calls run on both engines.
 
-| Event | Claude | pi |
+| Event | pi | Claude |
 | --- | --- | --- |
 | `PreToolUse` | yes | yes |
 | `PostToolUse` | yes | yes |
 | `PostToolUseFailure` | yes | yes |
-| Every other event (`SessionStart`, `Stop`, …) | yes | no |
+| Every other event (`SessionStart`, `Stop`, …) | no | yes |
 
 The review lists them, for example `PreToolUse, PostToolUse run on Claude and pi; Stop run on Claude only.` If you use pi and the pack has other events, selecting its agent shows `owner/repo: hooks for Stop run on Claude only`.
 
@@ -110,11 +110,11 @@ The review lists them, for example `PreToolUse, PostToolUse run on Claude and pi
 
 A hook gets the call as JSON on its input, as Claude sends it: `session_id`, `cwd`, `hook_event_name`, `tool_name` and `tool_input`, plus the result after the call. marcsh adds what it knows about the turn:
 
-| | Claude | pi |
+| | pi | Claude |
 | --- | --- | --- |
-| `permission_mode` in the JSON | Claude's own (`default`, `plan`, …) | marcsh's: `normal`, `auto`, `yolo`, or `plan` in a plan turn or a read-only subagent |
-| `agent` in the JSON | no | the ID of the turn's agent, for example `acme/flows/asdd` |
-| `MARCSH_APPROVAL_MODE` in the environment | yes, as the turn started | yes, at the time of the call |
+| `permission_mode` in the JSON | marcsh's: `normal`, `auto`, `yolo`, or `plan` in a plan turn or a read-only subagent | Claude's own (`default`, `plan`, …) |
+| `agent` in the JSON | the ID of the turn's agent, for example `acme/flows/asdd` | no |
+| `MARCSH_APPROVAL_MODE` in the environment | yes, at the time of the call | yes, as the turn started |
 | `MARCSH_AGENT` in the environment | yes | yes |
 
 The approval mode is the one marcsh enforces when it is read. Auto and yolo only apply on a feature branch: while they are paused (on the default branch, a detached HEAD, or outside a repository), marcsh asks as in normal mode, and the hooks are told `normal`. On pi it is read at each call, so it is never freer than the mode marcsh enforces for that call. On Claude it is the value at the start of the turn: after a `/permissions` change or a branch switch during the turn, marcsh may enforce a stricter mode than the one your hooks are told. So never relax a check because the mode is `auto` or `yolo` on Claude.

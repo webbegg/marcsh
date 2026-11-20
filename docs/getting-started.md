@@ -15,11 +15,11 @@ That is your project folder. marcsh opens an assistant (the *agent*) in that fol
 
 ## 2. Sign in
 
-marcsh needs a model to talk to. With no model, the home screen shows a short card naming the two ways forward, and the status line under the input says `no model · run /login`. Type `/login` and follow the steps. Already use Claude Code? Type `/engine` and pick Claude instead: it uses your existing Claude sign-in.
+marcsh needs a model to talk to. With no model, the home screen shows a short card, and the status line under the input says `no model · run /login`. Type `/login`, pick a provider and follow the steps: a sign-in link or code for a subscription, or a pasted API key. Then type `/models` to pick one of that provider's models. (A Claude Code user can use the Claude engine instead, with `/engine`: see [The Claude engine](engines-and-models.md#the-claude-engine).)
 
 Until a model is available, `Enter` does not send your message and no session is created: marcsh keeps what you typed and says `No model yet: /login (pi) or /engine (Claude)` under the input. The message goes away when you change the input, and the card goes away once you are signed in.
 
-See [Engines and models](engines-and-models.md) for the details.
+See [Sign in](engines-and-models.md#sign-in) for the details.
 
 ## 3. Ask for something
 
