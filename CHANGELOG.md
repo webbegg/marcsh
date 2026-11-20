@@ -2,6 +2,20 @@
 
 Release notes for each version, newest first. Every release on GitHub also lists the pull requests it contains.
 
+## 0.9.0
+
+marcsh installs on Linux, and puts pi, the engine it is built and tested on first, ahead of the Claude engine.
+
+### Install
+- **The one-line installer works on Linux** (x86_64 and arm64), as well as macOS: `curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | bash`. On Linux the launcher needs GNU coreutils 8.30 or newer. See the [README](README.md#install).
+- **`--modify-path` writes your shell's profile**, not always `~/.zshrc`: `~/.zshrc` for zsh; for bash `~/.bashrc` on Linux, and on macOS the profile a login bash already reads (`~/.bash_profile`, or an existing `~/.bash_login` or `~/.profile`). For another shell, such as fish, it changes nothing and prints the line to add. `--uninstall` names every profile that still has the line.
+
+### pi first
+- **`/engine` lists pi first**, so `Enter` picks it.
+- **The home screen with no model** leads with `/login` and then `/models`, and names `/engine` for the Claude engine after them. `Enter` there says `No model yet: type /login to sign in to a provider`.
+- **The docs lead with pi** and describe Claude once as the second engine, less used and less tested, with what it lacks. See [docs/engines-and-models.md](docs/engines-and-models.md#the-claude-engine).
+- The CLI help and the `--engine` error name pi first (`pi|claude`). `--engine` takes the same values.
+
 ## 0.8.0
 
 A clearer transcript: each tool call is drawn for what it is, and a run of lookups folds into one line.
