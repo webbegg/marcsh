@@ -117,8 +117,8 @@ Ids must be written in full, as `list` prints them.
 marcsh models [--engine claude|pi]
 ```
 
-- **Claude** has three aliases: `opus`, `sonnet` and `haiku`.
 - **pi** has the models of its catalogue and your `models.json`, as `provider/id` followed by the name. A `*` marks the models whose provider has credentials (a login made with `/login`, or an environment variable); the model dialog in the interface lists only those. See [Engines and models](engines-and-models.md).
+- **Claude** has three aliases: `opus`, `sonnet` and `haiku`.
 
 With `--engine` only that engine is listed, one model per line. Without it both are, under their names. If pi's models cannot be read, marcsh prints why on standard error, still lists the Claude models and exits with `1`.
 

@@ -27,9 +27,9 @@ Most commands open a dialog. In a dialog, type to search, use `Up` and `Down` to
 - With nothing after the `/`, the menu is grouped under dim headers: marcsh's own commands, then `packs & custom`, then the engine's commands. marcsh's own keep the order of this page's list; the other groups are sorted by name. With a query the list is one list, best match first.
 - `/login` and `/logout` manage pi's logins, so they are listed only on pi. On Claude they still run when you type the full name.
 - The menu shows at most 10 rows and scrolls.
-- The right-hand column shows where a command comes from: `claude` for the Claude engine's commands and for the bundled `marcsh:` entries on Claude, `extension`, `prompt` or `skill` on pi. your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.
+- The right-hand column shows where a command comes from: `extension`, `prompt` or `skill` on pi, and on Claude `claude` for the engine's commands and for the bundled `marcsh:` entries. Your own [custom commands](#custom-commands) show `personal` or `project`. marcsh's own commands have no tag.
 - When nothing matches, the menu says "No matching commands".
-- When the text is not a command, `Enter` shows a toast (`/x is not a known command · enter again to send it to Claude`) and keeps the text. Press `Enter` again to send it to the engine. Text with a `/` inside the name, like a path, is sent at once.
+- When the text is not a command, `Enter` shows a toast (`/x is not a known command · enter again to send it to pi`, or `to Claude` on a Claude session) and keeps the text. Press `Enter` again to send it to the engine. Text with a `/` inside the name, like a path, is sent at once.
 
 ## marcsh commands
 
@@ -80,9 +80,9 @@ Select the AI model.
 ```
 
 - The list depends on the engine of the current session, or of new sessions on the home screen.
-- On Claude it offers `opus`, `sonnet` and `haiku`. The default is `opus`. The choice is used for your next messages and is not kept after you quit.
 - On pi it lists the models of providers you have signed in to, as `provider/id`. After you choose, marcsh shows "pi will use provider/id" and remembers the choice.
-- On pi with no login, you see "No pi model is available yet. Run /login to sign in to a provider."
+- With no login, you see "No pi model is available yet. Run /login to sign in to a provider."
+- On Claude it offers `opus`, `sonnet` and `haiku`. The default is `opus`. The choice is used for your next messages and remembered between launches.
 
 See [Engines and models](engines-and-models.md).
 
@@ -116,7 +116,7 @@ Sign in to a pi provider with a subscription or an API key.
 
 - Opens "Log in" with the list of providers. A check mark shows the ones you are already signed in to.
 - Choose a provider and follow the steps in the dialog. Depending on the provider, you open a link, enter a code, or paste an API key. Pasted keys and codes show as dots.
-- A subscription sign-in reminds you to check your plan's terms. See [Engines and models](engines-and-models.md#pi-login).
+- A subscription sign-in reminds you to check your plan's terms. See [Engines and models](engines-and-models.md#login).
 - `Esc` cancels the login and shows "Login to NAME cancelled".
 - On success you see "Logged in to NAME" or "Saved API key for NAME".
 - `/login` works from a Claude session too, typed in full. It manages the logins that pi uses, so the `/` menu lists it only on pi.
@@ -686,7 +686,7 @@ How each engine takes them:
 
 | Engine | Images | PDFs |
 | --- | --- | --- |
-| Claude | Sent as image input with your message. | Sent as a document with your message. |
 | pi | Sent as image input when the model takes images. Otherwise sent as an `@path` mention, with the message "This model cannot take images as input, so shot.png goes as an @path reference." | Sent as an `@path` mention, with the message "This engine cannot take PDFs as input, so spec.pdf goes as an @path reference." |
+| Claude | Sent as image input with your message. | Sent as a document with your message. |
 
 Attachments work inside a session. On the home screen a pasted path is ordinary text. Only the path, the type and the kind are saved with the session, never the file's contents, and `/export` lists them under your message.
