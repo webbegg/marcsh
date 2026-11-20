@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/webbegg/marcsh/main/install.sh | ba
 ```
 
 - `--with-bun` runs Bun's official installer first, if you don't have Bun 1.4 or newer. That installer comes from bun.sh and is not verified, and it may add Bun to your shell profile.
-- `--modify-path` adds `~/.local/bin` to your `PATH` in your shell's profile: `~/.zshrc` for zsh, and for bash `~/.bashrc` on Linux or `~/.bash_profile` on macOS. For another shell (fish, for example) it prints the line to add instead.
+- `--modify-path` adds `~/.local/bin` to your `PATH` in your shell's profile: `~/.zshrc` for zsh. For bash it uses `~/.bashrc` on Linux. On macOS it uses the profile a login bash reads: `~/.bash_profile`, or your `~/.bash_login` or `~/.profile` when you have one of those and no `~/.bash_profile`. For another shell (fish, for example) it changes nothing and prints the line to add.
 - `--uninstall` removes marcsh's app and the `marcsh` command. Your sessions, agents and packs in `~/.marcsh` stay.
 
 To update, run the same command again. The previous version is kept, so a failed update leaves the version you had working.

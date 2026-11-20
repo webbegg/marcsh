@@ -48,7 +48,8 @@ Installs marcsh to ~/.marcsh/app and links ~/.local/bin/marcsh. Run it again to 
 Options:
   --with-bun       install Bun first (its official installer) when no Bun 1.4+ is found
   --modify-path    add ~/.local/bin to PATH in your shell's profile when it is not there yet (one marked line,
-                   added once): ~/.zshrc for zsh, ~/.bashrc for bash on Linux, ~/.bash_profile for bash on macOS
+                   added once): ~/.zshrc for zsh; for bash, ~/.bashrc on Linux and on macOS the login profile
+                   (~/.bash_profile, or an existing ~/.bash_login or ~/.profile)
   --uninstall      remove ~/.marcsh/app and the ~/.local/bin/marcsh link; other ~/.marcsh data is kept
                    (cannot be combined with --with-bun or --modify-path)
   -h, --help       show this help
@@ -263,23 +264,34 @@ link_atomic() {
   if [ "$os" = "Darwin" ]; then
     /bin/mv -fh "$pending_link" "$2"
   else
-    mv -fT "$pending_link" "$2" || die "Could not switch $2 to $1: this mv does not support -T (GNU coreutils has it)."
+    mv -fT "$pending_link" "$2" || die "Could not switch $2 to $1 (mv -T failed; its error is above. mv -T comes with GNU coreutils)."
   fi
   pending_link=""
 }
 
-# Sets rc to the profile --modify-path writes, as ~/<name> ("" for a shell it does not know): ~/.zshrc for zsh, and for bash
-# ~/.bashrc on Linux and ~/.bash_profile on macOS, whose Terminal starts a login shell. With no SHELL, the system's default
-# shell: zsh on macOS, bash on Linux.
+# Sets shell to the name of the user's shell and rc to the profile --modify-path writes, as ~/<name> ("" for a shell it does
+# not know): ~/.zshrc for zsh; for bash, ~/.bashrc on Linux, and on macOS, whose Terminal starts a login shell, the file login
+# bash reads, the first of ~/.bash_profile, ~/.bash_login and ~/.profile that exists (~/.bash_profile when none does), so a
+# new file never hides the user's own. Bash sets SHELL from the user's login shell when it is not set.
 profile_for_shell() {
-  local shell=${SHELL:-}
+  local candidate
+  shell=${SHELL:-}
   shell=${shell##*/}
-  if [ -z "$shell" ]; then
-    if [ "$os" = "Darwin" ]; then shell=zsh; else shell=bash; fi
-  fi
   case "$shell" in
     zsh) rc=".zshrc" ;;
-    bash) if [ "$os" = "Darwin" ]; then rc=".bash_profile"; else rc=".bashrc"; fi ;;
+    bash)
+      if [ "$os" = "Darwin" ]; then
+        rc=".bash_profile"
+        for candidate in .bash_profile .bash_login .profile; do
+          if [ -e "$HOME/$candidate" ]; then
+            rc=$candidate
+            break
+          fi
+        done
+      else
+        rc=".bashrc"
+      fi
+      ;;
     *) rc="" ;;
   esac
 }
@@ -297,11 +309,12 @@ on_path() {
 }
 
 handle_path() {
-  local rc file
+  local file
   if on_path; then return 0; fi
   profile_for_shell
   if [ -z "$rc" ]; then
     # fish, nushell and the like have their own syntax: say what to do instead of writing a line they cannot read.
+    if [ "$modify_path" = 1 ]; then warn "--modify-path does not know how to edit the startup file of ${shell:-this shell}, so it changed nothing."; fi
     warn "~/.local/bin is not on your PATH. Add ~/.local/bin to PATH in your shell's startup file, then open a new terminal. In a POSIX shell the line is:"
     printf '\n    export PATH="$HOME/.local/bin:$PATH"\n\n' >&2
     return 0
@@ -562,7 +575,7 @@ uninstall_marcsh() {
     info "marcsh is not installed here; nothing to remove."
   fi
   # Any profile an earlier install wrote, whichever shell this is now.
-  for profile in .zshrc .bashrc .bash_profile; do
+  for profile in .zshrc .bashrc .bash_profile .bash_login .profile; do
     if [ -f "$HOME/$profile" ] && grep -qF "$PATH_MARKER" "$HOME/$profile" </dev/null; then
       info "~/$profile still has the PATH line marked '$PATH_MARKER'; delete it if you no longer want it."
     fi
@@ -572,7 +585,7 @@ uninstall_marcsh() {
 main() {
   with_bun=0 modify_path=0 uninstall=0 show_help=0
   tmp_dir="" pending_stage="" pending_dest="" pending_backup="" pending_restore="" pending_link="" lock_dir=""
-  bun_bin="" bun_old="" curl_proto=() os="" rc=""
+  bun_bin="" bun_old="" curl_proto=() os="" rc="" shell=""
   setup_colors
 
   local arg

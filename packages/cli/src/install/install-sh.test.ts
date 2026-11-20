@@ -4,6 +4,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -631,6 +632,22 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("
       }
     });
 
+    // On Linux the switch is GNU mv's -T: an mv without it must fail the update and leave the version that was there.
+    test.skipIf(HOST_OS !== "Linux")("an mv without -T stops the update and keeps the previous version", async () => {
+      const sb = makeSandbox();
+      expect((await sb.install("0.1.0")).code).toBe(0);
+      fakeTool(sb, "mv", `for arg in "$@"; do case "$arg" in -*T*) echo "mv: invalid option -- 'T'" >&2; exit 1 ;; esac; done\nexec /bin/mv "$@"`);
+
+      const result = await sb.install("0.2.0");
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Could not switch");
+      expect(readlinkSync(currentLink(sb))).toBe("0.1.0");
+      expect(launcherOutput(sb)).toBe("marcsh 0.1.0\n");
+      expect(readdirSync(appDir(sb)).filter((name) => name.includes(".tmp."))).toEqual([]);
+      expect(installed(sb)).toEqual(["0.1.0"]);
+    });
+
     test("a GNU-style mv first on PATH (no -h) does not break the atomic switch", async () => {
       const sb = makeSandbox();
       fakeTool(
@@ -869,6 +886,15 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("
         "a symlink",
         (work: string) => {
           symlinkSync("/etc", join(work, "marcsh", "link"));
+          return ["marcsh"];
+        },
+      ],
+      [
+        // GNU tar and BSD tar list a hard link differently; both must be caught.
+        "a hard link",
+        (work: string) => {
+          writeFileSync(join(work, "marcsh", "a"), "x");
+          linkSync(join(work, "marcsh", "a"), join(work, "marcsh", "b"));
           return ["marcsh"];
         },
       ],
@@ -1410,6 +1436,33 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("
       expect(result.stderr).toContain(`Add this line to ~/${BASH_RC}`);
     });
 
+    // Login bash, which macOS Terminal starts, reads only the first of these that exists: a new ~/.bash_profile would hide the others.
+    test.skipIf(HOST_OS !== "Darwin").each([[".profile"], [".bash_login"]])(
+      "--modify-path in bash on macOS adds the line to an existing ~/%s and creates no ~/.bash_profile",
+      async (existing) => {
+        const sb = makeSandbox();
+        writeFileSync(join(sb.home, existing), "export MYVAR=1\n");
+        sb.publish(makeRelease("0.1.0"));
+
+        const result = await sb.run(["--modify-path"], { env: { SHELL: "/bin/bash" } });
+
+        expect(result.code).toBe(0);
+        expect(readFileSync(join(sb.home, existing), "utf8")).toBe('export MYVAR=1\nexport PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
+        expect(existsSync(join(sb.home, ".bash_profile"))).toBe(false);
+      },
+    );
+
+    test.skipIf(HOST_OS !== "Darwin")("--modify-path in bash on macOS prefers ~/.bash_profile over ~/.profile, as login bash does", async () => {
+      const sb = makeSandbox();
+      writeFileSync(join(sb.home, ".bash_profile"), "");
+      writeFileSync(join(sb.home, ".profile"), "");
+      sb.publish(makeRelease("0.1.0"));
+
+      expect((await sb.run(["--modify-path"], { env: { SHELL: "/bin/bash" } })).code).toBe(0);
+      expect(readFileSync(join(sb.home, ".bash_profile"), "utf8")).toContain("# marcsh installer");
+      expect(readFileSync(join(sb.home, ".profile"), "utf8")).toBe("");
+    });
+
     test("--modify-path in a shell it does not know (fish) writes no file and prints the line", async () => {
       const sb = makeSandbox();
       sb.publish(makeRelease("0.1.0"));
@@ -1418,6 +1471,7 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("
 
       expect(result.code).toBe(0);
       expect(tree(sb.home).filter((path) => !path.startsWith(".marcsh") && !path.startsWith(".local"))).toEqual([]);
+      expect(result.stderr).toContain("--modify-path does not know how to edit the startup file of fish");
       expect(result.stderr).toContain("Add ~/.local/bin to PATH in your shell's startup file");
       expect(result.stderr).toContain('export PATH="$HOME/.local/bin:$PATH"');
     });
@@ -1531,14 +1585,15 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")("
 
     test("names every profile that still has the PATH line, whatever the shell", async () => {
       const sb = makeSandbox();
-      for (const rc of [".zshrc", ".bashrc", ".bash_profile"]) {
+      const profiles = [".zshrc", ".bashrc", ".bash_profile", ".bash_login", ".profile"];
+      for (const rc of profiles) {
         writeFileSync(join(sb.home, rc), 'export PATH="$HOME/.local/bin:$PATH" # marcsh installer\n');
       }
 
       const result = await sb.run(["--uninstall"], { env: { SHELL: "/usr/bin/fish" } });
 
       expect(result.code).toBe(0);
-      for (const rc of [".zshrc", ".bashrc", ".bash_profile"]) expect(result.stdout).toContain(`~/${rc} still has the PATH line`);
+      for (const rc of profiles) expect(result.stdout).toContain(`~/${rc} still has the PATH line`);
     });
   });
 
